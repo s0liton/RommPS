@@ -7,7 +7,9 @@
 #include <time.h>
 
 #define APP_NAME    "romm-sync"
-#define APP_VERSION "0.1.0"
+#ifndef APP_VERSION
+#define APP_VERSION "1.0.0"
+#endif
 #define APP_CLIENT  "romm-sync-ps5" /* RomM "client" identifier */
 
 #define PATH_MAX_LEN 1024

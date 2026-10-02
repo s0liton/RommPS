@@ -5,6 +5,7 @@
 #   tools/ps5-build.sh                 "make ps5" inside the Docker SDK image
 #   make deploy PS5_HOST=<ip>          send the payload to the loader on port 9021
 #   make install PS5_HOST=<ip>         same, plus copy it into etaHEN's autostart over FTP
+#   make ps5 VERSION=1.2.3             override the version baked into the build
 
 SRCS := src/main.c src/util.c src/http.c src/romm.c src/config.c src/state.c \
         src/profiles.c src/sync.c src/watch.c src/detect.c src/autostart.c src/memcard.c src/zip.c src/bundle.c src/gameid.c src/library.c src/pair.c src/web.c \
@@ -12,6 +13,9 @@ SRCS := src/main.c src/util.c src/http.c src/romm.c src/config.c src/state.c \
 HDRS := $(wildcard src/*.h) third_party/cJSON.h third_party/md5.h
 UI_HEADER := build/gen/ui_index.h build/gen/icon_png.h
 COMMON_CFLAGS := -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unknown-warning-option -Wno-unreachable-code-generic-assoc -Isrc -Ithird_party -Ibuild/gen
+ifdef VERSION
+COMMON_CFLAGS += -DAPP_VERSION='"$(VERSION)"'
+endif
 
 PS5_HOST ?= ps5
 PS5_PORT ?= 9021

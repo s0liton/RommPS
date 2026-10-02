@@ -1,0 +1,44 @@
+# Builds the PS5 payload and publishes a GitHub release when a version tag is pushed.
+#
+#   git tag v1.0.0 && git push origin v1.0.0
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Same image tools/ps5-build.sh uses, cached between runs.
+      - uses: docker/build-push-action@v6
+        with:
+          context: tools/docker
+          tags: romm-sync-ps5sdk:v0.43
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build payload
+        run: tools/ps5-build.sh VERSION="${GITHUB_REF_NAME#v}"
+
+      - name: Package
+        run: |
+          mkdir dist
+          cp build/ps5/romm-sync.elf build/ps5/cacert.pem dist/
+          cd dist && sha256sum * > SHA256SUMS
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag

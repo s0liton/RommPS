@@ -1,0 +1,16 @@
+# Host build and end-to-end test against the mock RomM server.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev zlib1g-dev
+      - run: make host
+      - run: tests/e2e.sh
