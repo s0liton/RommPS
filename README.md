@@ -15,7 +15,7 @@ Technically, this RomM client will work with all emulators, but the PS5 is curre
 
 ## PS4/PS5 Games
 
-If you are interested in downloading PS4 and PS5 games from your RomM server, the server has direct FPKGi support, simply add it as a library. This sync client does NOT handle PS4/PS5 save syncing at this time, but is being researched for potential future inclusion.
+If you are interested in downloading PS4 and PS5 games from your RomM server, RomM has direct FPKGi support, simply add it as a library. This sync client does NOT handle PS4/PS5 save syncing at this time, but is being researched for potential future inclusion.
 
 ## Requirements
 
@@ -56,7 +56,7 @@ LRPS2 keeps every game on one shared memory card by default. RomM stores saves p
 - **One card per game.** Works with any RomM version. In RetroArch, open the LRPS2 core options and turn off _Shared Memory Cards_. After that, each game's card syncs like any other save. Saves already on the shared card stay there.
 - **Back up the shared card.** Needs RomM 5.3.0 or newer. The whole card is uploaded when it changes, and you can restore it from Settings. It isn't merged with other devices.
 
-PSP, GameCube and Wii saves are synced as one zip per game, the same format other RomM clients use.
+PSP, GameCube and Wii saves are synced as one zip per game, the same format other RomM clients use. Depending on the client, they may or may not support unzipping the saves (I don't truly know), but this client does!
 
 ## Emulator Profiles
 
