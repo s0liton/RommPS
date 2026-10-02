@@ -33,9 +33,8 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
    nc -w 1 <ps5-ip> 9021 < romm-sync.elf
    ```
 3. A RomM Sync tile appears on the home screen after about 30 seconds. Open it, or go to `http://<ps5-ip>:8780` from another device.
-4. Complete setup.
 
-To start RomM Sync with the console, copy the payload to etaHEN's autostart folder. You can do this from the last setup step, or with `make install PS5_HOST=<ps5-ip>` if you build it yourself.
+To start RomM Sync with the console, copy the payload to etaHEN's autostart folder or use the autoloader. You can do this from the last setup step, or with `make install PS5_HOST=<ps5-ip>` if you build it yourself.
 
 If your RomM server uses HTTPS, copy `cacert.pem` from the release to `/data/romm-sync/cacert.pem`.
 
@@ -50,10 +49,6 @@ The setup walks you through five steps:
 5. Choosing when to sync in the background.
 
 **Back up your saves before the first sync.** Copy your emulator save folders to a computer or USB drive. RomM Sync keeps a local copy before replacing any file, but your own backup is the safest option.
-
-## Running
-
-Like all other ELF payloads, you'll need to inject it every time you inject your exploit and jailbreak. I suggest making it part of your autoloader list, so it will be chained along with your exploit to "start automatically".
 
 ## PS2 Memory Cards
 
