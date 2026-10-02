@@ -1,0 +1,912 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RomM Sync</title>
+<style>
+:root {
+  --bg: #0f1117; --panel: #181b24; --panel2: #202431; --line: #2d3242; --text: #e8eaf0; --muted: #9aa1b2;
+  --accent: #8b5cf6; --accent2: #a78bfa; --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
+  --focus: #fbbf24; --radius: 12px;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 18px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; background: var(--panel); position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
+header h1 { font-size: 22px; margin: 0 12px 0 0; }
+header h1 span { color: var(--accent2); }
+nav { display: flex; gap: 8px; flex-wrap: wrap; }
+.tab, button, select, input, textarea { font: inherit; color: inherit; }
+.tab { background: var(--panel2); border: 2px solid transparent; border-radius: 999px; padding: 8px 18px; cursor: pointer; }
+.tab.active { background: var(--accent); }
+#conn { margin-left: auto; font-size: 15px; color: var(--muted); }
+main { padding: 20px 24px 60px; max-width: 1400px; margin: 0 auto; }
+section { display: none; } section.active { display: block; }
+.card { background: var(--panel); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
+.card h2 { margin: 0 0 12px; font-size: 20px; }
+.card h3 { margin: 20px 0 8px; font-size: 17px; }
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+.stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
+.stat { background: var(--panel2); border-radius: 10px; padding: 12px 14px; }
+.stat b { display: block; font-size: 24px; } .stat small { color: var(--muted); }
+button { background: var(--panel2); border: 2px solid transparent; border-radius: 10px; padding: 10px 18px; cursor: pointer; }
+button.primary { background: var(--accent); } button.danger { background: #3a1d24; color: #fca5a5; }
+button.small { padding: 6px 12px; font-size: 15px; }
+button:disabled { opacity: .5; cursor: default; }
+:focus { outline: none; } :focus-visible { border-color: var(--focus) !important; box-shadow: 0 0 0 3px rgba(251,191,36,.35); }
+input, select, textarea { background: var(--panel2); border: 2px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; }
+textarea { font: 14px/1.4 ui-monospace, Menlo, monospace; min-height: 320px; }
+label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 15px; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.row > * { flex: 1 1 auto; } .row > button, .row > .fixed { flex: 0 0 auto; }
+.muted { color: var(--muted); } .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
+.pill { display: inline-block; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #2e2650; color: var(--accent2); margin: 0 6px 6px 0; white-space: nowrap; }
+.pill.ok { background: #0f2e1c; color: #86efac; } .pill.off { background: var(--panel); color: var(--muted); } .pill.warn { background: #3a2a0c; color: #fcd34d; }
+.plats { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.plat { background: var(--panel2); border: 2px solid transparent; border-radius: var(--radius); padding: 18px; cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 4px; }
+.plat .logo { height: 96px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; }
+.plat .logo img { width: 96px; height: 96px; object-fit: contain; background: transparent; }
+.plat .logo span { font-size: 40px; font-weight: 700; color: var(--accent2); }
+.plat .n { font-weight: 600; font-size: 19px; } .plat small { display: block; color: var(--muted); }
+.seg { display: inline-flex; border-radius: 10px; overflow: hidden; }
+.seg button { border-radius: 0; padding: 10px 14px; } .seg button.on { background: var(--accent); }
+.romtable td { vertical-align: middle; } .romtable img { width: 40px; height: 54px; object-fit: cover; border-radius: 4px; background: #11131a; display: block; }
+.rom { background: var(--panel2); border: 2px solid transparent; border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
+.rom .cover { aspect-ratio: 3/4; background: #11131a center/cover no-repeat; display: flex; align-items: flex-end; }
+.rom .badge { margin: 8px; background: var(--ok); color: #052e12; font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+.rom .badge.dl { background: var(--warn); color: #3a2503; }
+.rom .t { padding: 8px 10px 4px; font-size: 15px; font-weight: 600; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-height: 2.9em; }
+.rom .s { padding: 0 10px; font-size: 13px; color: var(--muted); }
+.rom button { margin: 8px 10px 10px; padding: 8px; }
+.rom .btns { display: flex; gap: 6px; margin: 8px 10px 10px; min-width: 0; }
+.rom .btns button { margin: 0; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rom .btns button.icon { flex: 0 0 auto; }
+button.icon { display: inline-flex; align-items: center; justify-content: center; padding: 8px 10px; line-height: 0; }
+button.icon svg { width: 18px; height: 18px; }
+.dl-item { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.dl-item:last-child { border-bottom: 0; }
+.dl-item .meta { font-size: 15px; color: var(--muted); margin-top: 4px; }
+.bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 8px; }
+.bar i { display: block; height: 100%; background: var(--accent); width: 0; }
+table { width: 100%; border-collapse: collapse; font-size: 15px; }
+td, th { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; }
+pre { background: #0a0c11; border-radius: 10px; padding: 12px; overflow: auto; font-size: 13px; max-height: 60vh; white-space: pre-wrap; word-break: break-word; }
+code { background: var(--panel2); padding: 2px 6px; border-radius: 6px; word-break: break-all; font-size: 14px; }
+.code { font: 700 56px/1 ui-monospace, Menlo, monospace; letter-spacing: 8px; color: var(--accent2); margin: 12px 0; }
+.toggle { display: flex; align-items: center; gap: 10px; margin: 10px 0; } .toggle input { width: auto; transform: scale(1.4); }
+.toggle label { margin: 0; color: var(--text); font-size: 17px; }
+#toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel2); padding: 12px 20px; border-radius: 10px; display: none; z-index: 10; max-width: 90vw; }
+.steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; }
+.steps span { padding: 6px 14px; border-radius: 999px; background: var(--panel2); color: var(--muted); font-size: 15px; }
+.steps span.on { background: var(--accent); color: var(--text); } .steps span.done { color: var(--ok); }
+.wz { display: none; } .wz.on { display: block; }
+.pairbox { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+.qr { background: #fff; padding: 10px; border-radius: 10px; line-height: 0; } .qr svg { width: 220px; height: 220px; }
+.emu { background: var(--panel2); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+.emu .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0; color: var(--text); font-size: 18px; }
+.emu .head input { width: auto; transform: scale(1.4); }
+.emu .head b { font-size: 22px; }
+.emu .path { color: var(--muted); font-size: 14px; margin: 6px 0 10px; }
+.emu .group { display: flex; gap: 10px; align-items: baseline; }
+.emu .group > small { color: var(--muted); width: 80px; flex: 0 0 80px; }
+.choice { display: flex; gap: 12px; align-items: flex-start; background: var(--panel2); border: 2px solid transparent; border-radius: 10px; padding: 14px; margin: 8px 0; cursor: pointer; color: var(--text); font-size: 17px; }
+.choice input { width: auto; transform: scale(1.3); margin-top: 5px; }
+.choice.disabled { opacity: .55; cursor: default; }
+.choice b { display: block; }
+#modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: flex-start; justify-content: center; z-index: 20; padding: 40px 16px; overflow: auto; }
+#modal.on { display: flex; }
+#modal .card { width: 100%; max-width: 900px; }
+[data-collapse].collapsed .collapsible { display: none; }
+.notice { border-left: 4px solid var(--warn); background: #2a2210; border-radius: 8px; padding: 12px 16px; margin: 14px 0; }
+.notice b { color: #fcd34d; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RomM <span>Sync</span></h1>
+  <nav id="tabs">
+    <button class="tab active" data-tab="home">Status</button>
+    <button class="tab" data-tab="library">Library</button>
+    <button class="tab" data-tab="downloads">Downloads</button>
+    <button class="tab" data-tab="settings">Settings</button>
+    <button class="tab" data-tab="log">Log</button>
+  </nav>
+  <div id="conn">Connecting</div>
+</header>
+<main>
+
+<section id="pair">
+  <div class="card">
+    <div class="steps" id="wzSteps"><span data-s="1">Server</span><span data-s="2">Pair</span><span data-s="3">Emulators</span><span data-s="4">First sync</span><span data-s="5">Finish</span></div>
+
+    <div class="wz" id="wz1">
+      <h2>Connect to RomM</h2>
+      <p class="muted">RomM 5.2.0 or newer.</p>
+      <label for="srv">Server address</label>
+      <input id="srv" placeholder="https://romm.example.com or 192.168.1.10:8080" autocomplete="off">
+      <div class="row" style="margin-top:14px"><button class="primary" id="pairStart">Continue</button></div>
+      <details style="margin-top:18px">
+        <summary class="muted">Use a pairing code instead</summary>
+        <label for="pcode">Pairing code from RomM (Profile, Client API Tokens)</label>
+        <div class="row"><input id="pcode" placeholder="ABCD2345" autocomplete="off"><button id="pairCode2">Pair</button></div>
+      </details>
+    </div>
+
+    <div class="wz" id="wz2">
+      <h2>Approve this console</h2>
+      <div class="pairbox">
+        <div class="qr" id="pairQr"></div>
+        <div>
+          <p>Scan the code with your phone, or open this link while signed in to RomM:</p>
+          <p><code id="pairUrl"></code></p>
+          <div class="code" id="pairCode"></div>
+          <p class="muted">Waiting for approval</p>
+        </div>
+      </div>
+      <div class="row"><button id="wzBack2">Back</button></div>
+    </div>
+
+    <div class="wz" id="wz3">
+      <h2>Emulators</h2>
+      <p class="muted">Folders are read from each emulator's own settings. Nothing is changed.</p>
+      <div id="emus"><p class="muted">Looking for emulators</p></div>
+      <div id="ps2Choice" style="display:none">
+        <h3>PlayStation 2 memory cards</h3>
+        <p class="muted">LRPS2 keeps every game on one shared memory card by default, and RomM stores saves per game. Pick how PS2 saves are handled.</p>
+        <label class="choice"><input type="radio" name="ps2" value="per_game" checked><div>
+          <b>One memory card per game</b>
+          <span class="muted">Works with any RomM version. In RetroArch, open the LRPS2 core options and turn off Shared Memory Cards. Saves already on the shared card stay there.</span>
+        </div></label>
+        <label class="choice" id="ps2BackupChoice"><input type="radio" name="ps2" value="backup"><div>
+          <b>Back up the shared memory card</b>
+          <span class="muted">Needs RomM 5.3.0 or newer. The whole card is uploaded when it changes and can be restored from Settings. It is not merged with other devices.</span>
+          <div class="warn" id="ps2BackupNote"></div>
+        </div></label>
+      </div>
+      <div class="row" style="margin-top:14px"><button class="primary" id="wzEmus">Continue</button></div>
+    </div>
+
+    <div class="wz" id="wz4">
+      <h2>First sync</h2>
+      <p class="muted">Nothing has been transferred yet. This is what the first sync will do.</p>
+      <div id="preview"><p class="muted">Checking</p></div>
+      <label for="wzPolicy">If a save is different here and on RomM</label>
+      <select id="wzPolicy">
+        <option value="ask">Ask me each time</option>
+        <option value="newest">Keep the newest</option>
+        <option value="local">Keep the one on this console</option>
+        <option value="server">Keep the one on RomM</option>
+      </select>
+      <div class="notice">
+        <b>Back up your saves first.</b> Before the first sync, copy your save folders somewhere safe (FTP or a USB drive). RomM Sync keeps local backups before it replaces a file, but a copy of your own is the only guarantee.
+        <div class="toggle" style="margin-top:10px"><input type="checkbox" id="wzBackedUp"><label for="wzBackedUp">I have backed up my saves</label></div>
+      </div>
+      <div class="row"><button id="wzBack4">Back</button><button id="wzRefresh">Check again</button><button class="primary" id="wzPreviewOk" disabled>Continue</button></div>
+    </div>
+
+    <div class="wz" id="wz5">
+      <h2>Background sync</h2>
+      <div class="toggle"><input type="checkbox" id="wzChange" checked><label for="wzChange">Upload saves as soon as they change</label></div>
+      <div class="toggle"><input type="checkbox" id="wzExit" checked><label for="wzExit">Sync when a game closes</label></div>
+      <div class="toggle"><input type="checkbox" id="wzStart" checked><label for="wzStart">Download new saves when a game starts</label></div>
+      <div class="toggle"><input type="checkbox" id="wzNotify" checked><label for="wzNotify">Notifications</label></div>
+      <label for="wzInterval">Sync every (minutes, 0 to turn off)</label><input id="wzInterval" type="number" min="0" value="15">
+      <h3>Start with the console</h3>
+      <div id="autostart"><p class="muted">Checking etaHEN</p></div>
+      <div class="row" style="margin-top:16px"><button id="wzBack5">Back</button><button class="primary" id="wzFinish">Finish</button></div>
+    </div>
+    <p class="err" id="pairErr"></p>
+  </div>
+</section>
+
+<section id="home" class="active">
+  <div class="card">
+    <div class="row">
+      <h2 style="margin:0">Saves</h2>
+      <button class="primary" id="syncNow">Sync now</button>
+    </div>
+    <p id="syncPhase" class="muted"></p>
+    <div class="stats" id="stats"></div>
+  </div>
+  <div class="card" id="conflictCard" style="display:none">
+    <h2 class="warn">Conflicts</h2>
+    <p class="muted">Changed here and on RomM. The one you don't keep is backed up.</p>
+    <table><thead><tr><th>Game</th><th>This console</th><th>RomM</th><th></th></tr></thead><tbody id="conflicts"></tbody></table>
+  </div>
+  <div class="card">
+    <h2>Recent syncs</h2>
+    <table><thead><tr><th>When</th><th>Reason</th><th>Uploaded</th><th>Downloaded</th><th>States</th><th>Result</th></tr></thead><tbody id="history"></tbody></table>
+  </div>
+  <div class="card" id="strayCard" style="display:none">
+    <h2 class="warn">Saves in the wrong folder</h2>
+    <p class="muted">The emulator doesn't read these, so they aren't synced.</p>
+    <table><thead><tr><th>Game</th><th>Found at</th><th>Emulator reads</th><th></th></tr></thead><tbody id="strays"></tbody></table>
+  </div>
+  <div class="card" id="unmatchedCard" style="display:none">
+    <h2>Games not found in RomM</h2>
+    <p class="muted">Their saves aren't synced. The file name has to match the one in RomM.</p>
+    <ul id="unmatched" class="muted"></ul>
+    <button id="rescan">Try again</button>
+  </div>
+</section>
+
+<section id="library">
+  <div class="card" id="platCard">
+    <h2>Platforms</h2>
+    <div class="plats" id="platforms"></div>
+  </div>
+  <div class="card" id="romCard" style="display:none">
+    <div class="row">
+      <button id="backPlat">Platforms</button>
+      <h2 style="margin:0" id="platTitle"></h2>
+      <button id="biosBtn">Download BIOS</button>
+    </div>
+    <p class="muted" id="platInfo"></p>
+    <div class="row" style="margin-bottom:14px"><input id="search" placeholder="Search" style="flex:1 1 200px;width:auto"><button id="searchBtn">Search</button>
+      <div class="seg fixed"><button id="viewGrid">Grid</button><button id="viewTable">Table</button></div></div>
+    <div id="roms"></div>
+    <div class="row" style="margin-top:14px"><button id="more" style="display:none">Load more</button></div>
+  </div>
+</section>
+
+<section id="downloads">
+  <div class="card">
+    <div class="row">
+      <h2 style="margin:0">Downloads</h2>
+      <button id="clearDl">Clear finished</button>
+    </div>
+    <div id="dl" style="margin-top:8px"><p class="muted">Nothing here yet.</p></div>
+  </div>
+</section>
+
+<section id="settings">
+  <div class="card">
+    <h2>Server</h2>
+    <p id="srvInfo"></p>
+    <div class="row"><button id="tileBtn">Add home screen tile</button><button id="rerunSetup">Run setup again</button><button class="danger" id="forget">Unpair</button></div>
+    <h3>PS4 and PS5 packages</h3>
+    <p class="muted">Add these feeds to FPKGi. They use your RomM username and password.</p>
+    <p><code id="feed4"></code><br><code id="feed5"></code></p>
+  </div>
+  <div class="card">
+    <h2>Sync</h2>
+    <label for="devname">Device name</label><input id="devname">
+    <label for="interval">Sync every (minutes, 0 to turn off)</label><input id="interval" type="number" min="0">
+    <div class="toggle"><input type="checkbox" id="onchange"><label for="onchange">Upload saves as soon as they change</label></div>
+    <div class="toggle"><input type="checkbox" id="onexit"><label for="onexit">Sync when a game closes</label></div>
+    <div class="toggle"><input type="checkbox" id="onstart"><label for="onstart">Download new saves when a game starts</label></div>
+    <div class="toggle"><input type="checkbox" id="notify"><label for="notify">Notifications</label></div>
+    <div class="toggle"><input type="checkbox" id="tls"><label for="tls">Verify TLS certificates</label></div>
+    <label for="policy">If a save is different here and on RomM</label>
+    <select id="policy">
+      <option value="ask">Ask me each time</option>
+      <option value="newest">Keep the newest</option>
+      <option value="local">Keep the one on this console</option>
+      <option value="server">Keep the one on RomM</option>
+    </select>
+    <label for="states">Save states</label>
+    <select id="states">
+      <option value="off">Don't sync</option>
+      <option value="upload">Upload only</option>
+      <option value="sync">Upload and download</option>
+    </select>
+    <label for="serverVersions">Versions kept on RomM per save (0 keeps all)</label><input id="serverVersions" type="number" min="0" max="100">
+    <label for="slot">RomM save slot</label><input id="slot">
+    <label for="concurrency">Downloads at once</label><select id="concurrency"></select>
+    <label for="backups">Local backups per save</label><input id="backups" type="number" min="0">
+    <div class="row" style="margin-top:16px"><button class="primary" id="saveCfg">Save</button></div>
+  </div>
+  <div class="card" id="ps2Card" style="display:none">
+    <h2>PlayStation 2 memory cards</h2>
+    <label for="ps2Mode">Mode</label>
+    <select id="ps2Mode">
+      <option value="per_game">One memory card per game</option>
+      <option value="backup">Back up the shared memory card (RomM 5.3.0+)</option>
+    </select>
+    <div id="ps2Status" style="margin-top:12px"></div>
+  </div>
+  <div class="card" data-collapse="folders">
+    <div class="row"><h2 style="margin:0">Folders on this console</h2><button class="small fixed" data-toggle>Expand</button></div>
+    <div class="collapsible">
+      <table style="margin-top:12px"><thead><tr><th>Platforms</th><th>Games</th><th>Saves</th><th>States</th><th>BIOS</th></tr></thead><tbody id="paths"></tbody></table>
+    </div>
+  </div>
+  <div class="card" data-collapse="profiles">
+    <div class="row"><h2 style="margin:0">Emulator profiles</h2><button class="small fixed" data-toggle>Expand</button></div>
+    <div class="collapsible">
+      <p class="muted">JSON describing each emulator's folders and platforms. See the README.</p>
+      <textarea id="profiles" spellcheck="false"></textarea>
+      <div class="row" style="margin-top:12px"><button class="primary" id="saveProfiles">Save profiles</button><button id="resetProfiles">Reset to defaults</button></div>
+    </div>
+  </div>
+</section>
+
+<section id="log"><div class="card"><div class="row"><h2 style="margin:0">Log</h2><button id="refreshLog">Refresh</button></div><pre id="logText"></pre></div></section>
+</main>
+<div id="modal"><div class="card">
+  <div class="row"><h2 style="margin:0" id="histTitle">History</h2><button id="histClose">Close</button></div>
+  <div id="histBody"></div>
+</div></div>
+<div id="toast"></div>
+
+<script><!--INCLUDE:third_party/qrcode.js--></script>
+<script>
+"use strict";
+var $ = function (id) { return document.getElementById(id); };
+var each = function (sel, fn) { Array.prototype.forEach.call(document.querySelectorAll(sel), fn); };
+var state = { status: null, platform: null, offset: 0, total: 0, items: [], dl: {} };
+
+function api(method, path, body) {
+  var opt = { method: method, headers: {} };
+  if (body !== undefined) { opt.headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(body); }
+  return fetch(path, opt).then(function (r) {
+    var ct = r.headers.get("Content-Type") || "";
+    var p = ct.indexOf("json") >= 0 ? r.json() : r.text();
+    return p.then(function (d) { if (!r.ok) throw new Error((d && d.error) || ("HTTP " + r.status)); return d; });
+  });
+}
+function toast(msg, isErr) {
+  var t = $("toast"); t.textContent = msg; t.style.color = isErr ? "var(--err)" : "";
+  t.style.display = "block"; clearTimeout(toast.t); toast.t = setTimeout(function () { t.style.display = "none"; }, 4000);
+}
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return "&#" + c.charCodeAt(0) + ";"; }); }
+function fmtSize(b) { if (!b) return "0 B"; var u = ["B", "KB", "MB", "GB"], i = 0; while (b >= 1024 && i < 3) { b /= 1024; i++; } return b.toFixed(i ? 1 : 0) + " " + u[i]; }
+function fmtTime(t) { return t ? new Date(t * 1000).toLocaleString() : "never"; }
+function ago(t) {
+  if (!t) return "never";
+  var s = Math.round(Date.now() / 1000 - t);
+  if (s < 60) return s + "s ago"; if (s < 3600) return Math.round(s / 60) + " min ago"; if (s < 86400) return Math.round(s / 3600) + " h ago";
+  return fmtTime(t);
+}
+function fmtEta(sec) {
+  if (!isFinite(sec) || sec <= 0) return "";
+  if (sec < 60) return Math.ceil(sec) + "s left"; if (sec < 3600) return Math.ceil(sec / 60) + " min left";
+  return (sec / 3600).toFixed(1) + " h left";
+}
+function pill(text, cls) { return '<span class="pill ' + (cls || "") + '">' + esc(text) + "</span>"; }
+function stat(v, label, cls) { return '<div class="stat"><b class="' + (cls || "") + '">' + esc(v) + "</b><small>" + esc(label) + "</small></div>"; }
+
+// Tabs
+function showTab(name) {
+  var ready = state.status && state.status.paired && state.status.setup_complete;
+  if (!ready && name !== "log") name = "pair";
+  each("section", function (s) { s.classList.toggle("active", s.id === name); });
+  each(".tab", function (t) { t.classList.toggle("active", t.dataset.tab === name); });
+  $("tabs").style.display = ready ? "" : "none";
+  try { localStorage.setItem("tab", name); } catch (e) {}
+  if (name === "library" && !$("platforms").children.length) loadPlatforms();
+  if (name === "settings") loadSettings();
+  if (name === "log") loadLog();
+  if (name === "downloads") loadDownloads();
+}
+each(".tab", function (t) { t.onclick = function () { showTab(t.dataset.tab); }; });
+
+// Status
+function renderStatus(s) {
+  state.status = s;
+  $("conn").innerHTML = s.paired
+    ? '<span class="ok">&#9679;</span> ' + esc(s.username || "") + " at " + esc(s.server_url.replace(/^https?:\/\//, ""))
+    : '<span class="warn">&#9679;</span> Not paired';
+  if (!s.paired || !s.setup_complete) {
+    if (!document.querySelector("#pair.active") && !document.querySelector("#log.active")) showTab("pair");
+    wizardFromStatus(s);
+    return;
+  }
+  if (document.querySelector("#pair.active")) showTab("home");
+  var sy = s.sync;
+  $("syncNow").disabled = sy.running;
+  $("syncPhase").textContent = sy.running ? "Syncing: " + sy.phase : "Last sync " + ago(sy.last_run) + (s.foreground ? ", playing " + s.foreground : "");
+  var last = sy.history.length ? sy.history[sy.history.length - 1] : null;
+  $("stats").innerHTML =
+    stat(sy.tracked_saves, "saves tracked") +
+    stat(sy.conflicts.length, "conflicts", sy.conflicts.length ? "warn" : "") +
+    stat(last ? (last.error ? "Failed" : "OK") : "None", "last sync", last && last.error ? "err" : "ok") +
+    stat(s.ip ? s.ip + ":" + s.web_port : "", "web address");
+
+  $("conflictCard").style.display = sy.conflicts.length ? "" : "none";
+  $("conflicts").innerHTML = sy.conflicts.map(function (c) {
+    return "<tr><td>" + esc(c.rom_name || ("Game " + c.rom_id)) + "<br><small class=muted>" + esc(c.path) + "</small></td>" +
+      "<td>" + fmtTime(c.local_mtime) + "</td><td>" + esc((c.server_updated_at || "").replace("T", " ").slice(0, 19)) + " UTC</td>" +
+      '<td><button class="small" data-keep="local" data-path="' + esc(c.path) + '">Keep this one</button> <button class="small" data-keep="server" data-path="' + esc(c.path) + '">Keep RomM</button></td></tr>';
+  }).join("");
+
+  $("history").innerHTML = sy.history.slice().reverse().slice(0, 10).map(function (h) {
+    var result = h.error ? '<span class="err">' + esc(h.error) + "</span>"
+      : h.conflicts ? '<span class="warn">' + h.conflicts + " conflict" + (h.conflicts > 1 ? "s" : "") + "</span>"
+      : '<span class="ok">OK</span>';
+    if (h.failed) result += ' <span class="err">' + h.failed + " failed</span>";
+    if (h.cards_uploaded) result += " " + pill("memory card backed up");
+    return "<tr><td>" + ago(h.time) + "</td><td>" + esc(h.reason) + "</td><td>" + h.uploaded + "</td><td>" + h.downloaded +
+      (h.deferred ? ' <small class="muted">(' + h.deferred + " waiting for the game to close)</small>" : "") + "</td><td>" + h.states_uploaded + "</td><td>" + result + "</td></tr>";
+  }).join("") || '<tr><td colspan=6 class="muted">No syncs yet.</td></tr>';
+
+  var strays = sy.strays || [];
+  $("strayCard").style.display = strays.length ? "" : "none";
+  $("strays").innerHTML = strays.map(function (x) {
+    return "<tr><td>" + esc(x.rom_name || ("Game " + x.rom_id)) + (x.state ? " " + pill("state", "off") : "") + "</td><td><code>" + esc(x.path) + "</code></td><td><code>" + esc(x.expected_path) + "</code></td><td>" +
+      (x.expected_exists ? '<span class="muted">Already has a save there</span>' : '<button class="small" data-stray="' + esc(x.path) + '">Move</button>') + "</td></tr>";
+  }).join("");
+  $("unmatchedCard").style.display = sy.unmatched.length ? "" : "none";
+  $("unmatched").innerHTML = sy.unmatched.map(function (u) { return "<li>" + esc(u) + "</li>"; }).join("");
+}
+function poll() {
+  api("GET", "/api/status").then(renderStatus).catch(function () { $("conn").innerHTML = '<span class="err">&#9679;</span> Can\'t reach RomM Sync'; });
+  if (document.querySelector("#downloads.active")) loadDownloads();
+  if (document.querySelector("#library.active") && $("romCard").style.display !== "none") pollLibraryDownloads();
+}
+$("syncNow").onclick = function () { api("POST", "/api/sync").then(function () { toast("Syncing"); setTimeout(poll, 500); }).catch(function (e) { toast(e.message, 1); }); };
+$("conflicts").onclick = function (ev) {
+  var b = ev.target.closest("button"); if (!b) return;
+  b.disabled = true;
+  api("POST", "/api/conflicts/resolve", { path: b.dataset.path, keep: b.dataset.keep }).then(function () { toast("Done"); poll(); }).catch(function (e) { b.disabled = false; toast(e.message, 1); });
+};
+$("strays").onclick = function (ev) {
+  var b = ev.target.closest("button"); if (!b) return;
+  if (!confirm("Move this save to the folder the emulator reads? A backup is kept.")) return;
+  b.disabled = true;
+  api("POST", "/api/strays/move", { path: b.dataset.stray }).then(function () { toast("Moved"); setTimeout(poll, 1500); }).catch(function (e) { b.disabled = false; toast(e.message, 1); });
+};
+$("rescan").onclick = function () { api("POST", "/api/rescan").then(function () { toast("Checking again"); }); };
+
+// Setup wizard
+var wz = { step: 1, loaded: {} };
+function wzGo(n) {
+  wz.step = n;
+  each(".wz", function (d) { d.classList.toggle("on", d.id === "wz" + n); });
+  each("#wzSteps span", function (x) { var k = +x.dataset.s; x.classList.toggle("on", k === n); x.classList.toggle("done", k < n); });
+  $("pairErr").textContent = "";
+  if (n === 3 && !wz.loaded[3]) loadEmus();
+  if (n === 4) loadPreview();
+  if (n === 5) loadAutostart();
+}
+function renderQr(url) {
+  if (wz.qrFor === url) return;
+  wz.qrFor = url;
+  try { var q = qrcode(0, "M"); q.addData(url); q.make(); $("pairQr").innerHTML = q.createSvgTag(6, 2); }
+  catch (e) { $("pairQr").style.display = "none"; }
+}
+function wizardFromStatus(s) {
+  var p = s.pairing || {};
+  if (!s.paired) {
+    if (p.status === "pending") {
+      $("pairCode").textContent = p.user_code; $("pairUrl").textContent = p.verification_url; renderQr(p.verification_url);
+      if (wz.step !== 2) wzGo(2);
+    } else if (wz.step === 2) {
+      if (p.status === "error") { wzGo(1); $("pairErr").textContent = p.message; }
+    } else if (wz.step !== 1) wzGo(1);
+    return;
+  }
+  if (wz.step < 3) { toast(p.message || "Paired"); wzGo(3); }
+}
+$("pairStart").onclick = function () {
+  $("pairErr").textContent = ""; $("pairStart").disabled = true;
+  api("POST", "/api/pair/start", { server_url: $("srv").value }).then(function (p) {
+    $("pairStart").disabled = false; wizardFromStatus({ paired: false, pairing: p });
+  }).catch(function (e) { $("pairStart").disabled = false; $("pairErr").textContent = e.message; });
+};
+$("pairCode2").onclick = function () {
+  $("pairErr").textContent = "";
+  api("POST", "/api/pair/code", { server_url: $("srv").value, code: $("pcode").value.trim() }).then(poll).catch(function (e) { $("pairErr").textContent = e.message; });
+};
+$("wzBack2").onclick = function () { api("POST", "/api/pair/forget").then(function () { wzGo(1); }); };
+
+function serverAtLeast(v, want) {
+  var a = String(v || "0").split(".").map(Number), b = want.split(".").map(Number);
+  for (var i = 0; i < 3; i++) { if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i]; }
+  return true;
+}
+function emuCard(c) {
+  var plats = (c.profile && c.profile.platforms) || [];
+  var platPills = plats.map(function (p) {
+    if (p.sync_requires_option) return pill(p.dir, "warn");
+    return pill(p.dir, p.sync_saves === false ? "off" : "ok");
+  }).join("");
+  return '<div class="emu"><label class="head"><input type="checkbox" data-root="' + esc(c.root) + '" checked><b>' + esc(c.name) + "</b>" +
+    (c.title_id ? pill(c.title_id, "off") : "") + "</label>" +
+    '<div class="path">' + esc(c.root) + "</div>" +
+    (c.cores.length ? '<div class="group"><small>Cores</small><div>' + c.cores.map(function (x) { return pill(x); }).join("") + "</div></div>" : "") +
+    (plats.length ? '<div class="group"><small>Platforms</small><div>' + platPills + "</div></div>" : "") + "</div>";
+}
+function loadEmus() {
+  $("emus").innerHTML = '<p class="muted">Looking for emulators</p>';
+  api("GET", "/api/setup/detect").then(function (list) {
+    wz.loaded[3] = true;
+    if (!list.length) {
+      $("emus").innerHTML = '<p class="warn">No emulators found.</p><p class="muted">You can continue with the default RetroArch profile and change folders later in Settings.</p>';
+      $("ps2Choice").style.display = "none";
+      return;
+    }
+    $("emus").innerHTML = list.map(emuCard).join("") +
+      '<p class="muted">' + pill("synced", "ok") + pill("download only", "off") + pill("depends on a core option", "warn") + "</p>";
+    var hasPs2 = list.some(function (c) { return (c.cores || []).indexOf("LRPS2") >= 0; });
+    $("ps2Choice").style.display = hasPs2 ? "" : "none";
+    var v = state.status && state.status.server_version, ok = serverAtLeast(v, "5.3.0");
+    var backup = document.querySelector('input[name=ps2][value=backup]');
+    backup.disabled = !ok;
+    $("ps2BackupChoice").classList.toggle("disabled", !ok);
+    $("ps2BackupNote").textContent = ok ? "" : "Your server runs RomM " + (v || "an older version") + ".";
+    if (!ok) document.querySelector('input[name=ps2][value=per_game]').checked = true;
+  }).catch(function (e) { $("emus").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
+}
+function ps2Mode() { var r = document.querySelector("input[name=ps2]:checked"); return r ? r.value : "per_game"; }
+$("wzEmus").onclick = function () {
+  var roots = [];
+  each("#emus input[data-root]", function (x) { if (x.checked) roots.push(x.dataset.root); });
+  api("POST", "/api/setup/emulators", { roots: roots })
+    .then(function () { return api("POST", "/api/config", { ps2_cards: ps2Mode() }); })
+    .then(function () { wzGo(4); }).catch(function (e) { $("pairErr").textContent = e.message; });
+};
+
+function previewList(title, items, cls) {
+  if (!items.length) return "";
+  return '<details><summary><b class="' + (cls || "") + '">' + items.length + "</b> " + esc(title) + "</summary><ul>" + items.map(function (x) {
+    return "<li>" + esc(x.game || "") + ' <small class="muted"><code>' + esc(x.path) + "</code> " + esc(x.note || "") + "</small></li>";
+  }).join("") + "</ul></details>";
+}
+function loadPreview() {
+  $("preview").innerHTML = '<p class="muted">Checking</p>';
+  api("GET", "/api/setup/preview").then(function (p) {
+    $("preview").innerHTML = '<div class="stats" style="margin-bottom:12px">' +
+      stat(p.local_games, "games on this console") + stat(p.local_saves, "saves on this console") +
+      stat(p.uploads.length, "to upload") + stat(p.downloads.length, "to download") +
+      stat(p.conflicts.length, "different on both", p.conflicts.length ? "warn" : "") + stat(p.in_sync, "already in sync") + "</div>" +
+      previewList("to upload", p.uploads) +
+      previewList("to download", p.downloads) +
+      previewList("different here and on RomM", p.conflicts, "warn") +
+      previewList("in the wrong folder, left alone", (p.strays || []).map(function (x) { return { game: x.rom_name, path: x.path }; }), "warn") +
+      previewList("games not found in RomM", (p.unmatched || []).map(function (u) { return { path: u }; })) +
+      (p.not_on_console ? '<p class="muted">' + p.not_on_console + " saves on RomM are for games that aren't on this console.</p>" : "");
+  }).catch(function (e) { $("preview").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
+}
+$("wzBackedUp").onchange = function () { $("wzPreviewOk").disabled = !this.checked; };
+$("wzBack4").onclick = function () { wz.loaded[3] = false; wzGo(3); };
+$("wzRefresh").onclick = loadPreview;
+$("wzPreviewOk").onclick = function () { wzGo(5); };
+
+function loadAutostart() {
+  api("GET", "/api/autostart").then(function (a) {
+    var h;
+    if (!a.etahen) h = '<p class="muted">etaHEN not found. Load the payload after each boot.</p>';
+    else if (a.enabled) h = '<p class="ok">Starts with etaHEN.</p><button id="asOff">Turn off</button>';
+    else if (a.installed) h = '<p class="muted">Installed at <code>' + esc(a.path) + '</code></p><button class="primary" id="asOn">Start with the console</button>';
+    else h = '<p class="muted">etaHEN needs a copy of <code>romm-sync.elf</code>. Pick the file from a computer, or run <code>make install</code>.</p><div class="row"><input type="file" id="asFile" accept=".elf"><button class="primary" id="asUpload">Upload</button></div>';
+    $("autostart").innerHTML = h;
+    if ($("asOn")) $("asOn").onclick = function () { api("POST", "/api/autostart", { enable: true }).then(loadAutostart).catch(function (e) { toast(e.message, 1); }); };
+    if ($("asOff")) $("asOff").onclick = function () { api("POST", "/api/autostart", { enable: false }).then(loadAutostart); };
+    if ($("asUpload")) $("asUpload").onclick = function () {
+      var f = $("asFile").files[0]; if (!f) { toast("Pick romm-sync.elf first", 1); return; }
+      $("asUpload").disabled = true; $("asUpload").textContent = "Uploading";
+      fetch("/api/autostart/upload", { method: "POST", body: f }).then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error); }); })
+        .then(function () { toast("Autostart on"); loadAutostart(); }).catch(function (e) { toast(e.message, 1); loadAutostart(); });
+    };
+  });
+}
+$("wzBack5").onclick = function () { wzGo(4); };
+$("wzFinish").onclick = function () {
+  $("wzFinish").disabled = true;
+  api("POST", "/api/setup/finish", {
+    conflict_policy: $("wzPolicy").value, sync_on_change: $("wzChange").checked, sync_on_game_exit: $("wzExit").checked,
+    sync_on_game_start: $("wzStart").checked, notify: $("wzNotify").checked, sync_interval_min: +$("wzInterval").value
+  }).then(function () { $("wzFinish").disabled = false; toast("First sync started"); state.status.setup_complete = true; showTab("home"); poll(); })
+    .catch(function (e) { $("wzFinish").disabled = false; $("pairErr").textContent = e.message; });
+};
+$("rerunSetup").onclick = function () {
+  if (!confirm("Run setup again? Background sync pauses until you finish.")) return;
+  api("POST", "/api/setup/restart").then(function () {
+    state.status.setup_complete = false; wz.loaded = {}; $("wzBackedUp").checked = false; $("wzPreviewOk").disabled = true;
+    wzGo(3); showTab("pair");
+  });
+};
+
+// Library
+function loadPlatforms() {
+  $("platforms").innerHTML = '<p class="muted">Loading</p>';
+  api("GET", "/api/platforms").then(function (list) {
+    list.sort(function (a, b) { return (b.profile ? 1 : 0) - (a.profile ? 1 : 0) || a.name.localeCompare(b.name); });
+    state.platforms = list;
+    $("platforms").innerHTML = list.map(function (p) {
+      // RomM's own platform icons; v= refreshes copies cached before they were sized.
+      var icon = "/cover?v=2&p=" + encodeURIComponent("/assets/platforms/" + p.slug.toLowerCase() + ".svg");
+      var alt = "/cover?v=2&p=" + encodeURIComponent("/assets/platforms/" + p.fs_slug.toLowerCase() + ".svg");
+      return '<button class="plat" data-id="' + p.id + '"><div class="logo"><img alt="" src="' + icon + '" data-alt="' + alt + '" onerror="platIconError(this)"></div>' +
+        '<span class="n">' + esc(p.name) + "</span><small>" + p.rom_count + " games</small>" +
+        '<small class="' + (p.profile ? "ok" : "muted") + '">' + esc(p.profile || "No emulator") + "</small></button>";
+    }).join("") || '<p class="muted">No platforms on the server.</p>';
+  }).catch(function (e) { $("platforms").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
+}
+function platIconError(img) {
+  if (img.dataset.alt && img.src.indexOf(img.dataset.alt) < 0) { var a = img.dataset.alt; img.dataset.alt = ""; img.src = a; return; }
+  var name = img.closest(".plat").querySelector(".n").textContent;
+  var initials = name.replace(/[^A-Za-z0-9 ]/g, "").split(" ").map(function (w) { return /^[0-9]+$/.test(w) ? w : (w[0] || ""); }).join("").slice(0, 4);
+  img.parentNode.innerHTML = "<span>" + esc(initials.toUpperCase()) + "</span>";
+}
+$("platforms").onclick = function (ev) {
+  var b = ev.target.closest(".plat"); if (!b) return;
+  var p = state.platforms.filter(function (x) { return x.id == b.dataset.id; })[0];
+  state.platform = p;
+  $("platCard").style.display = "none"; $("romCard").style.display = "";
+  $("platTitle").textContent = p.name;
+  $("platInfo").innerHTML = p.profile ? pill(p.profile) + "<code>" + esc(p.rom_dir) + "</code>" : '<span class="warn">No emulator is set up for this platform. Add one in Settings.</span>';
+  $("biosBtn").style.display = p.profile && p.firmware_count ? "" : "none";
+  $("search").value = ""; loadRoms();
+};
+$("backPlat").onclick = function () { $("romCard").style.display = "none"; $("platCard").style.display = ""; };
+
+var romView = "grid"; try { romView = localStorage.getItem("romView") || "grid"; } catch (e) {}
+function setView(v) { romView = v; try { localStorage.setItem("romView", v); } catch (e) {} renderRoms(); }
+$("viewGrid").onclick = function () { setView("grid"); };
+$("viewTable").onclick = function () { setView("table"); };
+
+var CLOCK_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+function romJob(g) { var j = state.dl[g.id]; return j && (j.status === "queued" || j.status === "downloading") ? j : null; }
+function jobPct(j) { return j.total ? Math.min(100, Math.floor(j.done * 100 / j.total)) : 0; }
+function romButton(g) {
+  if (!state.platform.profile) return "";
+  var j = romJob(g);
+  if (j) return "<button disabled>" + (j.status === "queued" ? "Queued" : jobPct(j) + "%") + "</button>";
+  return g.installed ? '<button class="icon" data-hist="' + g.id + '" title="History" aria-label="History">' + CLOCK_ICON + '</button> <button class="danger" data-del="' + g.id + '">Remove</button>'
+    : '<button class="primary" data-dl="' + g.id + '">Download</button>';
+}
+function romStatus(g) {
+  var j = romJob(g);
+  if (j) return pill(j.status === "queued" ? "Queued" : jobPct(j) + "%", "warn");
+  return g.installed ? pill("Downloaded", "ok") : "";
+}
+// Updates the open platform as downloads progress, keeping focus on the same game.
+function syncLibraryDownloads(list) {
+  var dl = {};
+  list.forEach(function (j) { if (j.type === "rom" && !dl[j.rom_id]) dl[j.rom_id] = j; });
+  var sig = function () { return state.items.map(function (g) { return romButton(g) + g.installed; }).join("|"); };
+  var before = sig();
+  state.dl = dl;
+  state.items.forEach(function (g) { var j = dl[g.id]; if (j && j.status === "done") g.installed = true; });
+  if (sig() === before) return;
+  var f = document.activeElement, holder = f && f.closest ? f.closest("[data-rom]") : null;
+  renderRoms();
+  if (holder) { var el = document.querySelector('[data-rom="' + holder.dataset.rom + '"] button'); if (el) el.focus(); }
+}
+function coverUrl(g) { return "/cover?p=" + encodeURIComponent(g.cover); }
+function renderRoms() {
+  var items = state.items;
+  $("viewGrid").classList.toggle("on", romView === "grid"); $("viewTable").classList.toggle("on", romView === "table");
+  if (!items.length) { $("roms").innerHTML = '<p class="muted">' + (state.loading ? "Loading" : "No games found.") + "</p>"; return; }
+  if (romView === "table") {
+    $("roms").innerHTML = '<table class="romtable"><thead><tr><th></th><th>Name</th><th>File</th><th>Size</th><th></th><th></th></tr></thead><tbody>' +
+      items.map(function (g) {
+        return '<tr data-rom="' + g.id + '"><td>' + (g.cover ? '<img alt="" loading="lazy" src="' + coverUrl(g) + '" onerror="this.style.visibility=\'hidden\'">' : "") + "</td>" +
+          "<td>" + esc(g.name) + '</td><td class="muted">' + esc(g.fs_name) + "</td><td>" + fmtSize(g.size) + "</td><td>" + romStatus(g) + "</td><td>" + romButton(g) + "</td></tr>";
+      }).join("") + "</tbody></table>";
+    return;
+  }
+  $("roms").innerHTML = '<div class="grid">' + items.map(function (g) {
+    var cover = g.cover ? 'style="background-image:url(\'' + coverUrl(g) + '\')"' : "";
+    var j = romJob(g);
+    var badge = j ? '<span class="badge dl">' + (j.status === "queued" ? "Queued" : jobPct(j) + "%") + "</span>" : g.installed ? '<span class="badge">Downloaded</span>' : "";
+    return '<div class="rom" data-rom="' + g.id + '"><div class="cover" ' + cover + ">" + badge + '</div><div class="t">' + esc(g.name) + '</div><div class="s">' + fmtSize(g.size) + "</div>" + (g.installed && !romJob(g) ? '<div class="btns">' + romButton(g) + "</div>" : romButton(g)) + "</div>";
+  }).join("") + "</div>";
+}
+function loadRoms(append) {
+  var p = state.platform;
+  if (!append) { state.offset = 0; state.items = []; state.loading = true; renderRoms(); }
+  api("GET", "/api/roms?platform_id=" + p.id + "&offset=" + state.offset + "&limit=60&search=" + encodeURIComponent($("search").value)).then(function (r) {
+    state.loading = false;
+    state.total = r.total; state.offset += r.items.length;
+    state.items = (append ? state.items : []).concat(r.items);
+    renderRoms();
+    $("more").style.display = state.offset < state.total ? "" : "none";
+    pollLibraryDownloads();
+  }).catch(function (e) { state.loading = false; $("roms").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
+}
+$("searchBtn").onclick = function () { loadRoms(); };
+$("search").onkeydown = function (e) { if (e.key === "Enter") loadRoms(); };
+$("more").onclick = function () { loadRoms(true); };
+$("roms").onclick = function (ev) {
+  var b = ev.target.closest("button"); if (!b) return;
+  if (b.dataset.dl) api("POST", "/api/download", { rom_id: +b.dataset.dl }).then(function () { b.disabled = true; b.textContent = "Queued"; pollLibraryDownloads(); }).catch(function (e) { toast(e.message, 1); });
+  if (b.dataset.hist) showHistory(+b.dataset.hist);
+  if (b.dataset.del && confirm("Remove this game from the console? Its saves are kept.")) api("POST", "/api/delete", { rom_id: +b.dataset.del }).then(function () { toast("Removed"); loadRoms(); }).catch(function (e) { toast(e.message, 1); });
+};
+$("biosBtn").onclick = function () { api("POST", "/api/download", { platform_id: state.platform.id }).then(function () { toast("Downloading BIOS files"); }).catch(function (e) { toast(e.message, 1); }); };
+function historyTable(kind, list) {
+  if (!list.length) return '<p class="muted">Nothing on RomM yet.</p>';
+  list.sort(function (a, b) { return b.updated_at < a.updated_at ? -1 : 1; });
+  return "<table><thead><tr><th>Saved</th><th>File</th><th>From</th><th>Size</th><th></th></tr></thead><tbody>" + list.map(function (x, i) {
+    var when = new Date(x.updated_at).toLocaleString();
+    return "<tr><td>" + esc(when) + (kind === "save" && i === 0 ? " " + pill("latest", "ok") : "") + '</td><td class="muted">' + esc(x.file_name) + "</td><td>" +
+      esc(x.device || x.emulator || "") + "</td><td>" + fmtSize(x.size) + '</td><td><button class="small" data-restore-kind="' + kind + '" data-restore-id="' + x.id + '">Restore</button></td></tr>';
+  }).join("") + "</tbody></table>";
+}
+function showHistory(romId) {
+  var g = state.items.filter(function (x) { return x.id === romId; })[0];
+  $("histTitle").textContent = g ? g.name : "History";
+  $("histBody").innerHTML = '<p class="muted">Loading</p>';
+  $("modal").classList.add("on");
+  api("GET", "/api/history?rom_id=" + romId).then(function (h) {
+    $("histBody").innerHTML = "<h3>Saves</h3>" + historyTable("save", h.saves) + "<h3>Save states</h3>" + historyTable("state", h.states);
+    var first = $("histBody").querySelector("button"); if (first) first.focus();
+  }).catch(function (e) { $("histBody").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
+}
+$("histClose").onclick = function () { $("modal").classList.remove("on"); };
+$("histBody").onclick = function (ev) {
+  var b = ev.target.closest("button[data-restore-id]"); if (!b) return;
+  var kind = b.dataset.restoreKind;
+  if (!confirm(kind === "save" ? "Replace the save on this console with this version? The current one is backed up, and this version becomes the latest on RomM." : "Restore this save state? The current file is backed up.")) return;
+  b.disabled = true;
+  api("POST", "/api/restore", { kind: kind, id: +b.dataset.restoreId }).then(function () { toast("Restored"); $("modal").classList.remove("on"); }).catch(function (e) { b.disabled = false; toast(e.message, 1); });
+};
+
+function pollLibraryDownloads() { api("GET", "/api/downloads").then(syncLibraryDownloads).catch(function () {}); }
+
+// Downloads
+for (var i = 1; i <= 8; i++) $("concurrency").insertAdjacentHTML("beforeend", "<option>" + i + "</option>");
+$("clearDl").onclick = function () { api("POST", "/api/downloads/clear").then(loadDownloads); };
+$("dl").onclick = function (ev) {
+  var b = ev.target.closest("button[data-cancel]"); if (!b) return;
+  b.disabled = true;
+  api("POST", "/api/downloads/cancel", { id: +b.dataset.cancel }).then(loadDownloads).catch(function (e) { toast(e.message, 1); });
+};
+function downloadRow(d) {
+  var active = d.status === "queued" || d.status === "downloading";
+  var pct = d.total ? Math.min(100, Math.round(d.done * 100 / d.total)) : (d.status === "done" ? 100 : 0);
+  var meta;
+  if (d.status === "error") meta = '<span class="err">' + esc(d.error) + "</span>";
+  else if (d.status === "done") meta = '<span class="ok">Done</span> ' + fmtSize(d.total);
+  else if (d.status === "cancelled") meta = '<span class="muted">Cancelled</span>';
+  else if (d.status === "cancelling") meta = "Cancelling";
+  else if (d.status === "queued") meta = "Queued";
+  else meta = fmtSize(d.done) + (d.total ? " of " + fmtSize(d.total) : "") + (d.speed > 0 ? ", " + fmtSize(d.speed) + "/s" + (d.total ? ", " + fmtEta((d.total - d.done) / d.speed) : "") : "");
+  return '<div class="dl-item"><div class="row"><div>' + (d.platform ? pill(d.platform) : "") + (d.type === "firmware" ? pill("BIOS", "off") : "") + "<b>" + esc(d.name) + "</b>" +
+    '<div class="meta">' + meta + "</div></div>" + (active ? '<button class="small" data-cancel="' + d.id + '">Cancel</button>' : "") + "</div>" +
+    (active || d.status === "cancelling" ? '<div class="bar"><i style="width:' + pct + '%"></i></div>' : "") + "</div>";
+}
+function loadDownloads() {
+  api("GET", "/api/downloads").then(function (list) {
+    $("dl").innerHTML = list.map(downloadRow).join("") || '<p class="muted">Nothing here yet.</p>';
+    $("clearDl").disabled = !list.some(function (d) { return d.status === "done" || d.status === "error" || d.status === "cancelled"; });
+  });
+}
+
+// Settings
+function loadSettings() {
+  api("GET", "/api/config").then(function (c) {
+    $("srvInfo").innerHTML = "<code>" + esc(c.server_url) + "</code> " + pill("RomM " + (c.server_version || "?"), "off") + pill(c.username) +
+      '<br><small class="muted">Device ' + esc(c.device_id) + "</small>";
+    $("feed4").textContent = c.server_url + "/api/feeds/fpkgi/ps4";
+    $("feed5").textContent = c.server_url + "/api/feeds/fpkgi/ps5";
+    $("devname").value = c.device_name; $("interval").value = c.sync_interval_min;
+    $("onchange").checked = c.sync_on_change; $("onexit").checked = c.sync_on_game_exit; $("onstart").checked = c.sync_on_game_start;
+    $("states").value = c.states; $("serverVersions").value = c.server_versions; $("notify").checked = c.notify; $("tls").checked = c.tls_verify;
+    $("policy").value = c.conflict_policy; $("slot").value = c.slot; $("concurrency").value = c.download_concurrency; $("backups").value = c.keep_backups;
+    $("profiles").value = JSON.stringify(c.profiles, null, 2);
+  });
+  api("GET", "/api/paths").then(function (list) {
+    $("paths").innerHTML = list.map(function (m) {
+      var layouts = { psp: "PSP save folders", gci: "GameCube memory card files", wii: "Wii save folder" };
+      var saves = !m.save_dir ? pill("not synced", "off") + (m.sync_note ? '<br><small class="warn">' + esc(m.sync_note) + "</small>" : "")
+        : m.save_layout ? pill(layouts[m.save_layout] || m.save_layout, "ok") + "<br><small class=muted>synced as one zip per game</small>"
+        : "<code>" + esc(m.save_dir) + "</code>";
+      return "<tr><td>" + esc(m.platforms.split(",")[0]) + "<br><small class=muted>" + esc(m.emulator) + "</small></td><td><code>" + esc(m.rom_dir) + "</code></td><td>" + saves +
+        "</td><td>" + (m.state_dir ? "<code>" + esc(m.state_dir) + "</code>" : "") + "</td><td><code>" + esc(m.bios_dir) + "</code></td></tr>";
+    }).join("");
+    var ps2 = list.filter(function (m) { return m.emulator === "pcsx2"; })[0];
+    loadPs2(ps2);
+  });
+}
+function loadPs2(map) {
+  api("GET", "/api/memcards").then(function (mc) {
+    $("ps2Card").style.display = mc.lrps2 ? "" : "none";
+    $("ps2Mode").value = mc.mode;
+    $("ps2Mode").options[1].disabled = !mc.supported;
+    var h = "";
+    if (mc.mode === "per_game") {
+      h = map && map.save_dir ? '<p class="ok">One card per game is on. PS2 saves sync like any other save.</p>'
+        : '<p class="warn">LRPS2 still uses a shared card. Turn off Shared Memory Cards in the LRPS2 core options.</p>';
+    } else if (!mc.supported) {
+      h = '<p class="warn">Needs RomM 5.3.0 or newer. Your server runs ' + esc(mc.server_version || "an older version") + ".</p>";
+    } else {
+      h = "<table><thead><tr><th>Card</th><th>Last backup</th><th></th></tr></thead><tbody>" + mc.slots.map(function (s) {
+        return "<tr><td>Slot " + s.slot + "<br><small class=muted>" + esc(s.path) + "</small></td><td>" + (s.exists ? (s.backed_up_at ? ago(s.backed_up_at) : "Not yet") : '<span class="muted">No card</span>') +
+          '</td><td><button class="small" data-restore="' + s.slot + '">Restore from RomM</button></td></tr>';
+      }).join("") + "</tbody></table>";
+    }
+    $("ps2Status").innerHTML = h;
+  });
+}
+$("ps2Mode").onchange = function () { api("POST", "/api/config", { ps2_cards: this.value }).then(function () { toast("Saved"); loadSettings(); }); };
+$("ps2Status").onclick = function (ev) {
+  var b = ev.target.closest("button[data-restore]"); if (!b) return;
+  if (!confirm("Replace this memory card with the latest backup on RomM? The current card is backed up first.")) return;
+  b.disabled = true;
+  api("POST", "/api/memcards/restore", { slot: +b.dataset.restore }).then(function () { toast("Memory card restored"); loadSettings(); }).catch(function (e) { b.disabled = false; toast(e.message, 1); });
+};
+$("saveCfg").onclick = function () {
+  api("POST", "/api/config", {
+    device_name: $("devname").value, sync_interval_min: +$("interval").value, sync_on_change: $("onchange").checked,
+    sync_on_game_exit: $("onexit").checked, sync_on_game_start: $("onstart").checked, states: $("states").value, server_versions: +$("serverVersions").value,
+    notify: $("notify").checked, tls_verify: $("tls").checked, conflict_policy: $("policy").value, slot: $("slot").value,
+    keep_backups: +$("backups").value, download_concurrency: +$("concurrency").value
+  }).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, 1); });
+};
+$("saveProfiles").onclick = function () {
+  var p; try { p = JSON.parse($("profiles").value); } catch (e) { toast("Invalid JSON: " + e.message, 1); return; }
+  if (!Array.isArray(p)) { toast("Profiles must be a list", 1); return; }
+  api("POST", "/api/config", { profiles: p }).then(function () { toast("Saved"); $("platforms").innerHTML = ""; loadSettings(); }).catch(function (e) { toast(e.message, 1); });
+};
+$("resetProfiles").onclick = function () {
+  if (confirm("Replace your profiles with the defaults?")) api("POST", "/api/config", { reset_profiles: true }).then(function () { toast("Reset"); $("platforms").innerHTML = ""; loadSettings(); });
+};
+$("tileBtn").onclick = function () { api("POST", "/api/tile").then(function () { toast("Tile added"); }).catch(function (e) { toast(e.message, 1); }); };
+$("forget").onclick = function () { if (confirm("Unpair from this RomM server? Files on the console are kept.")) api("POST", "/api/pair/forget").then(function () { poll(); showTab("pair"); }); };
+
+// Collapsible settings cards, collapsed until opened. The choice sticks per browser.
+each("[data-collapse]", function (card) {
+  var key = "open:" + card.dataset.collapse, btn = card.querySelector("[data-toggle]");
+  var set = function (open) {
+    card.classList.toggle("collapsed", !open);
+    btn.textContent = open ? "Collapse" : "Expand";
+    try { localStorage.setItem(key, open ? "1" : ""); } catch (e) {}
+  };
+  var open = false; try { open = !!localStorage.getItem(key); } catch (e) {}
+  set(open);
+  btn.onclick = function () { set(card.classList.contains("collapsed")); };
+});
+
+function loadLog() { api("GET", "/api/log").then(function (t) { var pre = $("logText"); pre.textContent = t; pre.scrollTop = pre.scrollHeight; }); }
+$("refreshLog").onclick = loadLog;
+
+// Controller and arrow-key navigation
+function focusables() {
+  return Array.prototype.filter.call(document.querySelectorAll("button, input, select, textarea, summary"), function (el) { return el.offsetParent !== null && !el.disabled; });
+}
+function moveFocus(dx, dy) {
+  var list = focusables(), cur = document.activeElement;
+  if (list.indexOf(cur) < 0) { if (list[0]) list[0].focus(); return; }
+  var r = cur.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, best = null, bestD = 1e9;
+  list.forEach(function (el) {
+    if (el === cur) return;
+    var b = el.getBoundingClientRect(), ddx = b.left + b.width / 2 - cx, ddy = b.top + b.height / 2 - cy;
+    if ((dx && Math.sign(ddx) !== dx) || (dy && Math.sign(ddy) !== dy)) return;
+    if ((dx && Math.abs(ddx) < 4) || (dy && Math.abs(ddy) < 4)) return;
+    var d = dx ? Math.abs(ddx) + Math.abs(ddy) * 3 : Math.abs(ddy) + Math.abs(ddx) * 3;
+    if (d < bestD) { bestD = d; best = el; }
+  });
+  if (best) { best.focus(); best.scrollIntoView({ block: "nearest", behavior: "smooth" }); }
+}
+document.addEventListener("keydown", function (e) {
+  var t = e.target.tagName;
+  if (t === "TEXTAREA" || t === "SELECT" || (t === "INPUT" && (e.key === "ArrowLeft" || e.key === "ArrowRight"))) return;
+  var m = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (m) { e.preventDefault(); moveFocus(m[0], m[1]); }
+});
+var pads = {};
+function padLoop() {
+  var gps = navigator.getGamepads ? navigator.getGamepads() : [];
+  for (var i = 0; i < gps.length; i++) {
+    var g = gps[i]; if (!g) continue;
+    var prev = pads[i] || [], now = g.buttons.map(function (b) { return b.pressed; });
+    var edge = function (n) { return now[n] && !prev[n]; };
+    if (edge(12)) moveFocus(0, -1); if (edge(13)) moveFocus(0, 1); if (edge(14)) moveFocus(-1, 0); if (edge(15)) moveFocus(1, 0);
+    if (edge(0) && document.activeElement) document.activeElement.click();
+    if (edge(4) || edge(5)) {
+      var tabs = Array.prototype.slice.call(document.querySelectorAll(".tab")), a = tabs.findIndex(function (x) { return x.classList.contains("active"); });
+      var next = tabs[(a + (edge(5) ? 1 : tabs.length - 1)) % tabs.length]; if (next) showTab(next.dataset.tab);
+    }
+    pads[i] = now;
+  }
+  requestAnimationFrame(padLoop);
+}
+requestAnimationFrame(padLoop);
+
+api("GET", "/api/status").then(function (s) {
+  renderStatus(s);
+  var t = "home"; try { t = localStorage.getItem("tab") || "home"; } catch (e) {}
+  if (location.hash.length > 1) t = location.hash.slice(1);
+  var ready = s.paired && s.setup_complete;
+  showTab(ready ? (t === "pair" ? "home" : t) : "pair");
+  if (!ready) { wzGo(s.paired ? 3 : 1); wizardFromStatus(s); }
+}).catch(function () { $("conn").textContent = "Can't reach RomM Sync"; });
+setInterval(poll, 3000);
+</script>
+</body>
+</html>
