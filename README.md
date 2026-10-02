@@ -87,8 +87,6 @@ tools/ps5-build.sh    # PS5 build in Docker, output in build/ps5/
 tests/e2e.sh          # end-to-end tests against a mock RomM server
 ```
 
-[docs/ps5-platform-notes.md](docs/ps5-platform-notes.md) covers the PS5 side.
-
 ## License
 
 GPL-3.0. Parts of the PS5 code are adapted from [ftpsrv](https://github.com/ps5-payload-dev/ftpsrv) and [websrv](https://github.com/ps5-payload-dev/websrv) by John Törnblom. [cJSON](https://github.com/DaveGamble/cJSON) and [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) are MIT licensed.
