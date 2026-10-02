@@ -1,5 +1,7 @@
 # RomM Sync for PS5
 
+![Project Screenshot](assets/library.png)
+
 A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN + kstuff). Through my insatiable need to mod everything electronic I encounter, I had my 12.70 PS5 jailbroken the minute that P2JB was out. I maintain a RomM server to centralize all my _legal_ ROMs, saves, and savestates which all my devices sync with, and the PS5 needs similar treatment.
 
 - **Background save sync**
@@ -48,6 +50,10 @@ The setup walks you through five steps:
 5. Choosing when to sync in the background.
 
 **Back up your saves before the first sync.** Copy your emulator save folders to a computer or USB drive. RomM Sync keeps a local copy before replacing any file, but your own backup is the safest option.
+
+## Running
+
+Like all other ELF payloads, you'll need to inject it every time you inject your exploit and jailbreak. I suggest making it part of your autoloader list, so it will be chained along with your exploit to "start automatically".
 
 ## PS2 Memory Cards
 
