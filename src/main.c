@@ -22,6 +22,12 @@
 #include "web.h"
 
 #define MONITOR_INTERVAL_SEC 3
+/* The loop ticks every few seconds, so a longer gap means the console slept. */
+#define RESUME_GAP_SEC 60
+/* Ticks to wait for the network after waking before notifying anyway. */
+#define RESUME_NOTIFY_TICKS 10
+/* Both resume signals usually fire on the same wake; notify only once. */
+#define RESUME_NOTIFY_QUIET_SEC 120
 
 /* System apps, the browser and our own tile don't count as games. */
 static int is_game_title(const char *t) {
@@ -112,11 +118,28 @@ int main(void) {
     sync_request("startup");
 
     char current[32] = "";
-    time_t game_start = 0, exit_at = 0, now;
-    int have_title = 1;
+    time_t game_start = 0, exit_at = 0, now, last_tick = time(NULL), resume_notified = 0;
+    int have_title = 1, resume_ticks = 0;
     for (;;) {
         sleep(MONITOR_INTERVAL_SEC);
         now = time(NULL);
+        int resumed = 0;
+        if (now - last_tick > RESUME_GAP_SEC) {
+            LOGI("resumed from rest mode after %lds", (long)(now - last_tick));
+            resumed = 1;
+        }
+        if (web_take_reopened()) resumed = 1;
+        last_tick = now;
+        if (resumed && !resume_ticks && now - resume_notified > RESUME_NOTIFY_QUIET_SEC)
+            resume_ticks = RESUME_NOTIFY_TICKS;
+        if (resume_ticks > 0) {
+            plat_local_ip(ip, sizeof ip);
+            if (ip[0] || --resume_ticks == 0) {
+                resume_ticks = 0;
+                resume_notified = now;
+                plat_notify("RomM Sync resumed - http://%s:%d", ip[0] ? ip : "127.0.0.1", port);
+            }
+        }
 
         char title[32] = "";
         int fg = have_title ? plat_running_title(title, sizeof title) : -1;

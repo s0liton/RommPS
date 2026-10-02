@@ -622,23 +622,7 @@ static void *conn_thread(void *arg) {
     return NULL;
 }
 
-static void *accept_thread(void *arg) {
-    int srv = (int)(long)arg;
-    for (;;) {
-        int fd = accept(srv, NULL, NULL);
-        if (fd < 0) {
-            if (errno == EINTR) continue;
-            LOGE("accept failed: %s", strerror(errno));
-            sleep(1);
-            continue;
-        }
-        if (thread_start(conn_thread, (void *)(long)fd) != 0) close(fd);
-    }
-    return NULL;
-}
-
-int web_start(int port) {
-    g_started = time(NULL);
+static int open_listener(int port) {
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     if (srv < 0) return -1;
     int one = 1;
@@ -649,11 +633,65 @@ int web_start(int port) {
     a.sin_port = htons((uint16_t)port);
     a.sin_addr.s_addr = htonl(INADDR_ANY);
     if (bind(srv, (struct sockaddr *)&a, sizeof a) != 0 || listen(srv, 16) != 0) {
-        LOGE("cannot listen on port %d: %s", port, strerror(errno));
+        int err = errno;
         close(srv);
+        errno = err;
         return -1;
     }
-    thread_start(accept_thread, (void *)(long)srv);
-    LOGI("web UI listening on port %d", port);
-    return 0;
+    return srv;
+}
+
+static int g_port, g_srv = -1, g_reopened;
+
+int web_take_reopened(void) {
+    return __atomic_exchange_n(&g_reopened, 0, __ATOMIC_SEQ_CST);
+}
+
+/* Issue #1 - Rest mode tears down the console's sockets, and the listener never accepts
+ * again after wake-up. When accept keeps failing, open a fresh listener (ftpsrv
+ * does the same). A single failure (an aborted connection, running out of fds)
+ * is not enough, or we would announce a resume that never happened. */
+#define ACCEPT_FAILS_BEFORE_REOPEN 3
+
+static void *accept_thread(void *arg) {
+    (void)arg;
+    int fails = 0;
+    for (;;) {
+        if (g_srv < 0) {
+            g_srv = open_listener(g_port);
+            if (g_srv < 0) {
+                sleep(3);
+                continue;
+            }
+            LOGI("web UI listening again on port %d", g_port);
+            __atomic_store_n(&g_reopened, 1, __ATOMIC_SEQ_CST);
+        }
+        int fd = accept(g_srv, NULL, NULL);
+        if (fd < 0) {
+            if (errno == EINTR) continue;
+            if (++fails < ACCEPT_FAILS_BEFORE_REOPEN) {
+                LOGW("accept failed: %s", strerror(errno));
+                usleep(250 * 1000);
+                continue;
+            }
+            LOGW("accept failed (%s), reopening the listener", strerror(errno));
+            close(g_srv);
+            g_srv = -1;
+            fails = 0;
+            continue;
+        }
+        fails = 0;
+        if (thread_start(conn_thread, (void *)(long)fd) != 0) close(fd);
+    }
+    return NULL;
+}
+
+int web_start(int port) {
+    g_started = time(NULL);
+    g_port = port;
+    g_srv = open_listener(port);
+    if (g_srv < 0) LOGE("cannot listen on port %d: %s; retrying", port, strerror(errno));
+    else LOGI("web UI listening on port %d", port);
+    thread_start(accept_thread, NULL);
+    return g_srv < 0 ? -1 : 0;
 }
