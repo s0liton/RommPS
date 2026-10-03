@@ -31,6 +31,14 @@ int http_upload_file(const char *method, const char *url, const char *auth, cons
 int http_download(const char *url, const char *auth, const char *dest, int resume,
                   http_progress_fn progress, void *ud, http_resp *out);
 
+/* 1 if url's TLS certificate fails verification (self-signed, private CA). */
+int http_tls_untrusted(const char *url);
+
+/* For updates: always verify TLS certificates, whatever tls_verify says. */
+int http_get_verified(const char *url, http_resp *out);
+int http_download_verified(const char *url, const char *dest, http_progress_fn progress, void *ud,
+                           http_resp *out);
+
 /* URL-encode a query/path component into a malloc'd string. */
 char *http_escape(const char *s);
 

@@ -16,5 +16,6 @@ int library_cancel(int id, char *err, int en);
 int library_clear_finished(void);
 int library_delete_rom(int rom_id, char *err, int en);
 cJSON *library_downloads(void);
+int library_busy(void); /* a download is queued or running */
 
 #endif

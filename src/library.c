@@ -312,6 +312,14 @@ void library_init(void) {
     }
 }
 
+int library_busy(void) {
+    int busy = 0;
+    pthread_mutex_lock(&g_q_lock);
+    for (job *j = g_jobs; j && !busy; j = j->next) busy = j->status == JOB_QUEUED || j->status == JOB_RUNNING;
+    pthread_mutex_unlock(&g_q_lock);
+    return busy;
+}
+
 void library_wake(void) {
     pthread_mutex_lock(&g_q_lock);
     pthread_cond_broadcast(&g_q_cond);
@@ -501,6 +509,9 @@ cJSON *library_roms(int platform_id, const char *search, int offset, int limit, 
     }
     cJSON *out = cJSON_CreateObject();
     cJSON_AddNumberToObject(out, "total", jget_num(j, "total", 0));
+    /* First letter -> offset of its first game, for the A-Z ribbon. */
+    const cJSON *ci = cJSON_GetObjectItemCaseSensitive(j, "char_index");
+    if (cJSON_IsObject(ci)) cJSON_AddItemToObject(out, "char_index", cJSON_Duplicate(ci, 1));
     cJSON *items = cJSON_AddArrayToObject(out, "items");
     const cJSON *it;
     state_lock();

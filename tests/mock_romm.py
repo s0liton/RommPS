@@ -4,15 +4,18 @@ It is not RomM. Please don't point anything real at it.
 
 Negotiate follows backend/endpoints/sync.py from RomM 5.2.0.
 
-    python3 tests/mock_romm.py 8899
+    python3 tests/mock_romm.py 8899 [cert.pem]   (with a cert+key PEM, serves HTTPS)
 
 POST /_admin/save adds a save as if another device uploaded it.
 GET /_admin/dump returns everything the mock holds.
+GET /_github/release stands in for GitHub's latest-release API: it serves
+release.json from $MOCK_RELEASE_DIR, and /_github/assets/<name> the files next to it.
 """
 import email.parser
 import email.policy
 import hashlib
 import json
+import os
 import sys
 import threading
 from datetime import datetime, timezone
@@ -183,6 +186,13 @@ class H(BaseHTTPRequestHandler):
                 if pend["polls"] < 2:
                     return self.reply(400, {"detail": "authorization_pending"})
                 return self.reply(200, {"access_token": TOKEN, "device_id": DEVICE_ID, "scopes": [], "expires_at": None})
+            if parts[0] == "_github":
+                d = os.environ.get("MOCK_RELEASE_DIR", "")
+                name = "release.json" if p == "/_github/release" else parts[-1] if parts[1:2] == ["assets"] else ""
+                f = os.path.join(d, os.path.basename(name)) if d and name else ""
+                if not f or not os.path.isfile(f):
+                    return self.reply(404, {"message": "Not Found"})
+                return self.reply(200, raw=open(f, "rb").read(), ctype="application/octet-stream")
             if p == "/_admin/save" and method == "POST":
                 b = self.json_body()
                 import base64
@@ -216,10 +226,16 @@ class H(BaseHTTPRequestHandler):
             if p == "/api/roms":
                 ids = [int(x) for x in q.get("platform_ids", [])]
                 term = (qs("search_term") or "").lower()
-                items = [rom_public(r) for r in DB["roms"].values()
-                         if (not ids or r["platform_id"] in ids) and term in r["name"].lower() + r["fs_name"].lower()]
+                items = sorted((rom_public(r) for r in DB["roms"].values()
+                                if (not ids or r["platform_id"] in ids) and term in r["name"].lower() + r["fs_name"].lower()),
+                               key=lambda r: r["name"].lower())
+                char_index = {}
+                for i, r in enumerate(items):
+                    c = r["name"][:1].lower()
+                    char_index.setdefault(c if c.isalpha() else "0", i)
                 off, lim = int(qs("offset", 0)), int(qs("limit", 50))
-                return self.reply(200, {"items": items[off:off + lim], "total": len(items), "limit": lim, "offset": off})
+                return self.reply(200, {"items": items[off:off + lim], "total": len(items), "limit": lim, "offset": off,
+                                        "char_index": char_index})
             if len(parts) == 3 and parts[:2] == ["api", "roms"]:
                 return self.reply(200, rom_public(DB["roms"][int(parts[2])]))
             if len(parts) == 5 and parts[:2] == ["api", "roms"] and parts[3] == "content":
@@ -368,4 +384,10 @@ class H(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
-    ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
+    srv = ThreadingHTTPServer((os.environ.get("MOCK_HOST", "127.0.0.1"), port), H)
+    if len(sys.argv) > 2:
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(sys.argv[2])
+        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    srv.serve_forever()

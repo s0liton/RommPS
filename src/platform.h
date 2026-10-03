@@ -23,6 +23,11 @@ const char *plat_ca_bundle(void);
  * Returns 0 on success, -1 if unsupported/failed. */
 int plat_install_tile(int port);
 
+/* Starts a payload through the ELF loader on 127.0.0.1:9021. The new copy
+ * stops this one when it starts (plat_init). -1 with errno set on failure.
+ * Host: writes <data>/launched.elf. */
+int plat_launch_elf(const void *elf, size_t len);
+
 /* "ps5" or "host". */
 const char *plat_name(void);
 

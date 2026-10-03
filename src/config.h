@@ -23,6 +23,7 @@ typedef struct {
     int exit_delay_sec;
     int sync_states;          /* 0 off, 1 upload, 2 upload and download */
     int notify;
+    int update_check;         /* look for new releases once a day */
     int keep_backups;         /* local copies kept per save */
     int server_versions;      /* versions RomM keeps per save, 0 keeps all */
     int download_concurrency; /* library downloads running at once */

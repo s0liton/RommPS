@@ -1,25 +1,58 @@
-# Builds the PS5 payload and publishes a GitHub release when a version tag is pushed.
+# Builds the PS5 payload and publishes a GitHub release. Triggered either by:
 #
-#   git tag v1.0.0 && git push origin v1.0.0
+#   - merging a PR into main from a branch named with a version, e.g.
+#     release/v1.0.2 or v1.0.2-some-fix (the tag is created on the merge commit)
+#   - pushing a version tag manually: git tag v1.0.0 && git push origin v1.0.0
 name: Release
 
 on:
   push:
     tags: ["v*.*.*"]
+  pull_request:
+    types: [closed]
+    branches: [main]
 
 permissions:
   contents: write
 
 jobs:
   release:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.merged &&
+       contains(github.event.pull_request.head.ref, 'v'))
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve version
+        id: version
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tag="$GITHUB_REF_NAME"
+            sha="$GITHUB_SHA"
+          else
+            tag=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "$HEAD_REF" | head -n1 || true)
+            sha="${{ github.event.pull_request.merge_commit_sha }}"
+          fi
+          if [ -z "$tag" ]; then
+            echo "Branch '$HEAD_REF' has no vX.Y.Z version; skipping release."
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@v4
+        if: steps.version.outputs.tag
+        with:
+          ref: ${{ steps.version.outputs.sha }}
 
       - uses: docker/setup-buildx-action@v3
+        if: steps.version.outputs.tag
 
       # Same image tools/ps5-build.sh uses, cached between runs.
       - uses: docker/build-push-action@v6
+        if: steps.version.outputs.tag
         with:
           context: tools/docker
           tags: romm-sync-ps5sdk:v0.43
@@ -28,17 +61,40 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Build payload
-        run: tools/ps5-build.sh VERSION="${GITHUB_REF_NAME#v}"
+        if: steps.version.outputs.tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: tools/ps5-build.sh VERSION="${TAG#v}"
 
-      - name: Package
+      # manifest.json + manifest.sig let the payload verify in-app updates
+      # (src/update.c). The secret is the 64-hex-character key from
+      # tools/release-sign.c; "check" fails unless the payload trusts that key.
+      - name: Package and sign
+        if: steps.version.outputs.tag
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::RELEASE_SIGNING_KEY secret is not set; in-app updates need a signed release."
+            exit 1
+          fi
+          make tools
           mkdir dist
-          cp build/ps5/romm-sync.elf build/ps5/cacert.pem dist/
+          cp build/ps5/romm-sync.elf dist/
+          build/host/release-sign manifest "$TAG" dist/romm-sync.elf > dist/manifest.json
+          build/host/release-sign sign dist/manifest.json > dist/manifest.sig
+          build/host/release-sign check dist/manifest.json dist/manifest.sig
           cd dist && sha256sum * > SHA256SUMS
 
+      # Creates the tag on the target commit if it doesn't exist yet. A tag pushed
+      # by GITHUB_TOKEN does not re-trigger this workflow, so there's no double release.
       - name: Publish release
+        if: steps.version.outputs.tag
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          SHA: ${{ steps.version.outputs.sha }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+          gh release create "$TAG" dist/* \
+            --target "$SHA" --title "$TAG" --generate-notes

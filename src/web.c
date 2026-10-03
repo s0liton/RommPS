@@ -24,6 +24,7 @@
 #include "state.h"
 #include "sync.h"
 #include "ui_index.h" /* generated from ui/index.html */
+#include "update.h"
 #include "util.h"
 
 #define MAX_HEADER (16 * 1024)
@@ -364,6 +365,20 @@ static void route(request *r) {
     if (is_post && !strcmp(r->path, "/api/pair/forget")) {
         pair_forget();
         send_ok(fd);
+        return;
+    }
+    if (is_get && !strcmp(r->path, "/api/update")) {
+        send_json(fd, 200, update_status());
+        return;
+    }
+    if (is_post && !strcmp(r->path, "/api/update/check")) {
+        if (update_check(0) != 0) send_error(fd, 409, "an update check or install is already running");
+        else send_json(fd, 200, update_status());
+        return;
+    }
+    if (is_post && !strcmp(r->path, "/api/update/install")) {
+        if (update_install(err, sizeof err) != 0) send_error(fd, 409, err);
+        else send_json(fd, 200, update_status());
         return;
     }
     if (!config_is_paired() && !strncmp(r->path, "/api/", 5)) {

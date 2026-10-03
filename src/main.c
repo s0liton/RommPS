@@ -17,6 +17,7 @@
 #include "romm.h"
 #include "state.h"
 #include "sync.h"
+#include "update.h"
 #include "util.h"
 #include "watch.h"
 #include "web.h"
@@ -182,6 +183,7 @@ int main(void) {
             now - sync_last_run() >= (time_t)interval * 60) {
             sync_request("periodic");
         }
+        update_tick();
     }
     return 0;
 }
