@@ -50,7 +50,8 @@ jobs:
       - uses: docker/setup-buildx-action@v3
         if: steps.version.outputs.tag
 
-      # Same image tools/ps5-build.sh uses, cached between runs.
+      # Same image tools/ps5-build.sh uses, cached between runs. The cache only
+      # saves time, so failing to write it must not fail the release.
       - uses: docker/build-push-action@v6
         if: steps.version.outputs.tag
         with:
@@ -58,7 +59,7 @@ jobs:
           tags: romm-sync-ps5sdk:v0.43
           load: true
           cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-to: type=gha,mode=max,ignore-error=true
 
       - name: Build payload
         if: steps.version.outputs.tag
