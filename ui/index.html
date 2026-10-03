@@ -100,6 +100,12 @@ code { background: var(--panel2); padding: 2px 6px; border-radius: 6px; word-bre
 [data-collapse].collapsed .collapsible { display: none; }
 .notice { border-left: 4px solid var(--warn); background: #2a2210; border-radius: 8px; padding: 12px 16px; margin: 14px 0; }
 .notice b { color: #fcd34d; }
+a { color: var(--accent2); }
+.ribbon { display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 0 14px; }
+.ribbon button { min-width: 38px; padding: 6px 0; font-size: 15px; }
+.ribbon button:disabled { opacity: .3; }
+.ribbon, [data-rom] { scroll-margin-top: 90px; } /* clear of the sticky header */
+#updBody details { margin-top: 14px; }
 </style>
 </head>
 <body>
@@ -125,6 +131,7 @@ code { background: var(--panel2); padding: 2px 6px; border-radius: 6px; word-bre
       <p class="muted">RomM 5.2.0 or newer.</p>
       <label for="srv">Server address</label>
       <input id="srv" placeholder="https://romm.example.com or 192.168.1.10:8080" autocomplete="off">
+      <div class="toggle"><input type="checkbox" id="wzInsecure"><label for="wzInsecure">Skip certificate checks (for self-signed HTTPS)</label></div>
       <div class="row" style="margin-top:14px"><button class="primary" id="pairStart">Continue</button></div>
       <details style="margin-top:18px">
         <summary class="muted">Use a pairing code instead</summary>
@@ -201,6 +208,7 @@ code { background: var(--panel2); padding: 2px 6px; border-radius: 6px; word-bre
 </section>
 
 <section id="home" class="active">
+  <div class="notice" id="updNotice" style="display:none"></div>
   <div class="card">
     <div class="row">
       <h2 style="margin:0">Saves</h2>
@@ -245,6 +253,8 @@ code { background: var(--panel2); padding: 2px 6px; border-radius: 6px; word-bre
     <p class="muted" id="platInfo"></p>
     <div class="row" style="margin-bottom:14px"><input id="search" placeholder="Search" style="flex:1 1 200px;width:auto"><button id="searchBtn">Search</button>
       <div class="seg fixed"><button id="viewGrid">Grid</button><button id="viewTable">Table</button></div></div>
+    <div class="ribbon" id="ribbon" style="display:none"></div>
+    <div class="row" id="jumpInfo" style="display:none;margin-bottom:12px"><span class="muted" id="jumpText"></span><button class="small" id="jumpStart">From the start</button></div>
     <div id="roms"></div>
     <div class="row" style="margin-top:14px"><button id="more" style="display:none">Load more</button></div>
   </div>
@@ -268,6 +278,11 @@ code { background: var(--panel2); padding: 2px 6px; border-radius: 6px; word-bre
     <h3>PS4 and PS5 packages</h3>
     <p class="muted">Add these feeds to FPKGi. They use your RomM username and password.</p>
     <p><code id="feed4"></code><br><code id="feed5"></code></p>
+  </div>
+  <div class="card">
+    <div class="row"><h2 style="margin:0">Updates</h2><button id="updCheck">Check now</button></div>
+    <div id="updBody"><p class="muted">Checking</p></div>
+    <div class="toggle"><input type="checkbox" id="updAuto"><label for="updAuto">Check for updates once a day</label></div>
   </div>
   <div class="card">
     <h2>Sync</h2>
@@ -431,6 +446,8 @@ function renderStatus(s) {
   $("unmatched").innerHTML = sy.unmatched.map(function (u) { return "<li>" + esc(u) + "</li>"; }).join("");
 }
 function poll() {
+  poll.n = (poll.n || 0) + 1;
+  if (poll.n % 10 === 0) loadUpdate();
   api("GET", "/api/status").then(renderStatus).catch(function () { $("conn").innerHTML = '<span class="err">&#9679;</span> Can\'t reach RomM Sync'; });
   if (document.querySelector("#downloads.active")) loadDownloads();
   if (document.querySelector("#library.active") && $("romCard").style.display !== "none") pollLibraryDownloads();
@@ -479,15 +496,17 @@ function wizardFromStatus(s) {
   }
   if (wz.step < 3) { toast(p.message || "Paired"); wzGo(3); }
 }
+// The certificate setting has to be in place before the server is first contacted.
+function saveTls() { return api("POST", "/api/config", { tls_verify: !$("wzInsecure").checked }); }
 $("pairStart").onclick = function () {
   $("pairErr").textContent = ""; $("pairStart").disabled = true;
-  api("POST", "/api/pair/start", { server_url: $("srv").value }).then(function (p) {
+  saveTls().then(function () { return api("POST", "/api/pair/start", { server_url: $("srv").value }); }).then(function (p) {
     $("pairStart").disabled = false; wizardFromStatus({ paired: false, pairing: p });
   }).catch(function (e) { $("pairStart").disabled = false; $("pairErr").textContent = e.message; });
 };
 $("pairCode2").onclick = function () {
   $("pairErr").textContent = "";
-  api("POST", "/api/pair/code", { server_url: $("srv").value, code: $("pcode").value.trim() }).then(poll).catch(function (e) { $("pairErr").textContent = e.message; });
+  saveTls().then(function () { return api("POST", "/api/pair/code", { server_url: $("srv").value, code: $("pcode").value.trim() }); }).then(poll).catch(function (e) { $("pairErr").textContent = e.message; });
 };
 $("wzBack2").onclick = function () { api("POST", "/api/pair/forget").then(function () { wzGo(1); }); };
 
@@ -686,18 +705,58 @@ function renderRoms() {
     return '<div class="rom" data-rom="' + g.id + '"><div class="cover" ' + cover + ">" + badge + '</div><div class="t">' + esc(g.name) + '</div><div class="s">' + fmtSize(g.size) + "</div>" + (g.installed && !romJob(g) ? '<div class="btns">' + romButton(g) + "</div>" : romButton(g)) + "</div>";
   }).join("") + "</div>";
 }
-function loadRoms(append) {
+// The list is a window of games starting at state.start; the A-Z ribbon either
+// scrolls within it or, for a letter not loaded yet, restarts it at that letter.
+function loadRoms(append, start) {
   var p = state.platform;
-  if (!append) { state.offset = 0; state.items = []; state.loading = true; renderRoms(); }
+  if (!append) { state.start = state.offset = start || 0; state.items = []; state.loading = true; renderRoms(); }
   api("GET", "/api/roms?platform_id=" + p.id + "&offset=" + state.offset + "&limit=60&search=" + encodeURIComponent($("search").value)).then(function (r) {
     state.loading = false;
     state.total = r.total; state.offset += r.items.length;
     state.items = (append ? state.items : []).concat(r.items);
+    state.letters = letterOffsets(r.char_index);
     renderRoms();
+    renderRibbon();
     $("more").style.display = state.offset < state.total ? "" : "none";
+    if (!append && state.start > 0 && state.items.length) scrollToRom(state.items[0], true);
     pollLibraryDownloads();
   }).catch(function (e) { state.loading = false; $("roms").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
 }
+// RomM's char_index maps a first character to the offset of its first game.
+// Anything that isn't A-Z goes under "#".
+function letterOffsets(ci) {
+  var out = {};
+  Object.keys(ci || {}).forEach(function (k) {
+    var l = /^[a-z]$/i.test(k) ? k.toUpperCase() : "#";
+    if (!(l in out) || ci[k] < out[l]) out[l] = ci[k];
+  });
+  return out;
+}
+function renderRibbon() {
+  var offs = state.letters || {};
+  $("ribbon").style.display = state.total > 60 && Object.keys(offs).length > 1 ? "" : "none";
+  $("ribbon").innerHTML = "#ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").map(function (l) {
+    return '<button class="small" data-letter="' + l + '"' + (l in offs ? "" : " disabled") + ">" + l + "</button>";
+  }).join("");
+  var first = state.items[0];
+  $("jumpInfo").style.display = state.start > 0 && first ? "" : "none";
+  if (first) $("jumpText").textContent = "Showing games from " + first.name.charAt(0).toUpperCase() + " on.";
+}
+// After a jump the ribbon stays in view, so the "from the start" note shows too.
+function scrollToRom(g, showRibbon) {
+  var el = document.querySelector('[data-rom="' + g.id + '"]');
+  if (!el) return;
+  (showRibbon ? $("ribbon") : el).scrollIntoView({ block: "start" });
+  var b = el.querySelector("button"); if (b) b.focus({ preventScroll: true });
+}
+$("ribbon").onclick = function (ev) {
+  var b = ev.target.closest("button[data-letter]"), offs = state.letters || {};
+  if (!b || !(b.dataset.letter in offs)) return;
+  var i = offs[b.dataset.letter] - state.start;
+  if (i >= 0 && i < state.items.length) scrollToRom(state.items[i]);
+  else loadRoms(false, offs[b.dataset.letter]);
+};
+$("jumpStart").onclick = function () { loadRoms(); };
 $("searchBtn").onclick = function () { loadRoms(); };
 $("search").onkeydown = function (e) { if (e.key === "Enter") loadRoms(); };
 $("more").onclick = function () { loadRoms(true); };
@@ -779,7 +838,9 @@ function loadSettings() {
     $("states").value = c.states; $("serverVersions").value = c.server_versions; $("notify").checked = c.notify; $("tls").checked = c.tls_verify;
     $("policy").value = c.conflict_policy; $("slot").value = c.slot; $("concurrency").value = c.download_concurrency; $("backups").value = c.keep_backups;
     $("profiles").value = JSON.stringify(c.profiles, null, 2);
+    $("updAuto").checked = c.update_check;
   });
+  loadUpdate();
   api("GET", "/api/paths").then(function (list) {
     $("paths").innerHTML = list.map(function (m) {
       var layouts = { psp: "PSP save folders", gci: "GameCube memory card files", wii: "Wii save folder" };
@@ -836,6 +897,52 @@ $("saveProfiles").onclick = function () {
 $("resetProfiles").onclick = function () {
   if (confirm("Replace your profiles with the defaults?")) api("POST", "/api/config", { reset_profiles: true }).then(function () { toast("Reset"); $("platforms").innerHTML = ""; loadSettings(); });
 };
+
+// Updates
+function updBusy(u) { return ["checking", "downloading", "waiting", "installing", "restarting"].indexOf(u.state) >= 0; }
+function renderUpdate(u) {
+  state.update = u;
+  var busy = updBusy(u), h = "<p>This is version <b>" + esc(u.current) + "</b>." + (u.checked_at ? ' <small class="muted">Checked ' + ago(u.checked_at) + "</small>" : "") + "</p>";
+  $("updCheck").disabled = busy;
+  if (u.state === "checking") h += '<p class="muted">Checking GitHub</p>';
+  else if (busy) {
+    var pct = u.total ? Math.round(u.done * 100 / u.total) : 0;
+    h += "<p>" + esc(u.message || u.state) + (u.state === "downloading" && u.total ? " (" + pct + "%)" : "") + "</p>";
+    if (u.state === "downloading") h += '<div class="bar"><i style="width:' + pct + '%"></i></div>';
+  } else if (u.available) {
+    h += '<p class="ok">Version ' + esc(u.latest) + " is available.</p>";
+    if (!u.autostart) h += '<p class="warn">Autostart isn\'t set up, so the update only lasts until the console restarts.</p>';
+    h += u.signed ? '<div class="row"><button class="primary" id="updInstall">Update to ' + esc(u.latest) + "</button></div>"
+      : '<p class="muted">This release can\'t be installed from here. Download it from GitHub instead.</p>';
+  } else if (u.latest) h += '<p class="muted">You have the latest version.</p>';
+  if (u.state === "error" && u.error) h += '<p class="err">' + esc(u.error) + "</p>";
+  if (u.notes && (u.available || busy)) h += '<details open><summary>What\'s new in ' + esc(u.latest) + "</summary><pre>" + esc(u.notes) + "</pre></details>";
+  if (u.release_url && u.available) h += '<p><small><a href="' + esc(u.release_url) + '" target="_blank" rel="noopener">Release page on GitHub</a></small></p>';
+  $("updBody").innerHTML = h;
+  if ($("updInstall")) $("updInstall").onclick = installUpdate;
+  $("updNotice").style.display = u.available && !busy ? "" : "none";
+  $("updNotice").innerHTML = "<b>RomM Sync " + esc(u.latest) + ' is available.</b> <button class="small" id="updGo">See what\'s new</button>';
+  $("updGo").onclick = function () { showTab("settings"); };
+}
+function loadUpdate() { return api("GET", "/api/update").then(renderUpdate).catch(function () {}); }
+// Polls while a check or install runs. After the restart, the new version answers and the page reloads.
+function watchUpdate() {
+  clearTimeout(watchUpdate.t);
+  var target = state.update && state.update.latest;
+  api("GET", "/api/status").then(function (s) {
+    if (target && s.version === target) { toast("Updated to " + s.version); setTimeout(function () { location.reload(); }, 1500); return "done"; }
+    return loadUpdate();
+  }).catch(function () {}).then(function (r) {
+    if (r !== "done" && state.update && updBusy(state.update)) watchUpdate.t = setTimeout(watchUpdate, 1500);
+  });
+}
+function installUpdate() {
+  if (!confirm("Update RomM Sync to " + state.update.latest + "? It restarts once no sync, download or game is running.")) return;
+  api("POST", "/api/update/install").then(function (u) { renderUpdate(u); watchUpdate(); }).catch(function (e) { toast(e.message, 1); });
+}
+$("updCheck").onclick = function () { api("POST", "/api/update/check").then(function (u) { renderUpdate(u); watchUpdate(); }).catch(function (e) { toast(e.message, 1); }); };
+$("updAuto").onchange = function () { api("POST", "/api/config", { update_check: this.checked }).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, 1); }); };
+
 $("tileBtn").onclick = function () { api("POST", "/api/tile").then(function () { toast("Tile added"); }).catch(function (e) { toast(e.message, 1); }); };
 $("forget").onclick = function () { if (confirm("Unpair from this RomM server? Files on the console are kept.")) api("POST", "/api/pair/forget").then(function () { poll(); showTab("pair"); }); };
 
@@ -905,6 +1012,8 @@ api("GET", "/api/status").then(function (s) {
   var ready = s.paired && s.setup_complete;
   showTab(ready ? (t === "pair" ? "home" : t) : "pair");
   if (!ready) { wzGo(s.paired ? 3 : 1); wizardFromStatus(s); }
+  api("GET", "/api/config").then(function (c) { $("wzInsecure").checked = !c.tls_verify; }).catch(function () {});
+  loadUpdate().then(function () { if (state.update && updBusy(state.update)) watchUpdate(); });
 }).catch(function () { $("conn").textContent = "Can't reach RomM Sync"; });
 setInterval(poll, 3000);
 </script>

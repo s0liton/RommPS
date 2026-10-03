@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # End-to-end test of the host build against tests/mock_romm.py.
-#   make host && tests/e2e.sh
+#   make host tools && tests/e2e.sh
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(mktemp -d)"
@@ -19,7 +19,13 @@ wait_sync() { # waits for the history length to reach $1
 }
 last() { curl -sf "$API/api/status" | python3 -c "import json,sys; h=json.load(sys.stdin)['sync']['history'][-1]; print(h.get('$1', h.get('error','')))"; }
 
-python3 "$ROOT/tests/mock_romm.py" $MOCK_PORT 2>"$T/mock.log" &
+REL="$T/release"; mkdir -p "$REL"
+MOCK_RELEASE_DIR="$REL" python3 "$ROOT/tests/mock_romm.py" $MOCK_PORT 2>"$T/mock.log" &
+# The same mock over HTTPS with a self-signed certificate.
+TLS_PORT=8898
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=127.0.0.1 -keyout "$T/tls.pem" -out "$T/tls.crt" 2>/dev/null
+cat "$T/tls.crt" >> "$T/tls.pem"
+python3 "$ROOT/tests/mock_romm.py" $TLS_PORT "$T/tls.pem" 2>"$T/mock-tls.log" &
 RA="$T/RetroArch"; mkdir -p "$RA/roms/snes" "$RA/saves/Snes9x" "$T/data"
 # RetroArch defaults: saves sorted into a folder per core name.
 printf 'savefile_directory = ":/saves"\nsort_savefiles_enable = "true"\n' > "$RA/retroarch.cfg"
@@ -42,8 +48,21 @@ echo 'savefile_directory = ":/savefiles"' > "$HB/config/retroarch.cfg"
 printf 'corename = "Snes9x"\ndatabase = "Nintendo - Super Nintendo Entertainment System|Nintendo - Satellaview"\n' > "$HB/cores/snes9x_libretro.info"
 printf 'corename = "LRPS2"\ndatabase = "Sony - PlayStation 2"\n' > "$HB/cores/pcsx2_libretro.info"
 echo '{"titleId":"PPSA12345","localizedParameters":{"defaultLanguage":"en-US","en-US":{"titleName":"RetroArch"}}}' > "$HB/sce_sys/param.json"
-ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_DATA="$T/data" "$ROOT/build/host/romm-sync" >"$T/daemon.log" 2>&1 &
+# An installed payload in a stand-in etaHEN folder, for the update test.
+mkdir -p "$T/etaHEN/payloads"; echo "old-payload" > "$T/etaHEN/payloads/romm-sync.elf"
+ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_ETAHEN="$T/etaHEN" \
+  ROMM_SYNC_UPDATE_URL="http://127.0.0.1:$MOCK_PORT/_github/release" "$ROOT/build/host/romm-sync" >"$T/daemon.log" 2>&1 &
 sleep 6   # let the (unpaired, skipped) startup sync pass
+
+echo "0. self-signed HTTPS needs certificate checks turned off"
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$TLS_PORT\"}")
+[[ "$r" == *"doesn't trust"* ]] || fail "untrusted certificate not reported: $r"
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"127.0.0.1:$TLS_PORT\"}")
+[[ "$r" == *"doesn't trust"* ]] || fail "an address without a scheme must not fall back to http on a certificate error: $r"
+post /api/config '{"tls_verify":false}' >/dev/null
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$TLS_PORT\"}")
+[[ "$r" == *pending* ]] || fail "pairing with checks off failed: $r"
+post /api/pair/forget >/dev/null; post /api/config '{"tls_verify":true}' >/dev/null
 
 echo "1. setup: pair, detect emulators, preview, first sync"
 post /api/pair/start "{\"server_url\":\"http://127.0.0.1:$MOCK_PORT\"}" >/dev/null
@@ -65,6 +84,9 @@ post /api/download '{"rom_id":11}' >/dev/null; sleep 1
 curl -sf -X POST "http://127.0.0.1:$MOCK_PORT/_admin/save" -d '{"rom_id":11,"slot":"autosave","file_name":"Super Metroid (USA).srm","content":"server-save"}' >/dev/null
 post /api/sync >/dev/null; wait_sync 2
 [[ "$(cat "$RA/saves/Snes9x/Super Metroid (USA).srm")" == "server-save" ]] || fail "server save not downloaded"
+
+ci=$(curl -sf "$API/api/roms?platform_id=1" | python3 -c "import json,sys; print(sorted(json.load(sys.stdin)['char_index'].items()))")
+[[ "$ci" == "[('c', 0), ('e', 1), ('s', 2)]" ]] || fail "library char_index for the A-Z ribbon: $ci"
 
 echo "3. nothing changed, nothing transferred"
 post /api/sync >/dev/null; wait_sync 3
@@ -201,5 +223,42 @@ syncnow
 [[ "$(cat "$SD/ULUS10336DATA00/DATA.BIN")" == "psp-save-2" ]] || fail "PSP save from the server not unpacked"
 [[ -f "$SD/ULUS10336GAMEDATA/BIG.BIN" ]] || fail "game data folder must be left alone"
 ls "$T/data/backups/30/" | grep -q "ULUS10336.zip" || fail "no backup of the PSP save"
+
+echo "13. in-app update: only a correctly signed release installs"
+SIGN="$ROOT/build/host/release-sign"
+upd() { curl -sf "$API/api/update" | python3 -c "import json,sys; u=json.load(sys.stdin); print(u['$1'])"; }
+# Publishes a release; $1 says what to break: tamper, wrongkey, unsigned or nothing.
+publish() {
+  rm -f "$REL"/*; printf '\x7fELF new-payload %s' "$RANDOM" > "$REL/romm-sync.elf"
+  "$SIGN" manifest v9.9.9 "$REL/romm-sync.elf" > "$REL/manifest.json"
+  local key; key="$(cat "$ROOT/tests/update-test.key")"
+  [[ "$1" == wrongkey ]] && key="$("$SIGN" keygen | sed -n 's/^secret: //p')"
+  RELEASE_SIGNING_KEY="$key" "$SIGN" sign "$REL/manifest.json" > "$REL/manifest.sig" 2>/dev/null
+  [[ "$1" == tamper ]] && python3 -c "import sys; p=sys.argv[1]; b=bytearray(open(p,'rb').read()); b[-1]^=1; open(p,'wb').write(b)" "$REL/romm-sync.elf"
+  local names='"romm-sync.elf", "manifest.json", "manifest.sig"'; [[ "$1" == unsigned ]] && names='"romm-sync.elf"'
+  python3 - "$REL" "http://127.0.0.1:$MOCK_PORT/_github/assets" "$names" <<'PY'
+import json, sys
+d, base, names = sys.argv[1], sys.argv[2], json.loads("[" + sys.argv[3] + "]")
+json.dump({"tag_name": "v9.9.9", "body": "Test notes", "html_url": "https://example.invalid/r",
+           "assets": [{"name": n, "browser_download_url": base + "/" + n} for n in names]}, open(d + "/release.json", "w"))
+PY
+  post /api/update/check >/dev/null || fail "update check refused"
+  for _ in $(seq 1 20); do [[ "$(upd state)" != checking ]] && break; sleep 0.5; done
+  [[ "$(upd available)" == True && "$(upd latest)" == 9.9.9 ]] || fail "release 9.9.9 not found: $(upd error)"
+}
+install_err() { # installs and prints the error it ends with, or the state it reached
+  post /api/update/install >/dev/null || { echo refused; return; }
+  for _ in $(seq 1 40); do local s; s="$(upd state)"; [[ "$s" == error ]] && { upd error; return; }; [[ "$s" == restarting ]] && { echo restarting; return; }; sleep 0.5; done
+  echo "timeout: $(upd state)"
+}
+publish tamper;   r="$(install_err)"; [[ "$r" == *"signed checksum"* ]] || fail "tampered payload: $r"
+publish wrongkey; r="$(install_err)"; [[ "$r" == *"signature doesn't match"* ]] || fail "untrusted key: $r"
+publish unsigned; r="$(install_err)"; [[ "$r" == refused ]] || fail "unsigned release must be refused: $r"
+[[ "$(cat "$T/etaHEN/payloads/romm-sync.elf")" == old-payload && ! -f "$T/data/launched.elf" ]] || fail "a rejected update touched the payload"
+publish ok;       r="$(install_err)"; [[ "$r" == restarting ]] || fail "good update: $r"
+for _ in $(seq 1 10); do [[ -f "$T/data/launched.elf" ]] && break; sleep 0.5; done
+cmp -s "$REL/romm-sync.elf" "$T/data/launched.elf" || fail "the new payload was not launched"
+cmp -s "$REL/romm-sync.elf" "$T/etaHEN/payloads/romm-sync.elf" || fail "the installed payload was not replaced"
+[[ "$(cat "$T/etaHEN/payloads/romm-sync.elf.bak")" == old-payload ]] || fail "no backup of the old payload"
 
 echo "PASS"

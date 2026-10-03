@@ -36,7 +36,13 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
 
 To start RomM Sync with the console, copy the payload to etaHEN's autostart folder or use the autoloader. You can do this from the last setup step, or with `make install PS5_HOST=<ps5-ip>` if you build it yourself.
 
-If your RomM server uses HTTPS, copy `cacert.pem` from the release to `/data/romm-sync/cacert.pem`.
+HTTP and HTTPS servers both work. Common certificate authorities (the Mozilla list) are built in, so there's nothing to copy for HTTPS. If your server uses a self-signed certificate, tick _Skip certificate checks_ during setup, or turn off _Verify TLS certificates_ in Settings. If it uses a certificate from your own CA, you can instead put that CA's certificate in `/data/romm-sync/cacert.pem`; it's trusted in addition to the built-in list.
+
+## Updates
+
+Settings shows when a new version is out (it checks GitHub once a day, which you can turn off) and can install it for you. Nothing installs on its own. The update waits until no sync, download or game is running, replaces the payload in etaHEN's autostart folder (keeping the old one as `romm-sync.elf.bak`), and restarts RomM Sync.
+
+Each release is signed. RomM Sync only installs an update whose signature matches a key built into it and whose file matches the signed checksum, so a modified download is rejected.
 
 ## Setup
 
@@ -85,11 +91,17 @@ For RetroArch, it reads save and state folders from its own config, including it
 ## Building
 
 ```sh
-make host             # macOS or Linux build for development
+make host tools       # macOS or Linux build for development, plus tools/release-sign
 tools/ps5-build.sh    # PS5 build in Docker, output in build/ps5/
 tests/e2e.sh          # end-to-end tests against a mock RomM server
 ```
 
+## Releasing
+
+Merge a pull request from a branch named with the version, such as `release/v1.0.2`. The release workflow tags the merge commit, builds the payload, signs it and publishes the release. You can also push a `v1.2.3` tag yourself.
+
+Signing needs the `RELEASE_SIGNING_KEY` repository secret: the 64-character hex key printed by `build/host/release-sign keygen`. Its public half must be in `src/update_keys.h`, which also holds a backup key that is kept offline. If the release key is ever lost or leaked, sign the next release with the backup key, and ship a new key pair in that release.
+
 ## License
 
-GPL-3.0. Parts of the PS5 code are adapted from [ftpsrv](https://github.com/ps5-payload-dev/ftpsrv) and [websrv](https://github.com/ps5-payload-dev/websrv) by John Törnblom. [cJSON](https://github.com/DaveGamble/cJSON) and [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) are MIT licensed.
+GPL-3.0. Parts of the PS5 code are adapted from [ftpsrv](https://github.com/ps5-payload-dev/ftpsrv) and [websrv](https://github.com/ps5-payload-dev/websrv) by John Törnblom. [cJSON](https://github.com/DaveGamble/cJSON) and [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) are MIT licensed. [Monocypher](https://monocypher.org) is CC0 or BSD-2-Clause.

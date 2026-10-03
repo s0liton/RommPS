@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "http.h"
 #include "platform.h"
 #include "romm.h"
 #include "state.h"
@@ -36,9 +37,18 @@ static void normalize_url(const char *in, char *out, size_t n) {
     while (l && (out[l - 1] == '/' || out[l - 1] == ' ')) out[--l] = 0;
 }
 
+/* -2 if the server's certificate isn't trusted, so the caller doesn't fall back to http. */
 static int check_server(const char *base, char *err, int en) {
     char version[32] = "";
     if (romm_heartbeat(base, version, sizeof version) != 0) {
+        config_lock();
+        int verify = g_cfg.tls_verify;
+        config_unlock();
+        if (verify && !strncmp(base, "https://", 8) && http_tls_untrusted(base)) {
+            snprintf(err, (size_t)en, "%s has a certificate this console doesn't trust (self-signed or from a private CA). "
+                     "Tick \"Skip certificate checks\" to connect anyway.", base);
+            return -2;
+        }
         snprintf(err, (size_t)en, "no RomM server answered at %s", base);
         return -1;
     }
@@ -110,7 +120,9 @@ static void *poll_thread(void *arg) {
 /* Checks the server. An address without a scheme is tried as https, then http. */
 static int resolve_server(const char *server_url, char *base, size_t n, char *err, int en) {
     normalize_url(server_url, base, n);
-    if (check_server(base, err, en) == 0) return 0;
+    int rc = check_server(base, err, en);
+    if (rc == 0) return 0;
+    if (rc == -2) return -1;
     const char *s = server_url;
     while (*s == ' ') s++;
     if (!strncmp(s, "http://", 7) || !strncmp(s, "https://", 8)) return -1;

@@ -55,6 +55,12 @@ int plat_install_tile(int port) {
     return -1;
 }
 
+int plat_launch_elf(const void *elf, size_t len) {
+    char p[PATH_MAX_LEN];
+    path_join(p, sizeof p, g_data, "launched.elf");
+    return write_file_atomic(p, elf, len);
+}
+
 const char *plat_name(void) { return "host"; }
 
 void plat_local_ip(char *buf, size_t n) {

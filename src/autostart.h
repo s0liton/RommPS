@@ -9,5 +9,8 @@
 cJSON *autostart_status(void); /* {etahen, installed, enabled, path} */
 /* Turns autostart on or off, installing the payload first if one is given. */
 int autostart_set(int enable, const void *elf, size_t elf_len, char *err, int en);
+/* Replaces an installed payload, keeping the old one as romm-sync.elf.bak.
+ * 1 if replaced, 0 if none is installed, -1 on error. */
+int autostart_replace(const void *elf, size_t elf_len, char *err, int en);
 
 #endif

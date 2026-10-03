@@ -7,16 +7,41 @@
 #include <unistd.h>
 
 #include "util.h"
+#ifdef ROMM_EMBED_CA
+#include "cacert_pem.h" /* generated from the SDK's Mozilla CA bundle */
+#endif
 
 static char g_ca_bundle[PATH_MAX_LEN];
+/* Built-in roots plus the user's cacert.pem, if any. Only on the PS5, which
+ * has no system CA store. */
+static char *g_ca_blob;
+static size_t g_ca_blob_len;
 static int g_tls_verify = 1;
 
 void http_global_init(const char *ca_bundle, int tls_verify) {
     curl_global_init(CURL_GLOBAL_ALL);
     if (ca_bundle && file_exists(ca_bundle)) str_copy(g_ca_bundle, sizeof g_ca_bundle, ca_bundle);
     g_tls_verify = tls_verify;
+#ifdef ROMM_EMBED_CA
+    /* A cacert.pem is added to the built-in roots, so a private CA works too. */
+    size_t ulen = 0;
+    char *user = g_ca_bundle[0] ? read_file(g_ca_bundle, &ulen) : NULL;
+    g_ca_blob_len = sizeof CACERT_PEM - 1 + (user ? ulen + 1 : 0);
+    g_ca_blob = malloc(g_ca_blob_len);
+    if (g_ca_blob) {
+        memcpy(g_ca_blob, CACERT_PEM, sizeof CACERT_PEM - 1);
+        if (user) {
+            g_ca_blob[sizeof CACERT_PEM - 1] = '\n';
+            memcpy(g_ca_blob + sizeof CACERT_PEM, user, ulen);
+        }
+    }
+    free(user);
+    LOGI("libcurl %s, CA bundle: built-in%s%s", curl_version_info(CURLVERSION_NOW)->version,
+         g_ca_bundle[0] ? " + " : "", g_ca_bundle);
+#else
     LOGI("libcurl %s, CA bundle: %s", curl_version_info(CURLVERSION_NOW)->version,
          g_ca_bundle[0] ? g_ca_bundle : "(default)");
+#endif
 }
 
 void http_set_tls_verify(int verify) { g_tls_verify = verify; }
@@ -49,7 +74,7 @@ static size_t mem_write(char *ptr, size_t size, size_t nmemb, void *ud) {
     return n;
 }
 
-static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *auth) {
+static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *auth, int verify) {
     CURL *c = curl_easy_init();
     if (!c) return NULL;
     curl_easy_setopt(c, CURLOPT_URL, url);
@@ -61,8 +86,13 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
     /* Give up on stalled transfers rather than using a total timeout. */
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_LIMIT, 1L);
     curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 60L);
-    if (g_ca_bundle[0]) curl_easy_setopt(c, CURLOPT_CAINFO, g_ca_bundle);
-    if (!g_tls_verify) {
+    if (g_ca_blob) {
+        struct curl_blob blob = {g_ca_blob, g_ca_blob_len, CURL_BLOB_NOCOPY};
+        curl_easy_setopt(c, CURLOPT_CAINFO_BLOB, &blob);
+    } else if (g_ca_bundle[0]) {
+        curl_easy_setopt(c, CURLOPT_CAINFO, g_ca_bundle);
+    }
+    if (!verify) {
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
     }
@@ -95,11 +125,11 @@ static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *u
     return 0;
 }
 
-int http_request(const char *method, const char *url, const char *auth, const char *content_type,
-                 const void *body, size_t body_len, http_resp *out) {
+static int request_impl(const char *method, const char *url, const char *auth, const char *content_type,
+                        const void *body, size_t body_len, int verify, http_resp *out) {
     struct curl_slist *hdrs = NULL;
     membuf m = {0};
-    CURL *c = easy_new(url, &hdrs, auth);
+    CURL *c = easy_new(url, &hdrs, auth, verify);
     if (!c) return -1;
     if (content_type) {
         char h[256];
@@ -122,11 +152,32 @@ int http_request(const char *method, const char *url, const char *auth, const ch
     return r;
 }
 
+int http_request(const char *method, const char *url, const char *auth, const char *content_type,
+                 const void *body, size_t body_len, http_resp *out) {
+    return request_impl(method, url, auth, content_type, body, body_len, g_tls_verify, out);
+}
+
+int http_get_verified(const char *url, http_resp *out) {
+    return request_impl("GET", url, NULL, NULL, NULL, 0, 1, out);
+}
+
+int http_tls_untrusted(const char *url) {
+    struct curl_slist *hdrs = NULL;
+    CURL *c = easy_new(url, &hdrs, NULL, 1);
+    if (!c) return 0;
+    curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
+    CURLcode rc = curl_easy_perform(c);
+    curl_slist_free_all(hdrs);
+    curl_easy_cleanup(c);
+    return rc == CURLE_PEER_FAILED_VERIFICATION;
+}
+
 int http_upload_file(const char *method, const char *url, const char *auth, const char *field,
                      const char *file_path, const char *upload_name, http_resp *out) {
     struct curl_slist *hdrs = NULL;
     membuf m = {0};
-    CURL *c = easy_new(url, &hdrs, auth);
+    CURL *c = easy_new(url, &hdrs, auth, g_tls_verify);
     if (!c) return -1;
     curl_mime *mime = curl_mime_init(c);
     curl_mimepart *part = curl_mime_addpart(mime);
@@ -164,8 +215,8 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ul
     return p->fn(p->ud, p->offset + dlnow, dltotal ? p->offset + dltotal : 0);
 }
 
-int http_download(const char *url, const char *auth, const char *dest, int resume,
-                  http_progress_fn progress, void *ud, http_resp *out) {
+static int download_impl(const char *url, const char *auth, const char *dest, int resume, int verify,
+                         http_progress_fn progress, void *ud, http_resp *out) {
     char part[PATH_MAX_LEN];
     snprintf(part, sizeof part, "%s.part", dest);
     mkdir_parent(dest);
@@ -180,7 +231,7 @@ int http_download(const char *url, const char *auth, const char *dest, int resum
     }
 
     struct curl_slist *hdrs = NULL;
-    CURL *c = easy_new(url, &hdrs, auth);
+    CURL *c = easy_new(url, &hdrs, auth, verify);
     if (!c) {
         fclose(f);
         return -1;
@@ -203,7 +254,7 @@ int http_download(const char *url, const char *auth, const char *dest, int resum
         curl_slist_free_all(hdrs);
         curl_easy_cleanup(c);
         unlink(part);
-        return http_download(url, auth, dest, 0, progress, ud, out);
+        return download_impl(url, auth, dest, 0, verify, progress, ud, out);
     }
     if (r == 0 && out->status >= 200 && out->status < 300) {
         if (move_file(part, dest) != 0) {
@@ -217,6 +268,16 @@ int http_download(const char *url, const char *auth, const char *dest, int resum
     curl_slist_free_all(hdrs);
     curl_easy_cleanup(c);
     return r;
+}
+
+int http_download(const char *url, const char *auth, const char *dest, int resume,
+                  http_progress_fn progress, void *ud, http_resp *out) {
+    return download_impl(url, auth, dest, resume, g_tls_verify, progress, ud, out);
+}
+
+int http_download_verified(const char *url, const char *dest, http_progress_fn progress, void *ud,
+                           http_resp *out) {
+    return download_impl(url, NULL, dest, 0, 1, progress, ud, out);
 }
 
 char *http_escape(const char *s) {

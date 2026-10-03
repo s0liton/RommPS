@@ -320,6 +320,40 @@ int plat_install_tile(int port) {
     return 0;
 }
 
+/* etaHEN's loader runs whatever arrives on port 9021, loopback included
+ * (checked on 12.70 with etaHEN). */
+int plat_launch_elf(const void *elf, size_t len) {
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sin_family = AF_INET;
+    sa.sin_port = htons(9021);
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    if (connect(fd, (struct sockaddr *)&sa, sizeof sa) != 0) {
+        int e = errno;
+        close(fd);
+        errno = e;
+        return -1;
+    }
+    const char *p = elf;
+    while (len) {
+        ssize_t w = write(fd, p, len);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) {
+            int e = w < 0 ? errno : EPIPE;
+            close(fd);
+            errno = e;
+            return -1;
+        }
+        p += w;
+        len -= (size_t)w;
+    }
+    shutdown(fd, SHUT_WR);
+    close(fd);
+    return 0;
+}
+
 const char *plat_name(void) {
     return "ps5";
 }

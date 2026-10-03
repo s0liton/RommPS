@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "util.h"
@@ -11,6 +12,13 @@
 static const char *etahen_dir(void) {
     const char *e = getenv("ROMM_SYNC_ETAHEN");
     return e && *e ? e : "/data/etaHEN";
+}
+
+/* Same mode "make install" leaves over FTP. */
+static int write_payload(const char *elf, const void *data, size_t len) {
+    if (write_file_atomic(elf, data, len) != 0) return -1;
+    chmod(elf, 0777);
+    return 0;
 }
 
 static void paths(char *elf, char *flag, size_t n) {
@@ -29,6 +37,23 @@ cJSON *autostart_status(void) {
     return j;
 }
 
+int autostart_replace(const void *data, size_t len, char *err, int en) {
+    char elf[PATH_MAX_LEN], flag[PATH_MAX_LEN], bak[PATH_MAX_LEN + 8];
+    paths(elf, flag, sizeof elf);
+    if (!file_exists(elf)) return 0;
+    snprintf(bak, sizeof bak, "%s.bak", elf);
+    if (copy_file(elf, bak) != 0) {
+        snprintf(err, (size_t)en, "cannot back up %s", elf);
+        return -1;
+    }
+    if (write_payload(elf, data, len) != 0) {
+        snprintf(err, (size_t)en, "cannot write %s", elf);
+        return -1;
+    }
+    LOGI("replaced %s (%zu bytes), previous version kept as %s", elf, len, bak);
+    return 1;
+}
+
 int autostart_set(int enable, const void *data, size_t len, char *err, int en) {
     char elf[PATH_MAX_LEN], flag[PATH_MAX_LEN];
     paths(elf, flag, sizeof elf);
@@ -42,7 +67,7 @@ int autostart_set(int enable, const void *data, size_t len, char *err, int en) {
             snprintf(err, (size_t)en, "that file is not an ELF payload");
             return -1;
         }
-        if (write_file_atomic(elf, data, len) != 0) {
+        if (write_payload(elf, data, len) != 0) {
             snprintf(err, (size_t)en, "cannot write %s", elf);
             return -1;
         }
