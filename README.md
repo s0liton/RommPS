@@ -102,6 +102,10 @@ Merge a pull request from a branch named with the version, such as `release/v1.0
 
 Signing needs the `RELEASE_SIGNING_KEY` repository secret: the 64-character hex key printed by `build/host/release-sign keygen`. Its public half must be in `src/update_keys.h`, which also holds a backup key that is kept offline. If the release key is ever lost or leaked, sign the next release with the backup key, and ship a new key pair in that release.
 
+## P.S to the industry
+
+If buying isn't **owning**, then piracy **isn't** stealing. 🖕
+
 ## License
 
 GPL-3.0. Parts of the PS5 code are adapted from [ftpsrv](https://github.com/ps5-payload-dev/ftpsrv) and [websrv](https://github.com/ps5-payload-dev/websrv) by John Törnblom. [cJSON](https://github.com/DaveGamble/cJSON) and [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) are MIT licensed. [Monocypher](https://monocypher.org) is CC0 or BSD-2-Clause.
