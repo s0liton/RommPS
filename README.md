@@ -7,7 +7,7 @@ A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN 
 - **Background save sync**
   - Monitors save file changes in the background, and uploads them as soon as they've changed. Periodic syncs also ensure that your PS5 always has the latest saves and savestates.
 - **Interactive library**
-  - Browse RomM from the PS5 browser (or some other device), download games and BIOS files into the right emulator folders, and resolve save conflicts.
+  - Browse your RomM library from the installed Romm Sync app (or some other device), download games and BIOS files into the right emulator folders, and resolve save conflicts.
 - **Pluggable emulator profiles**
   - RetroArch is supported out of the box. Mednafen and a PS2-ISO profile are included but disabled. I'll make sure we update as more emulators become available on the console.
 
@@ -58,6 +58,8 @@ LRPS2 keeps every game on one shared memory card by default. RomM stores saves p
 - **Back up the shared card.** Needs RomM 5.3.0 or newer. The whole card is uploaded when it changes, and you can restore it from Settings. It isn't merged with other devices.
 
 PSP, GameCube and Wii saves are synced as one zip per game, the same format other RomM clients use. Depending on the client, they may or may not support unzipping the saves (I don't truly know), but this client does!
+
+My opinion? One card per game is better since 8MB memory cards fill up quick.
 
 ## Emulator Profiles
 
