@@ -48,9 +48,17 @@ echo 'savefile_directory = ":/savefiles"' > "$HB/config/retroarch.cfg"
 printf 'corename = "Snes9x"\ndatabase = "Nintendo - Super Nintendo Entertainment System|Nintendo - Satellaview"\n' > "$HB/cores/snes9x_libretro.info"
 printf 'corename = "LRPS2"\ndatabase = "Sony - PlayStation 2"\n' > "$HB/cores/pcsx2_libretro.info"
 echo '{"titleId":"PPSA12345","localizedParameters":{"defaultLanguage":"en-US","en-US":{"titleName":"RetroArch"}}}' > "$HB/sce_sys/param.json"
+# A standalone SNES emulator from a test catalog, "installed" as TEST00001.
+mkdir -p "$T/apps/TEST00001" "$T/snesemu"
+cat > "$T/catalog.json" <<EOF
+[{"id": "testsnes", "name": "Test SNES", "title_ids": ["TEST00001"],
+  "profile": {"root": "$T/snesemu", "rom_dir": "{root}/roms", "save_dir": "{root}/saves", "state_dir": "{root}/states",
+              "save_exts": ".srm", "platforms": [{"romm": ["snes", "sfam"], "dir": "snes"}]}}]
+EOF
 # An installed payload in a stand-in etaHEN folder, for the update test.
 mkdir -p "$T/etaHEN/payloads"; echo "old-payload" > "$T/etaHEN/payloads/romm-sync.elf"
-ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_ETAHEN="$T/etaHEN" \
+ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" \
+  ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" \
   ROMM_SYNC_UPDATE_URL="http://127.0.0.1:$MOCK_PORT/_github/release" "$ROOT/build/host/romm-sync" >"$T/daemon.log" 2>&1 &
 sleep 6   # let the (unpaired, skipped) startup sync pass
 
@@ -227,10 +235,12 @@ ls "$T/data/backups/30/" | grep -q "ULUS10336.zip" || fail "no backup of the PSP
 echo "13. in-app update: only a correctly signed release installs"
 SIGN="$ROOT/build/host/release-sign"
 upd() { curl -sf "$API/api/update" | python3 -c "import json,sys; u=json.load(sys.stdin); print(u['$1'])"; }
-# Publishes a release; $1 says what to break: tamper, wrongkey, unsigned or nothing.
+# Publishes a release; $1 says what to break: tamper, wrongkey, unsigned, ps4 or nothing.
 publish() {
   rm -f "$REL"/*; printf '\x7fELF new-payload %s' "$RANDOM" > "$REL/romm-sync.elf"
   "$SIGN" manifest v9.9.9 "$REL/romm-sync.elf" > "$REL/manifest.json"
+  # ps4: a correctly signed manifest, but for the PS4 payload
+  [[ "$1" == ps4 ]] && cp "$REL/romm-sync.elf" "$REL/romm-sync-ps4.elf" && "$SIGN" manifest v9.9.9 "$REL/romm-sync-ps4.elf" > "$REL/manifest.json"
   local key; key="$(cat "$ROOT/tests/update-test.key")"
   [[ "$1" == wrongkey ]] && key="$("$SIGN" keygen | sed -n 's/^secret: //p')"
   RELEASE_SIGNING_KEY="$key" "$SIGN" sign "$REL/manifest.json" > "$REL/manifest.sig" 2>/dev/null
@@ -254,11 +264,31 @@ install_err() { # installs and prints the error it ends with, or the state it re
 publish tamper;   r="$(install_err)"; [[ "$r" == *"signed checksum"* ]] || fail "tampered payload: $r"
 publish wrongkey; r="$(install_err)"; [[ "$r" == *"signature doesn't match"* ]] || fail "untrusted key: $r"
 publish unsigned; r="$(install_err)"; [[ "$r" == refused ]] || fail "unsigned release must be refused: $r"
+publish ps4;      r="$(install_err)"; [[ "$r" == *"manifest is for romm-sync-ps4.elf"* ]] || fail "another console's payload: $r"
 [[ "$(cat "$T/etaHEN/payloads/romm-sync.elf")" == old-payload && ! -f "$T/data/launched.elf" ]] || fail "a rejected update touched the payload"
 publish ok;       r="$(install_err)"; [[ "$r" == restarting ]] || fail "good update: $r"
 for _ in $(seq 1 10); do [[ -f "$T/data/launched.elf" ]] && break; sleep 0.5; done
 cmp -s "$REL/romm-sync.elf" "$T/data/launched.elf" || fail "the new payload was not launched"
 cmp -s "$REL/romm-sync.elf" "$T/etaHEN/payloads/romm-sync.elf" || fail "the installed payload was not replaced"
 [[ "$(cat "$T/etaHEN/payloads/romm-sync.elf.bak")" == old-payload ]] || fail "no backup of the old payload"
+
+echo "14. diagnostics report leaves out the token"
+curl -sf "$API/api/diagnostics" > "$T/diag.txt" || fail "no diagnostics report"
+grep -q "RomM Sync diagnostics" "$T/diag.txt" || fail "diagnostics report is empty"
+tok="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['token'])" "$T/data/config.json")"
+[[ -n "$tok" ]] && ! grep -qF "$tok" "$T/diag.txt" || fail "the diagnostics report contains the token"
+
+echo "15. one emulator per system when several play it"
+kinds=$(curl -sf "$API/api/setup/detect" | python3 -c "import json,sys; print([(c['kind'], c['title_id']) for c in json.load(sys.stdin)])")
+[[ "$kinds" == *"('standalone', 'TEST00001')"* ]] || fail "the installed standalone emulator wasn't offered: $kinds"
+snes_dirs() { curl -sf "$API/api/paths" | python3 -c "import json,sys; print(sorted(m['rom_dir'] for m in json.load(sys.stdin) if m['platforms'].split(',')[0] == 'snes'))"; }
+post /api/setup/emulators "{\"roots\":[\"$HB\",\"$T/snesemu\"],\"choices\":{\"snes\":\"$T/snesemu\"}}" >/dev/null || fail "setup with choices refused"
+[[ "$(snes_dirs)" == "['$T/snesemu/roms']" ]] || fail "SNES should only go to the standalone emulator: $(snes_dirs)"
+sel=$(curl -sf "$API/api/systems" | python3 -c "import json,sys; print([(s['system'], s['selected'], len(s['options'])) for s in json.load(sys.stdin)])")
+[[ "$sel" == "[('snes', 'testsnes', 2)]" ]] || fail "systems: $sel"
+post /api/systems '{"system":"snes","profile":"retroarch-PPSA12345"}' >/dev/null || fail "switching SNES refused"
+[[ "$(snes_dirs)" == "['$HB/content/snes']" ]] || fail "SNES should be back with RetroArch: $(snes_dirs)"
+curl -s -X POST "$API/api/systems" -d '{"system":"snes","profile":"nope"}' | grep -q error || fail "an unknown emulator must be refused"
+[[ "$(snes_dirs)" == "['$HB/content/snes']" ]] || fail "a refused choice changed something: $(snes_dirs)"
 
 echo "PASS"

@@ -4,22 +4,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
+#include "platform.h"
 #include "util.h"
 #ifdef ROMM_EMBED_CA
 #include "cacert_pem.h" /* generated from the SDK's Mozilla CA bundle */
 #endif
 
 static char g_ca_bundle[PATH_MAX_LEN];
-/* Built-in roots plus the user's cacert.pem, if any. Only on the PS5, which
- * has no system CA store. */
+/* Built-in roots plus the user's cacert.pem, if any. Only on the consoles,
+ * which have no system CA store. */
 static char *g_ca_blob;
 static size_t g_ca_blob_len;
 static int g_tls_verify = 1;
+static char g_user_agent[64];
 
 void http_global_init(const char *ca_bundle, int tls_verify) {
     curl_global_init(CURL_GLOBAL_ALL);
+    snprintf(g_user_agent, sizeof g_user_agent, "%s/%s", plat_info()->client, APP_VERSION);
     if (ca_bundle && file_exists(ca_bundle)) str_copy(g_ca_bundle, sizeof g_ca_bundle, ca_bundle);
     g_tls_verify = tls_verify;
 #ifdef ROMM_EMBED_CA
@@ -78,7 +83,7 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
     CURL *c = curl_easy_init();
     if (!c) return NULL;
     curl_easy_setopt(c, CURLOPT_URL, url);
-    curl_easy_setopt(c, CURLOPT_USERAGENT, APP_CLIENT "/" APP_VERSION);
+    curl_easy_setopt(c, CURLOPT_USERAGENT, g_user_agent);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(c, CURLOPT_CONNECTTIMEOUT, 15L);
@@ -215,6 +220,25 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ul
     return p->fn(p->ud, p->offset + dlnow, dltotal ? p->offset + dltotal : 0);
 }
 
+/* Downloads read and write in bigger blocks than curl's 16 KB, and ask for a
+ * bigger socket buffer, which keeps a slow or bursty link (PS4 Wi-Fi) busier.
+ * Kept modest: memory is tight for the PS4 payload. */
+#define DOWNLOAD_BUFFER (256 * 1024)
+#define DOWNLOAD_SOCKET_BUFFER (1024 * 1024)
+
+static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
+    int size = DOWNLOAD_SOCKET_BUFFER;
+    (void)ud;
+    if (purpose == CURLSOCKTYPE_IPCXN) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
+    return CURL_SOCKOPT_OK;
+}
+
+static double mono_sec(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
+}
+
 static int download_impl(const char *url, const char *auth, const char *dest, int resume, int verify,
                          http_progress_fn progress, void *ud, http_resp *out) {
     char part[PATH_MAX_LEN];
@@ -229,6 +253,7 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
         snprintf(out->error, sizeof out->error, "cannot open %s", part);
         return -1;
     }
+    setvbuf(f, NULL, _IOFBF, DOWNLOAD_BUFFER);
 
     struct curl_slist *hdrs = NULL;
     CURL *c = easy_new(url, &hdrs, auth, verify);
@@ -244,8 +269,16 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
     curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, xfer_cb);
     curl_easy_setopt(c, CURLOPT_XFERINFODATA, &pc);
     curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)DOWNLOAD_BUFFER);
+    curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, big_rcvbuf);
+    double started = mono_sec();
     CURLcode rc = curl_easy_perform(c);
     fclose(f);
+    double secs = mono_sec() - started;
+    curl_off_t got = 0;
+    curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD_T, &got);
+    if (rc == CURLE_OK && got > 1024 * 1024 && secs > 0)
+        LOGI("downloaded %.1f MB in %.1fs (%.2f MB/s)", got / 1048576.0, secs, got / 1048576.0 / secs);
 
     int r = finish(c, rc, NULL, out, url);
     if (r == 0 && out->status == 200 && offset > 0) {

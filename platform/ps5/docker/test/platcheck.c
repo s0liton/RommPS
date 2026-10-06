@@ -1,4 +1,4 @@
-/* Throwaway compile+link check for src/platform_ps5.c (not meant to run). */
+/* Throwaway compile+link check for platform/ps5/platform.c (not meant to run). */
 #include <stdio.h>
 #include "platform.h"
 

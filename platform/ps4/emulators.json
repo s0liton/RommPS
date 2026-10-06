@@ -1,0 +1,52 @@
+[
+  {
+    "id": "psnes", "name": "pSNES", "title_ids": ["PSNE00001"], "detect": ["/data/psnes"],
+    "profile": {
+      "root": "/data/psnes", "rom_dir": "{root}/roms", "save_dir": "{root}/sram", "bios_dir": "{root}/bios",
+      "save_exts": ".srm", "state_dir": "{root}/saves", "state_exts": "",
+      "platforms": [{"romm": ["snes", "sfam"], "dir": "snes"}]
+    }
+  },
+  {
+    "id": "pnes", "name": "pNES", "title_ids": ["PNES00001"], "detect": ["/data/pnes"],
+    "profile": {
+      "root": "/data/pnes", "rom_dir": "{root}/roms", "save_dir": "{root}/save", "bios_dir": "{root}/bios",
+      "save_exts": ".sav", "state_dir": "{root}/saves", "state_exts": "",
+      "platforms": [{"romm": ["nes", "famicom"], "dir": "nes"}, {"romm": ["fds"], "dir": "fds"}]
+    }
+  },
+  {
+    "id": "pgen", "name": "pGEN", "title_ids": ["PGEN00001"], "detect": ["/data/pgen"],
+    "profile": {
+      "root": "/data/pgen", "rom_dir": "{root}/{platform}", "save_dir": "{root}/rams", "bios_dir": "{root}/bios",
+      "save_exts": ".srm", "state_dir": "{root}/saves", "state_exts": "",
+      "platforms": [
+        {"romm": ["genesis", "genesis-slash-megadrive", "megadrive"], "dir": "megadrive"},
+        {"romm": ["sms", "mastersystem"], "dir": "mastersystem"},
+        {"romm": ["gamegear", "gg"], "dir": "gamegear"},
+        {"romm": ["segacd", "sega-cd"], "dir": "megacd", "save_exts": ".brm"},
+        {"romm": ["sg1000"], "dir": "sg1000"}
+      ]
+    }
+  },
+  {
+    "id": "pgba", "name": "pGBA", "title_ids": ["PGBA00001"], "detect": ["/data/pgba"],
+    "profile": {
+      "root": "/data/pgba", "rom_dir": "{root}/{platform}", "save_dir": "{root}/saves", "bios_dir": "{root}/bios",
+      "save_exts": ".sav", "state_dir": "{root}/saves", "state_exts": "",
+      "platforms": [
+        {"romm": ["gba"], "dir": "gba"},
+        {"romm": ["gbc"], "dir": "gbc"},
+        {"romm": ["gb"], "dir": "gb"}
+      ]
+    }
+  },
+  {
+    "id": "pfbn", "name": "pFBN", "title_ids": ["PFBN00001"], "detect": ["/data/pfba"],
+    "profile": {
+      "root": "/data/pfba", "rom_dir": "{root}/arcade", "save_dir": "{root}/eeproms", "bios_dir": "{root}/arcade",
+      "save_exts": ".fs", "state_dir": "{root}/saves", "state_exts": "",
+      "platforms": [{"romm": ["arcade", "fbneo", "neogeoaes", "neogeomvs", "cps1", "cps2", "cps3"], "dir": "arcade"}]
+    }
+  }
+]

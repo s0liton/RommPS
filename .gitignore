@@ -3,3 +3,4 @@ host-data/
 *.part
 .DS_Store
 .vscode/
+*.elf

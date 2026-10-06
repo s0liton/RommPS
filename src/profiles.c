@@ -6,10 +6,11 @@
 
 #include "platform.h"
 
-/* Platforms are matched on RomM's slug or fs_slug. */
+/* Platforms are matched on RomM's slug or fs_slug. The roots are the PS5's;
+ * profiles_default() swaps in the console's own (plat_info). */
 static const char *DEFAULT_PROFILES_JSON =
     "["
-    /* RetroArch as a native PS5 app. /app0 is its install folder. */
+    /* RetroArch as a native app. /app0 is its install folder. */
     "{\"id\":\"retroarch\",\"name\":\"RetroArch\",\"enabled\":true,"
     "\"root\":\"/data/homebrew/PPSA99169\","
     "\"retroarch_cfg\":\"{root}/config/retroarch.cfg,{root}/retroarch.cfg\","
@@ -70,12 +71,22 @@ static const char *DEFAULT_PROFILES_JSON =
     "\"platforms\":[{\"romm\":[\"ps2\"],\"emulator\":\"ps2-classics\"}]}"
     "]";
 
-cJSON *profiles_default(void) { return cJSON_Parse(DEFAULT_PROFILES_JSON); }
 
 static const char *jstr(const cJSON *a, const cJSON *b, const char *key, const char *def) {
     const cJSON *v = b ? cJSON_GetObjectItemCaseSensitive(b, key) : NULL;
     if (!cJSON_IsString(v)) v = cJSON_GetObjectItemCaseSensitive(a, key);
     return cJSON_IsString(v) ? v->valuestring : def;
+}
+
+cJSON *profiles_default(void) {
+    cJSON *defs = cJSON_Parse(DEFAULT_PROFILES_JSON), *p;
+    const plat_info_t *pi = plat_info();
+    cJSON_ArrayForEach(p, defs) {
+        const char *id = jstr(p, NULL, "id", "");
+        const char *root = !strcmp(id, "retroarch") ? pi->retroarch_root : !strcmp(id, "mednafen") ? pi->mednafen_root : NULL;
+        if (root) cJSON_ReplaceItemInObjectCaseSensitive(p, "root", cJSON_CreateString(root));
+    }
+    return defs;
 }
 
 static int jbool(const cJSON *a, const cJSON *b, const char *key, int def) {
@@ -228,6 +239,18 @@ static void slugs_join(const cJSON *arr, char *out, size_t n) {
     }
 }
 
+const char *profiles_system_key(const cJSON *entry) {
+    const cJSON *first = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(entry, "romm"), 0);
+    return cJSON_IsString(first) ? first->valuestring : "";
+}
+
+int profiles_excludes(const cJSON *profile, const char *key) {
+    const cJSON *x;
+    cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(profile, "exclude"))
+        if (cJSON_IsString(x) && str_ieq(x->valuestring, key)) return 1;
+    return 0;
+}
+
 int profiles_expand(const cJSON *profiles, profile_map **out) {
     int cap = 0, cnt = 0;
     profile_map *maps = NULL;
@@ -263,6 +286,7 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
         const cJSON *plats = cJSON_GetObjectItemCaseSensitive(p, "platforms");
         const cJSON *e;
         cJSON_ArrayForEach(e, plats) {
+            if (profiles_excludes(p, profiles_system_key(e))) continue; /* another emulator plays it */
             if (cnt == cap) {
                 cap = cap ? cap * 2 : 16;
                 maps = realloc(maps, sizeof *maps * (size_t)cap);

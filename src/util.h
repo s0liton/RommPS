@@ -10,7 +10,9 @@
 #ifndef APP_VERSION
 #define APP_VERSION "1.0.0"
 #endif
-#define APP_CLIENT  "romm-sync-ps5" /* RomM "client" identifier */
+#ifndef APP_BUILD /* git describe of the build, from the Makefile */
+#define APP_BUILD "unknown"
+#endif
 
 #define PATH_MAX_LEN 1024
 

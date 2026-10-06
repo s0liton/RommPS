@@ -1,6 +1,7 @@
 #include "web.h"
 
 #include <arpa/inet.h>
+#include <dirent.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
@@ -9,6 +10,7 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <unistd.h>
 
@@ -203,6 +205,9 @@ static cJSON *status_json(void) {
     plat_local_ip(ip, sizeof ip);
     cJSON_AddStringToObject(j, "version", APP_VERSION);
     cJSON_AddStringToObject(j, "platform", plat_name());
+    cJSON_AddStringToObject(j, "console", plat_info()->console);
+    cJSON_AddStringToObject(j, "loader", plat_info()->loader);
+    cJSON_AddBoolToObject(j, "has_tile", plat_info()->has_tile);
     cJSON_AddStringToObject(j, "ip", ip);
     cJSON_AddNumberToObject(j, "uptime", (double)(time(NULL) - g_started));
     config_lock();
@@ -222,6 +227,153 @@ static cJSON *status_json(void) {
     return j;
 }
 
+/* Systems more than one enabled emulator can play, with the one that does:
+ * [{system, options: [{profile, name, emulator}], selected}]. */
+static cJSON *systems_json(const cJSON *profiles) {
+    cJSON *out = cJSON_CreateArray();
+    const cJSON *p, *e;
+    cJSON_ArrayForEach(p, profiles) {
+        if (cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(p, "enabled"))) continue;
+        cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(p, "platforms")) {
+            const char *key = profiles_system_key(e);
+            if (!key[0]) continue;
+            cJSON *sys = NULL, *s;
+            cJSON_ArrayForEach(s, out) if (!strcmp(jget_str(s, "system", ""), key)) sys = s;
+            if (!sys) {
+                sys = cJSON_CreateObject();
+                cJSON_AddStringToObject(sys, "system", key);
+                cJSON_AddArrayToObject(sys, "options");
+                cJSON_AddStringToObject(sys, "selected", "");
+                cJSON_AddItemToArray(out, sys);
+            }
+            const char *id = jget_str(p, "id", "");
+            cJSON *opts = cJSON_GetObjectItemCaseSensitive(sys, "options"), *o;
+            int dup = 0;
+            cJSON_ArrayForEach(o, opts) if (!strcmp(jget_str(o, "profile", ""), id)) dup = 1;
+            if (dup) continue;
+            o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "profile", id);
+            cJSON_AddStringToObject(o, "name", jget_str(p, "name", id));
+            cJSON_AddStringToObject(o, "emulator", jget_str(e, "core_name", jget_str(e, "emulator", "")));
+            cJSON_AddItemToArray(opts, o);
+            if (!jget_str(sys, "selected", "")[0] && !profiles_excludes(p, key))
+                jset_str(sys, "selected", id);
+        }
+    }
+    for (int i = cJSON_GetArraySize(out) - 1; i >= 0; i--)
+        if (cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(out, i), "options")) < 2)
+            cJSON_DeleteItemFromArray(out, i);
+    return out;
+}
+
+static int plays_system(const cJSON *profile, const char *key) {
+    const cJSON *e;
+    cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(profile, "platforms"))
+        if (!strcmp(profiles_system_key(e), key)) return 1;
+    return 0;
+}
+
+/* Hands a system to one emulator: the others that play it exclude it.
+ * -1 (and nothing changed) if that emulator doesn't play it. */
+static int choose_system(cJSON *profiles, const char *key, const char *id) {
+    cJSON *p;
+    int found = 0;
+    cJSON_ArrayForEach(p, profiles) if (!strcmp(jget_str(p, "id", ""), id) && plays_system(p, key)) found = 1;
+    if (!found) return -1;
+    cJSON_ArrayForEach(p, profiles) {
+        if (!plays_system(p, key)) continue;
+        cJSON *ex = cJSON_GetObjectItemCaseSensitive(p, "exclude");
+        if (!cJSON_IsArray(ex)) {
+            cJSON_DeleteItemFromObjectCaseSensitive(p, "exclude");
+            ex = cJSON_AddArrayToObject(p, "exclude");
+        }
+        for (int i = cJSON_GetArraySize(ex) - 1; i >= 0; i--) {
+            const cJSON *x = cJSON_GetArrayItem(ex, i);
+            if (cJSON_IsString(x) && str_ieq(x->valuestring, key)) cJSON_DeleteItemFromArray(ex, i);
+        }
+        if (strcmp(jget_str(p, "id", ""), id) != 0) cJSON_AddItemToArray(ex, cJSON_CreateString(key));
+        else if (!cJSON_GetArraySize(ex)) cJSON_DeleteItemFromObjectCaseSensitive(p, "exclude");
+    }
+    return 0;
+}
+
+/* A growing text buffer for the diagnostics report. */
+typedef struct { char *s; size_t len, cap; } textbuf;
+
+static void tb_add(textbuf *b, const char *txt, size_t n) {
+    if (!txt) return;
+    if (b->len + n + 1 > b->cap) {
+        size_t cap = (b->len + n + 1) * 2;
+        char *s = realloc(b->s, cap);
+        if (!s) return;
+        b->s = s;
+        b->cap = cap;
+    }
+    memcpy(b->s + b->len, txt, n);
+    b->len += n;
+    b->s[b->len] = 0;
+}
+
+static void tb_str(textbuf *b, const char *txt) { if (txt) tb_add(b, txt, strlen(txt)); }
+
+static void tb_json(textbuf *b, const char *title, cJSON *j) {
+    char *txt = cJSON_Print(j);
+    tb_str(b, "\n== ");
+    tb_str(b, title);
+    tb_str(b, "\n");
+    tb_str(b, txt ? txt : "null");
+    tb_str(b, "\n");
+    free(txt);
+    cJSON_Delete(j);
+}
+
+/* The last max bytes of a file, from the start of a line. */
+static void tb_file_tail(textbuf *b, const char *title, const char *path, size_t max) {
+    size_t len = 0;
+    char *txt = read_file(path, &len);
+    if (!txt) return;
+    const char *start = txt;
+    if (len > max) {
+        start = txt + len - max;
+        const char *nl = strchr(start, '\n');
+        if (nl) start = nl + 1;
+    }
+    tb_str(b, "\n== ");
+    tb_str(b, title);
+    tb_str(b, "\n");
+    tb_str(b, start);
+    free(txt);
+}
+
+/* Everything a bug report needs, as one text file: what the console is, the
+ * settings (no token), the state of sync, autostart and updates, and the log
+ * with debug lines. */
+static char *diagnostics_text(void) {
+    textbuf b = {0};
+    char line[512], about[256], now_iso[40], path[PATH_MAX_LEN];
+    plat_describe(about, sizeof about);
+    iso8601_utc(time(NULL), now_iso, sizeof now_iso);
+    snprintf(line, sizeof line, "RomM Sync diagnostics\nversion %s, build %s, %s\n%s\nclock %s, up %lds\n",
+             APP_VERSION, APP_BUILD, plat_name(), about, now_iso, (long)(time(NULL) - g_started));
+    tb_str(&b, line);
+    tb_json(&b, "status", status_json());
+    tb_json(&b, "autostart", autostart_status());
+    tb_json(&b, "update", update_status());
+    config_lock();
+    cJSON *cfg = config_to_json(0);
+    config_unlock();
+    tb_json(&b, "settings", cfg);
+    path_join(path, sizeof path, plat_data_dir(), "boot.log");
+    tb_file_tail(&b, "boot.log", path, 4096);
+    path_join(path, sizeof path, plat_data_dir(), "launcher.log"); /* PS4 home screen app */
+    tb_file_tail(&b, "launcher.log", path, 8192);
+    path_join(path, sizeof path, plat_data_dir(), "romm-sync.log.1");
+    tb_file_tail(&b, "romm-sync.log.1 (previous)", path, 64 * 1024);
+    path_join(path, sizeof path, plat_data_dir(), "romm-sync.log");
+    tb_file_tail(&b, "romm-sync.log", path, 256 * 1024);
+    return b.s;
+}
+
 static const char *image_type(const char *p) {
     char path[1024];
     str_copy(path, sizeof path, p);
@@ -234,7 +386,7 @@ static const char *image_type(const char *p) {
     return "image/jpeg";
 }
 
-/* RomM's platform icons only carry a viewBox, and the PS5 browser renders an
+/* RomM's platform icons only carry a viewBox, and the console browser renders an
  * unsized SVG at 0x0. Because of course it does. Adds width and height from
  * the viewBox. NULL if nothing changed. */
 static char *svg_with_size(const char *svg, size_t len, size_t *out_len) {
@@ -264,11 +416,88 @@ static char *svg_with_size(const char *svg, size_t len, size_t *out_len) {
 /* Proxies covers and icons from RomM. Cover paths come with literal spaces in
  * them ("?ts=2026-08-03 07:20:30") and libcurl 8.18 flat out refuses those.
  * Fair enough, so they get encoded here. */
+/* Covers and platform icons are kept on disk, so each comes from RomM once:
+ * the console's link to the server can be slow (PS4 Wi-Fi), and the PS4's
+ * in-app browser starts without a cache. An asset RomM doesn't have is
+ * remembered for a day (a .missing file), so it isn't asked for again on every
+ * page. The folder is pruned, oldest first, when it passes ASSET_CACHE_MAX. */
+#define ASSET_CACHE_MAX (200LL * 1024 * 1024)
+#define ASSET_MISSING_SEC (24 * 60 * 60)
+static pthread_mutex_t g_asset_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_asset_writes;
+
+static void asset_cache_path(const char *p, const char *suffix, char *out, size_t n) {
+    uint64_t h = 0xcbf29ce484222325ULL; /* FNV-1a of the asset path and query */
+    for (const unsigned char *c = (const unsigned char *)p; *c; c++) h = (h ^ *c) * 0x100000001b3ULL;
+    snprintf(out, n, "%s/cache/assets/%016llx%s", plat_data_dir(), (unsigned long long)h, suffix);
+}
+
+/* Deletes the oldest cached assets until the folder is under the limit. */
+static void asset_cache_prune(void) {
+    char dir[PATH_MAX_LEN], path[PATH_MAX_LEN];
+    snprintf(dir, sizeof dir, "%s/cache/assets", plat_data_dir());
+    for (int round = 0; round < 64; round++) {
+        DIR *d = opendir(dir);
+        struct dirent *de;
+        long long total = 0;
+        time_t oldest_t = 0;
+        char oldest[256] = "";
+        if (!d) return;
+        while ((de = readdir(d))) {
+            struct stat st;
+            if (de->d_name[0] == '.') continue;
+            path_join(path, sizeof path, dir, de->d_name);
+            if (stat(path, &st) != 0) continue;
+            total += st.st_size;
+            if (!oldest[0] || st.st_mtime < oldest_t) {
+                oldest_t = st.st_mtime;
+                str_copy(oldest, sizeof oldest, de->d_name);
+            }
+        }
+        closedir(d);
+        if (total <= ASSET_CACHE_MAX || !oldest[0]) return;
+        path_join(path, sizeof path, dir, oldest);
+        unlink(path);
+    }
+}
+
+static void asset_cache_store(const char *path, const void *body, size_t len) {
+    char tmp[PATH_MAX_LEN + 32];
+    snprintf(tmp, sizeof tmp, "%s.%lx.tmp", path, (unsigned long)pthread_self());
+    mkdir_parent(path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return;
+    int ok = fwrite(body, 1, len, f) == len;
+    if (fclose(f) != 0 || !ok || rename(tmp, path) != 0) {
+        unlink(tmp);
+        return;
+    }
+    pthread_mutex_lock(&g_asset_lock);
+    int prune = ++g_asset_writes % 100 == 0;
+    pthread_mutex_unlock(&g_asset_lock);
+    if (prune) asset_cache_prune();
+}
+
 static void proxy_asset(const request *r) {
-    char p[1024], base[512], auth[300], url[3200];
+    char p[1024], base[512], auth[300], url[3200], cached[PATH_MAX_LEN], missing[PATH_MAX_LEN];
     qparam(r, "p", p, sizeof p);
     if (strncmp(p, "/assets/", 8) != 0 || strstr(p, "..")) {
         send_error(r->fd, 400, "bad asset path");
+        return;
+    }
+    const char *type = image_type(p);
+    asset_cache_path(p, "", cached, sizeof cached);
+    asset_cache_path(p, ".missing", missing, sizeof missing);
+    size_t clen = 0;
+    char *cbody = read_file(cached, &clen);
+    if (cbody) {
+        send_response(r->fd, 200, type, cbody, clen, "Cache-Control: max-age=86400\r\n");
+        free(cbody);
+        return;
+    }
+    time_t miss = file_mtime(missing);
+    if (miss && time(NULL) - miss < ASSET_MISSING_SEC) {
+        send_error(r->fd, 404, "asset unavailable");
         return;
     }
     config_lock();
@@ -286,15 +515,17 @@ static void proxy_asset(const request *r) {
     url[o] = 0;
     http_resp resp;
     if (http_request("GET", url, auth, NULL, NULL, 0, &resp) != 0 || resp.status != 200) {
+        if (resp.status == 404) asset_cache_store(missing, "", 0);
         http_resp_free(&resp);
         send_error(r->fd, 404, "asset unavailable");
         return;
     }
-    const char *type = image_type(p);
+    unlink(missing);
     char *body = resp.body;
     size_t len = resp.len;
     char *fixed = !strcmp(type, "image/svg+xml") ? svg_with_size(body, len, &len) : NULL;
     if (fixed) body = fixed;
+    asset_cache_store(cached, body, len);
     send_response(r->fd, 200, type, body, len, "Cache-Control: max-age=86400\r\n");
     free(fixed);
     http_resp_free(&resp);
@@ -319,6 +550,35 @@ static void route(request *r) {
         char *log = log_recent();
         send_response(fd, 200, "text/plain; charset=utf-8", log ? log : "", log ? strlen(log) : 0, NULL);
         free(log);
+        return;
+    }
+    if (is_get && !strcmp(r->path, "/api/systems")) {
+        config_lock();
+        cJSON *j = systems_json(g_cfg.profiles);
+        config_unlock();
+        send_json(fd, 200, j);
+        return;
+    }
+    if (is_post && !strcmp(r->path, "/api/systems")) {
+        cJSON *j = body_json(r);
+        const char *key = jget_str(j, "system", ""), *id = jget_str(j, "profile", "");
+        config_lock();
+        int rc = key[0] && id[0] ? choose_system(g_cfg.profiles, key, id) : -1;
+        if (rc == 0) {
+            g_cfg.profiles_custom = 1;
+            rc = config_save();
+        }
+        config_unlock();
+        cJSON_Delete(j);
+        if (rc) send_error(fd, 400, "unknown system or emulator");
+        else send_ok(fd);
+        return;
+    }
+    if (is_get && !strcmp(r->path, "/api/diagnostics")) {
+        char *txt = diagnostics_text();
+        send_response(fd, 200, "text/plain; charset=utf-8", txt ? txt : "", txt ? strlen(txt) : 0,
+                      "Content-Disposition: attachment; filename=\"romm-sync-diagnostics.txt\"\r\n");
+        free(txt);
         return;
     }
     if (is_get && !strcmp(r->path, "/api/config")) {
@@ -390,13 +650,23 @@ static void route(request *r) {
         return;
     }
     if (is_post && !strcmp(r->path, "/api/setup/emulators")) {
-        /* Profiles for the emulators picked in the wizard. */
+        /* Profiles for the emulators picked in the wizard. "choices" maps a
+         * system several of them play to the root of the one that keeps it;
+         * the others exclude it. */
         cJSON *j = body_json(r), *found = detect_emulators(), *profiles = cJSON_CreateArray();
-        const cJSON *root, *c;
+        const cJSON *root, *c, *choices = cJSON_GetObjectItemCaseSensitive(j, "choices");
         cJSON_ArrayForEach(root, cJSON_GetObjectItemCaseSensitive(j, "roots")) {
             cJSON_ArrayForEach(c, found) {
-                if (cJSON_IsString(root) && !strcmp(jget_str(c, "root", ""), root->valuestring))
-                    cJSON_AddItemToArray(profiles, cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(c, "profile"), 1));
+                if (!cJSON_IsString(root) || strcmp(jget_str(c, "root", ""), root->valuestring) != 0) continue;
+                cJSON *p = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(c, "profile"), 1), *ex = cJSON_CreateArray();
+                const cJSON *e;
+                cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(p, "platforms")) {
+                    const char *key = profiles_system_key(e), *keeper = jget_str(choices, key, NULL);
+                    if (keeper && strcmp(keeper, root->valuestring) != 0) cJSON_AddItemToArray(ex, cJSON_CreateString(key));
+                }
+                if (cJSON_GetArraySize(ex)) cJSON_AddItemToObject(p, "exclude", ex);
+                else cJSON_Delete(ex);
+                cJSON_AddItemToArray(profiles, p);
             }
         }
         cJSON_Delete(found);
@@ -609,7 +879,7 @@ static void route(request *r) {
         port = g_cfg.web_port;
         config_unlock();
         if (plat_install_tile(port) == 0) send_ok(fd);
-        else send_error(fd, 500, "tile install failed or unsupported on this platform");
+        else send_error(fd, 500, plat_info()->has_tile ? "tile install failed" : "home screen tiles aren't supported on this console");
         return;
     }
     if (is_get && !strcmp(r->path, "/cover")) {

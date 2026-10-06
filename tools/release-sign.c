@@ -1,7 +1,7 @@
 /* Signs releases for in-app updates (see src/update.c). Built with "make tools".
  *
  *   release-sign keygen                       new key: secret seed and public key, hex
- *   release-sign manifest VERSION romm-sync.elf  > manifest.json
+ *   release-sign manifest VERSION romm-sync.elf  > manifest.json   ("file" is the payload's name)
  *   RELEASE_SIGNING_KEY=<seed hex> release-sign sign manifest.json > manifest.sig
  *   release-sign check manifest.json manifest.sig   signed by a key the payload trusts?
  *
@@ -72,7 +72,8 @@ int main(int argc, char **argv) {
         crypto_sha512(h, elf, len);
         hex(h, 64, hh);
         const char *v = argv[2][0] == 'v' ? argv[2] + 1 : argv[2];
-        printf("{\"version\":\"%s\",\"file\":\"romm-sync.elf\",\"size\":%zu,\"sha512\":\"%s\"}\n", v, len, hh);
+        const char *name = strrchr(argv[3], '/') ? strrchr(argv[3], '/') + 1 : argv[3];
+        printf("{\"version\":\"%s\",\"file\":\"%s\",\"size\":%zu,\"sha512\":\"%s\"}\n", v, name, len, hh);
         return 0;
     }
     if (!strcmp(argv[1], "sign") && argc == 3) {

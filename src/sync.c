@@ -128,6 +128,23 @@ static int platform_ids_for_map(const scan_ctx *c, const profile_map *m, int *id
     return n;
 }
 
+struct server_rom_match {
+    const char *name, *stem;
+    cJSON *exact, *by_stem; /* copies of the matching games */
+};
+
+/* An exact file name match wins; otherwise the first game with the same stem. */
+static int match_server_rom(const cJSON *it, const cJSON *page, int first, void *ctx) {
+    struct server_rom_match *m = ctx;
+    if (!it) return 0;
+    if (str_ieq(jget_str(it, "fs_name", ""), m->name)) {
+        m->exact = cJSON_Duplicate(it, 1);
+        return 1;
+    }
+    if (!m->by_stem && str_ieq(jget_str(it, "fs_name_no_ext", ""), m->stem)) m->by_stem = cJSON_Duplicate(it, 1);
+    return 0;
+}
+
 /* The RomM game whose file name matches a local file or folder. */
 static cJSON *resolve_rom_on_server(const scan_ctx *c, const profile_map *m, const char *name,
                                     int is_dir) {
@@ -140,31 +157,18 @@ static cJSON *resolve_rom_on_server(const scan_ctx *c, const profile_map *m, con
     else
         path_stem(stem, sizeof stem, name);
     char *q = url_q(stem);
-    int o = snprintf(path, sizeof path, "/api/roms?search_term=%s&limit=50&with_total=false", q);
+    int o = snprintf(path, sizeof path, "/api/roms?search_term=%s&with_total=false", q);
     free(q);
     for (int i = 0; i < nids; i++) o += snprintf(path + o, sizeof path - (size_t)o, "&platform_ids=%d", ids[i]);
 
+    struct server_rom_match match = {name, stem, NULL, NULL};
     long st = 0;
-    cJSON *j = romm_call("GET", path, NULL, &st);
-    cJSON *items = cJSON_GetObjectItemCaseSensitive(j, "items");
-    cJSON *found = NULL, *it;
-    cJSON_ArrayForEach(it, items) {
-        if (str_ieq(jget_str(it, "fs_name", ""), name)) {
-            found = it;
-            break;
-        }
+    romm_list(path, 0, 50, match_server_rom, &match, &st);
+    if (match.exact) {
+        cJSON_Delete(match.by_stem);
+        return match.exact;
     }
-    if (!found) {
-        cJSON_ArrayForEach(it, items) {
-            if (str_ieq(jget_str(it, "fs_name_no_ext", ""), stem)) {
-                found = it;
-                break;
-            }
-        }
-    }
-    cJSON *res = found ? cJSON_Duplicate(found, 1) : NULL;
-    cJSON_Delete(j);
-    return res;
+    return match.by_stem;
 }
 
 static void record_local_rom(const char *path, int rom_id, const profile_map *m, const char *name,

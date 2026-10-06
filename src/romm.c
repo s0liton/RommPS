@@ -30,6 +30,10 @@ cJSON *romm_call_raw(const char *base, const char *auth, const char *method, con
     free(payload);
     if (status) *status = rc == 0 ? r.status : 0;
     cJSON *j = (rc == 0 && r.body) ? cJSON_Parse(r.body) : NULL;
+    /* A big reply can't always be parsed where memory is tight (the PS4 payload
+     * shares GoldHEN's process); romm_list pages lists to stay small. */
+    if (rc == 0 && r.status < 300 && r.len && !j)
+        LOGW("%s %s -> %ld, but the %zu-byte reply couldn't be read (out of memory?)", method, path, r.status, r.len);
     if (rc == 0 && r.status >= 400) {
         char d[256];
         romm_error_detail(j, d, sizeof d);
@@ -38,6 +42,33 @@ cJSON *romm_call_raw(const char *base, const char *auth, const char *method, con
     }
     http_resp_free(&r);
     return j;
+}
+
+int romm_list(const char *path, int offset, int limit, romm_list_cb cb, void *ctx, long *status) {
+    int seen = 0;
+    if (status) *status = 0;
+    while (seen < limit) {
+        char url[2048];
+        int want = limit - seen < ROMM_LIST_PAGE ? limit - seen : ROMM_LIST_PAGE;
+        snprintf(url, sizeof url, "%s%soffset=%d&limit=%d", path, strchr(path, '?') ? "&" : "?", offset + seen, want);
+        long st = 0;
+        cJSON *page = romm_call("GET", url, NULL, &st);
+        if (status) *status = st;
+        if (st != 200 || !page) {
+            cJSON_Delete(page);
+            return -1;
+        }
+        const cJSON *items = cJSON_GetObjectItemCaseSensitive(page, "items"), *it;
+        int got = cJSON_GetArraySize(items), stop = 0;
+        cJSON_ArrayForEach(it, items) {
+            if ((stop = cb(it, page, seen == 0, ctx)) != 0) break;
+        }
+        if (got == 0 && seen == 0) cb(NULL, page, 1, ctx); /* an empty list still has a total */
+        cJSON_Delete(page);
+        seen += got;
+        if (stop || got < want) break;
+    }
+    return seen;
 }
 
 cJSON *romm_call(const char *method, const char *path, const cJSON *body, long *status) {
@@ -84,8 +115,8 @@ int romm_device_init(const char *base, romm_device_flow *flow) {
     cJSON_AddStringToObject(body, "client_device_identifier", g_cfg.client_device_identifier);
     cJSON_AddStringToObject(body, "name", g_cfg.device_name);
     config_unlock();
-    cJSON_AddStringToObject(body, "client", APP_CLIENT);
-    cJSON_AddStringToObject(body, "platform", "PlayStation 5");
+    cJSON_AddStringToObject(body, "client", plat_info()->client);
+    cJSON_AddStringToObject(body, "platform", plat_info()->console);
     cJSON_AddStringToObject(body, "client_version", APP_VERSION);
     cJSON_AddItemToObject(body, "requested_scopes", scopes_array());
     long st = 0;
@@ -159,8 +190,8 @@ int romm_register_device(const char *base, const char *token, char *device_id, i
     config_lock();
     cJSON_AddStringToObject(body, "name", g_cfg.device_name);
     config_unlock();
-    cJSON_AddStringToObject(body, "platform", "PlayStation 5");
-    cJSON_AddStringToObject(body, "client", APP_CLIENT);
+    cJSON_AddStringToObject(body, "platform", plat_info()->console);
+    cJSON_AddStringToObject(body, "client", plat_info()->client);
     cJSON_AddStringToObject(body, "client_version", APP_VERSION);
     if (ip[0]) cJSON_AddStringToObject(body, "ip_address", ip);
     cJSON_AddStringToObject(body, "sync_mode", "api");

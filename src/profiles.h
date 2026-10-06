@@ -21,7 +21,12 @@
  * "bundle_dirs" lists where to look, with {save_path}, {save_root} and {bios}.
  * A platform entry can override any profile key. "sync_requires_option"
  * ({"key", "value", "default", "hint"}) turns save sync on only while a core
- * option has that value. Paths can use {root}, {platform}, {rom_dir} and {data}. */
+ * option has that value. Paths can use {root}, {platform}, {rom_dir} and {data}.
+ *
+ * A system is named by the first slug of its platform entry ("psx", "genesis";
+ * the first slugs of detect.c's DB_MAP). When several emulators play one, the
+ * user picks one and the others list it in "exclude": ["psx"], which drops
+ * that platform entry from them. */
 #ifndef ROMM_PROFILES_H
 #define ROMM_PROFILES_H
 
@@ -74,6 +79,11 @@ void profile_rules_for(const profile_map *m, const char *rom_path, rom_rules *ou
 
 /* Built-in default profiles (caller owns the returned array). */
 cJSON *profiles_default(void);
+
+/* The system a platform entry plays (its first RomM slug), and whether a
+ * profile hands that system to another emulator ("exclude"). */
+const char *profiles_system_key(const cJSON *entry);
+int profiles_excludes(const cJSON *profile, const char *key);
 
 /* One entry per enabled profile and platform, with paths resolved.
  * Returns the count; free *out. */

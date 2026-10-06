@@ -1,6 +1,7 @@
 /* platform.h for macOS and Linux, used for development and tests.
  * ROMM_SYNC_DATA sets the data folder (default ./host-data). Writing a title id
- * to <data>/foreground pretends a game is running. */
+ * to <data>/foreground pretends a game is running. It presents itself as a PS5,
+ * so the end-to-end tests cover the PS5 paths and release assets. */
 #include <arpa/inet.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
@@ -9,11 +10,34 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/utsname.h>
 
 #include "platform.h"
 #include "util.h"
 
 static char g_data[PATH_MAX_LEN];
+
+static const char *const HOMEBREW_DIRS[] = {NULL}; /* ROMM_SYNC_HOMEBREW */
+static const char *const EMULATOR_DIRS[] = {NULL};
+
+static const plat_info_t INFO = {
+    .name = "host",
+    .console = "PlayStation 5",
+    .client = "romm-sync-ps5",
+    .loader = "etaHEN",
+    .payload = "romm-sync.elf",
+    .manifest = "manifest.json",
+    .manifest_sig = "manifest.sig",
+    .autostart_dir = "./host-data/etaHEN/payloads", /* ROMM_SYNC_AUTOSTART in tests */
+    .autostart_flag = "romm-sync.elf.auto_start",
+    .homebrew_dirs = HOMEBREW_DIRS,
+    .emulator_dirs = EMULATOR_DIRS,
+    .retroarch_root = "/data/homebrew/PPSA99169",
+    .mednafen_root = "/data/homebrew/Mednafen",
+    .can_relaunch = 1,
+};
+
+const plat_info_t *plat_info(void) { return &INFO; }
 
 int plat_init(void) {
     signal(SIGPIPE, SIG_IGN);
@@ -61,7 +85,13 @@ int plat_launch_elf(const void *elf, size_t len) {
     return write_file_atomic(p, elf, len);
 }
 
-const char *plat_name(void) { return "host"; }
+const char *plat_name(void) { return INFO.name; }
+
+void plat_describe(char *buf, size_t n) {
+    struct utsname u;
+    if (uname(&u)) snprintf(buf, n, "host build");
+    else snprintf(buf, n, "host build on %s %s %s", u.sysname, u.release, u.machine);
+}
 
 void plat_local_ip(char *buf, size_t n) {
     buf[0] = 0;

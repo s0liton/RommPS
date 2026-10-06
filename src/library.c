@@ -493,50 +493,107 @@ cJSON *library_platforms(char *err, int en) {
     return out;
 }
 
+/* Whether a game is downloaded: a local file or folder the state maps to it. */
+static int rom_installed(int id) {
+    const cJSON *e;
+    int installed = 0;
+    state_lock();
+    cJSON_ArrayForEach(e, state_section("roms")) {
+        if ((int)jget_num(e, "rom_id", -1) == id && (file_exists(e->string) || dir_exists(e->string))) {
+            installed = 1;
+            break;
+        }
+    }
+    state_unlock();
+    return installed;
+}
+
+/* Recent library pages, so going back, changing letters or reopening the UI
+ * doesn't fetch the same games again over a slow link. Installed flags are
+ * worked out again on every hit. */
+#define PAGE_CACHE_SLOTS 32
+#define PAGE_CACHE_SEC   300
+static struct {
+    char key[600];
+    double at;
+    cJSON *page;
+} g_pages[PAGE_CACHE_SLOTS];
+static pthread_mutex_t g_pages_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static cJSON *page_cache_get(const char *key) {
+    cJSON *hit = NULL;
+    double now = mono_now();
+    pthread_mutex_lock(&g_pages_lock);
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++)
+        if (g_pages[i].page && !strcmp(g_pages[i].key, key) && now - g_pages[i].at < PAGE_CACHE_SEC)
+            hit = cJSON_Duplicate(g_pages[i].page, 1);
+    pthread_mutex_unlock(&g_pages_lock);
+    return hit;
+}
+
+static void page_cache_put(const char *key, const cJSON *page) {
+    int slot = 0;
+    pthread_mutex_lock(&g_pages_lock);
+    for (int i = 0; i < PAGE_CACHE_SLOTS; i++) {
+        if (!g_pages[i].page || !strcmp(g_pages[i].key, key)) {
+            slot = i;
+            break;
+        }
+        if (g_pages[i].at < g_pages[slot].at) slot = i;
+    }
+    cJSON_Delete(g_pages[slot].page);
+    str_copy(g_pages[slot].key, sizeof g_pages[slot].key, key);
+    g_pages[slot].at = mono_now();
+    g_pages[slot].page = cJSON_Duplicate(page, 1);
+    pthread_mutex_unlock(&g_pages_lock);
+}
+
+/* Keeps only what the library page shows of each game. */
+static int add_library_rom(const cJSON *it, const cJSON *page, int first, void *ctx) {
+    cJSON *out = ctx;
+    if (first && !cJSON_GetObjectItemCaseSensitive(out, "total")) {
+        cJSON_AddNumberToObject(out, "total", jget_num(page, "total", 0));
+        /* First letter -> offset of its first game, for the A-Z ribbon. */
+        const cJSON *ci = cJSON_GetObjectItemCaseSensitive(page, "char_index");
+        if (cJSON_IsObject(ci)) cJSON_AddItemToObject(out, "char_index", cJSON_Duplicate(ci, 1));
+    }
+    if (!it) return 0;
+    int id = (int)jget_num(it, "id", 0);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "id", id);
+    cJSON_AddStringToObject(o, "name", jget_str(it, "name", jget_str(it, "fs_name", "")));
+    cJSON_AddStringToObject(o, "fs_name", jget_str(it, "fs_name", ""));
+    cJSON_AddNumberToObject(o, "size", jget_num(it, "fs_size_bytes", 0));
+    cJSON_AddStringToObject(o, "cover", jget_str(it, "path_cover_small", ""));
+    cJSON_AddBoolToObject(o, "multi", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(it, "has_multiple_files")));
+    cJSON_AddBoolToObject(o, "installed", rom_installed(id));
+    cJSON_AddItemToArray(cJSON_GetObjectItemCaseSensitive(out, "items"), o);
+    return 0;
+}
+
 cJSON *library_roms(int platform_id, const char *search, int offset, int limit, char *err, int en) {
     char path[1024];
     char *q = http_escape(search ? search : "");
-    snprintf(path, sizeof path,
-             "/api/roms?platform_ids=%d&search_term=%s&offset=%d&limit=%d&order_by=name&order_dir=asc",
-             platform_id, q, offset, limit);
+    snprintf(path, sizeof path, "/api/roms?platform_ids=%d&search_term=%s&order_by=name&order_dir=asc", platform_id, q);
     free(q);
+    char key[sizeof g_pages[0].key];
+    snprintf(key, sizeof key, "%s&offset=%d&limit=%d", path, offset, limit);
+    cJSON *out = page_cache_get(key), *it;
+    if (out) {
+        cJSON_ArrayForEach(it, cJSON_GetObjectItemCaseSensitive(out, "items"))
+            cJSON_ReplaceItemInObjectCaseSensitive(it, "installed", cJSON_CreateBool(rom_installed((int)jget_num(it, "id", 0))));
+        return out;
+    }
+    out = cJSON_CreateObject();
+    cJSON_AddArrayToObject(out, "items");
     long st = 0;
-    cJSON *j = romm_call("GET", path, NULL, &st);
-    if (st != 200 || !j) {
-        snprintf(err, (size_t)en, "could not load games (HTTP %ld)", st);
-        cJSON_Delete(j);
+    if (romm_list(path, offset, limit, add_library_rom, out, &st) < 0) {
+        if (st == 200) snprintf(err, (size_t)en, "could not read RomM's list of games (see the log)");
+        else snprintf(err, (size_t)en, "could not load games (HTTP %ld)", st);
+        cJSON_Delete(out);
         return NULL;
     }
-    cJSON *out = cJSON_CreateObject();
-    cJSON_AddNumberToObject(out, "total", jget_num(j, "total", 0));
-    /* First letter -> offset of its first game, for the A-Z ribbon. */
-    const cJSON *ci = cJSON_GetObjectItemCaseSensitive(j, "char_index");
-    if (cJSON_IsObject(ci)) cJSON_AddItemToObject(out, "char_index", cJSON_Duplicate(ci, 1));
-    cJSON *items = cJSON_AddArrayToObject(out, "items");
-    const cJSON *it;
-    state_lock();
-    cJSON *roms = state_section("roms");
-    cJSON_ArrayForEach(it, cJSON_GetObjectItemCaseSensitive(j, "items")) {
-        int id = (int)jget_num(it, "id", 0);
-        int installed = 0;
-        const cJSON *e;
-        cJSON_ArrayForEach(e, roms) {
-            if ((int)jget_num(e, "rom_id", -1) == id && (file_exists(e->string) || dir_exists(e->string))) {
-                installed = 1;
-                break;
-            }
-        }
-        cJSON *o = cJSON_CreateObject();
-        cJSON_AddNumberToObject(o, "id", id);
-        cJSON_AddStringToObject(o, "name", jget_str(it, "name", jget_str(it, "fs_name", "")));
-        cJSON_AddStringToObject(o, "fs_name", jget_str(it, "fs_name", ""));
-        cJSON_AddNumberToObject(o, "size", jget_num(it, "fs_size_bytes", 0));
-        cJSON_AddStringToObject(o, "cover", jget_str(it, "path_cover_small", ""));
-        cJSON_AddBoolToObject(o, "multi", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(it, "has_multiple_files")));
-        cJSON_AddBoolToObject(o, "installed", installed);
-        cJSON_AddItemToArray(items, o);
-    }
-    state_unlock();
-    cJSON_Delete(j);
+    if (!cJSON_GetObjectItemCaseSensitive(out, "total")) cJSON_AddNumberToObject(out, "total", 0);
+    page_cache_put(key, out);
     return out;
 }
