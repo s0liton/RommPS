@@ -40,9 +40,7 @@ HTTP and HTTPS servers both work. Common certificate authorities (the Mozilla li
 
 ## Updates
 
-Settings shows when a new version is out (it checks GitHub once a day, which you can turn off) and can install it for you. Nothing installs on its own. The update waits until no sync, download or game is running, replaces the payload in etaHEN's autostart folder (keeping the old one as `romm-sync.elf.bak`), and restarts RomM Sync.
-
-Each release is signed. RomM Sync only installs an update whose signature matches a key built into it and whose file matches the signed checksum, so a modified download is rejected.
+Settings shows when a new version is out (it checks GitHub once a day, which you can turn off) and can install it for you. The update waits until no sync, download or game is running, replaces the payload in etaHEN's autostart folder (keeping the old one as `romm-sync.elf.bak`), and restarts RomM Sync. Releases are signed for security (malicious homebrew apps are a thing...)
 
 ## Setup
 
@@ -95,12 +93,6 @@ make host tools       # macOS or Linux build for development, plus tools/release
 tools/ps5-build.sh    # PS5 build in Docker, output in build/ps5/
 tests/e2e.sh          # end-to-end tests against a mock RomM server
 ```
-
-## Releasing
-
-Merge a pull request from a branch named with the version, such as `release/v1.0.2`. The release workflow tags the merge commit, builds the payload, signs it and publishes the release. You can also push a `v1.2.3` tag yourself.
-
-Signing needs the `RELEASE_SIGNING_KEY` repository secret: the 64-character hex key printed by `build/host/release-sign keygen`. Its public half must be in `src/update_keys.h`, which also holds a backup key that is kept offline. If the release key is ever lost or leaked, sign the next release with the backup key, and ship a new key pair in that release.
 
 ## P.S to the industry
 
