@@ -1,4 +1,4 @@
-# RomM Sync for PS5
+# RomM Server Client for PS4 and PS5
 
 ![Project Screenshot](assets/library.png)
 
