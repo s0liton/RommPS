@@ -35,6 +35,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -506,7 +507,7 @@ class RommPS final : public app::Concept
         const bool old_payload = s.reachable && app_.payload_too_old();
         std::string where = !s.known       ? "Connecting"
                             : !s.reachable ? "RomM Sync isn't running"
-                            : old_payload  ? "RomM Sync " + s.version + " is too old: update it in Settings"
+                            : old_payload  ? "Updating RomM Sync " + s.version
                             : s.paired     ? s.user + " @ " + s.server
                                            : "Not paired";
         const float dot_x = 1824 - 12 - ui::text(list, fonts.regular, context_.fonts.regular.font->fit(where, 22, 640), 1824, 90,
@@ -568,9 +569,14 @@ class RommPS final : public app::Concept
                                : s.conflicts > 1                 ? std::to_string(s.conflicts) + " saves need you"
                                                                  : "Your saves are synced";
         ui::text(list, fonts.display, headline, x - 4, 304, 80, L.text);
-        std::string line = s.syncing         ? (s.phase.empty() ? "Working" : s.phase)
-                           : s.sync_count    ? "Last sync " + ago(s.uptime - s.last_run) + "  \xC2\xB7  " + s.last_result
-                                             : "No sync yet";
+        // Saves changed in both places are settled in the web UI, for now.
+        char web[96];
+        std::snprintf(web, sizeof web, "http://%s:%d", s.ip.c_str(), s.port);
+        std::string line = s.syncing                         ? (s.phase.empty() ? "Working" : s.phase)
+                           : s.conflicts > 0 && !s.ip.empty() ? std::string("Choose which copy to keep at ") + web
+                           : s.sync_count                    ? "Last sync " + ago(std::difftime(std::time(nullptr), s.last_run)) +
+                                                                "  \xC2\xB7  " + s.last_result
+                                                             : "No sync yet";
         ui::text(list, fonts.regular, context_.fonts.regular.font->fit(line, 28, 1500), x, 360, 28, L.muted);
 
         // Sync now

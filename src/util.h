@@ -8,7 +8,7 @@
 
 #define APP_NAME    "romm-sync"
 #ifndef APP_VERSION
-#define APP_VERSION "1.1.0"
+#define APP_VERSION "1.1.1"
 #endif
 #ifndef APP_BUILD /* git describe of the build, from the Makefile */
 #define APP_BUILD "unknown"
@@ -44,6 +44,13 @@ int set_file_mtime(const char *path, time_t t);
 char *read_file(const char *path, size_t *len); /* malloc'd, NUL-terminated */
 int write_file_atomic(const char *path, const void *data, size_t len);
 int copy_file(const char *src, const char *dst);
+
+/* -1, 0 or 1 as a is older, the same as or newer than b ("1.2.3", a leading
+ * "v" and anything after the patch ignored). Unreadable counts as 0.0.0. */
+int version_cmp(const char *a, const char *b);
+/* The version a payload ELF says it is (its ROMM_SYNC_VERSION= tag, from
+ * 1.1.0 on), or "" if it has none. */
+void payload_version(const void *elf, size_t len, char *out, size_t n);
 int link_or_copy(const char *src, const char *dst); /* hard link, a copy across drives; folders too */
 int move_file(const char *src, const char *dst); /* rename, falls back to copy+unlink */
 void remove_tree(const char *path);              /* rm -rf */

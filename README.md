@@ -18,13 +18,13 @@ A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN 
 - **RomM API Compliant**
   - RommPS is meant to strictly stick to RomM's API and method of syncing saves and states, ensuring we don't break anything and support RomM's latest features.
 - **Secure and Human-Coded**
-  - Each release is signed and verified by a previous release during in-app or ProsperoStore updates. This app was primarily coded by a **human**, and will be frequently updated and maintained. AI was primarily used for explaining concepts, creating documentation, and converting data. Ya know, the tedious stuff.
+  - Each release is signed. The payload checks the signature before it updates itself, and ProsperoStore checks every download against the release's checksum. This app was primarily coded by a **human**, and will be frequently updated and maintained. AI was primarily used for explaining concepts, creating documentation, and converting data. Ya know, the tedious stuff.
 - **Easter Eggs**
   - Check in the Settings, scroll the settings list, see if you find the X. This **hint** won't be here forever.
 
 ## Supported Emulators and Games
 
-Technically, RommPS on both PS4 and PS5 will support **any** emulator as long as you map the game, save, and save state folders correctly during emulator setup. Most should just work, but some emulators/consoles may have weird formats, or Romm may not fully support all features. 
+Technically, RomM Sync on both PS4 and PS5 will support **any** emulator as long as you map the game, save, and save state folders correctly during emulator setup. Most should just work, but some emulators/consoles may have weird formats, or Romm may not fully support all features. 
 
 As a general rule, Game library syncing will pretty much work with anything. Saves/States are the more complex side of things.
 
@@ -66,7 +66,7 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
 
 ## Install
 
-Install **RommPS** from [ProsperoStore](https://homebrew.page) and open it. It'll set up the background daemon, and take you through a setup wizard. That's it: RommPS carries the RomM Sync payload and starts it for you.
+Install **RommPS** from [ProsperoStore](https://homebrew.page) and open it. It'll set up the background daemon, and take you through a setup wizard. That's it: RommPS carries the RomM Sync payload and starts it for you. From then on it starts with your HEN, so after a jailbreak or waking the console it's ready to go.
 
 Not using the store? Download `PPSA76677.zip` from the releases page, unzip it and copy the `PPSA76677` folder to `/data/homebrew/` on the console.
 
@@ -79,7 +79,9 @@ If you'd rather run just the payload, without the app:
    ```
 3. Set it up at `http://<ps5-ip>:8780` from another device.
 
-To start RommPS with the console, let your HEN start it: the last setup step does this for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, in `/data/etaHEN/payloads` or `/data/OnionHEN/payloads` (onionHEN's Toolbox has a toggle for it under Payloads). RomM Sync works out which HEN is running. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it there over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
+On the PS5 the payload doesn't update itself: new versions come with RommPS. Without the app, download the new `romm-sync.elf` yourself.
+
+RomM Sync starts with your HEN, and setup turns this on for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, and RomM Sync puts both in every HEN's folder on the console (`/data/etaHEN/payloads` and `/data/OnionHEN/payloads`), so switching HENs keeps working. If a payload manager like pldmgr has its own copy, that copy is kept up to date too. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
 
 ### PS4
 
@@ -98,7 +100,9 @@ Don't send the payload to GoldHEN's network loader on port 9090: GoldHEN 2.4 cra
 
 ## Updates
 
-There are two pieces to keep updated, the front end application, and the background service/daemon. You can update via the ProsperoStore (or other homebrew storefronts eventually), in the app itself, or manually using the zip file.
+On the PS5, just update RommPS: from ProsperoStore (or other homebrew storefronts eventually), or by copying the new zip's folder over the old one. The background service comes with it, and RommPS swaps it in the next time you open it, once nothing is syncing or downloading. An older version never replaces a newer one.
+
+On the PS4, the payload updates itself from Settings.
 
 ## Setup
 
@@ -117,7 +121,7 @@ The setup walks you through five steps:
 LRPS2 keeps every game on one shared memory card by default. RomM stores saves per game, so pick one of these during setup:
 
 - **One card per game.** Works with any RomM version. In RetroArch, open the LRPS2 core options and turn off _Shared Memory Cards_. After that, each game's card syncs like any other save. Saves already on the shared card stay there.
-- **Back up the shared card.** Needs RomM 5.3.0 or newer. The whole card is uploaded when it changes, and you can restore it from Settings. It isn't merged with other devices.
+- **Back up the shared card.** Needs RomM 5.3.0 or newer. The whole card is uploaded when it changes, and you can restore it from Settings in the web UI. It isn't merged with other devices.
 
 PSP, GameCube and Wii saves are synced as one zip per game, the same format other RomM clients use. Depending on the client, they may or may not support unzipping the saves (I don't truly know), but this client does!
 
@@ -127,7 +131,7 @@ My opinion? One card per game is better since 8MB memory cards fill up quick.
 
 I've included direct support for most of the emulators that are out right now, except for the ones that won't even launch... you can sync games, states, and saves anywhere you want, but the presets should do it for most people.
 
-Settings has a JSON editor for emulator profiles, and a table showing which folders are used for each platform. A profile lists an emulator's folders and the RomM platforms it plays:
+Settings in the web UI has a JSON editor for emulator profiles, and a table showing which folders are used for each platform. A profile lists an emulator's folders and the RomM platforms it plays:
 
 ```json
 {
@@ -153,6 +157,7 @@ tools/ps5-build.sh    # PS5 build in Docker, output in build/ps5/
 tools/ps4-build.sh    # PS4 payload in Docker, output in build/ps4/
 tools/ps4-build.sh ps4-pkg   # plus the PS4 home screen app (platform/ps4/app)
 tests/e2e.sh          # end-to-end tests against a mock RomM server
+tests/autostart.sh    # autostart, version checks and HEN folders
 ```
 
 Both consoles build from the same code in `src/`. What differs lives in `platform/<console>/`: `platform.c` (the `src/platform.h` interface), the make rules and the Docker SDK image. `platform/console/` has the parts the PS4 and PS5 share, and `platform/host/` is the development build.

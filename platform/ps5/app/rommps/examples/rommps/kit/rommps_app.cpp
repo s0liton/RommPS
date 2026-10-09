@@ -8,7 +8,9 @@
 #include "stb_image.h" // implemented by base/VulkanglTFModel.cpp
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -38,6 +40,19 @@ constexpr std::size_t kCoverTextures = 360; // covers kept as textures (about 13
 constexpr std::size_t kListsKept = 24; // game lists kept at once: every tile on the platforms page, and more
 
 void *g_renderer = nullptr;
+
+// -1, 0 or 1 as a is older, the same as or newer than b ("1.2.3"); one that
+// isn't a version ("dev", "") counts as 0.0.0.
+int version_cmp(const std::string &a, const std::string &b)
+{
+    int x[3] = {}, y[3] = {};
+    std::sscanf(a.c_str(), "%d.%d.%d", &x[0], &x[1], &x[2]);
+    std::sscanf(b.c_str(), "%d.%d.%d", &y[0], &y[1], &y[2]);
+    for (int i = 0; i < 3; ++i)
+        if (x[i] != y[i])
+            return x[i] < y[i] ? -1 : 1;
+    return 0;
+}
 
 std::string url_escape(const std::string &s)
 {
@@ -161,7 +176,7 @@ App &app()
     return instance;
 }
 
-App::App() : api_("127.0.0.1", 8780)
+App::App() : api_("127.0.0.1", payload_port())
 {
     refresh_status();
 }
@@ -331,6 +346,37 @@ void App::start_payload()
     }).detach();
 }
 
+void App::repair_autostart()
+{
+    api_.get("/api/autostart", [this](const Response &r) {
+        std::unique_ptr<cJSON, void (*)(cJSON *)> j(r.json(), cJSON_Delete);
+        if (!r.ok() || !j || !flag(j.get(), "supported"))
+            return;
+        // Setup used to leave autostart off unless it was turned on, so most
+        // people never did. It's switched on once for anyone who never chose
+        // either way; after that their choice stands.
+        if (!flag(j.get(), "enabled") && cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(j.get(), "chosen")) &&
+            status_.setup_complete)
+        {
+            install_autostart([this](const Response &a) {
+                if (a.ok())
+                    say("RomM Sync now starts with the console. You can turn this off in Set up again.");
+            });
+            return;
+        }
+        bool old = false;
+        const cJSON *c;
+        cJSON_ArrayForEach(c, cJSON_GetObjectItemCaseSensitive(j.get(), "copies"))
+            old |= version_cmp(str(c, "version"), kMinPayload) < 0;
+        if (!old)
+            return;
+        api_.post("/api/autostart/install", bundled_payload(), [this](const Response &a) {
+            if (!a.ok())
+                say("Couldn't update RomM Sync's autostart: " + a.message());
+        });
+    });
+}
+
 void App::install_autostart(Api::Callback done)
 {
     api_.post("/api/autostart/upload", bundled_payload(), [this, done](const Response &r) {
@@ -357,6 +403,20 @@ bool App::payload_too_old() const
     return false;
 }
 
+// RomM Sync holds a lock on this file for as long as it runs (1.1.1 on); a
+// copy can be running and not answering yet, after a start or a wake.
+int App::payload_lock()
+{
+    const int fd = ::open("/data/romm-sync/romm-sync.lock", O_RDONLY);
+    if (fd < 0)
+        return errno == ENOENT ? 0 : -1;
+    int held = 0;
+    if (::flock(fd, LOCK_SH | LOCK_NB) != 0)
+        held = errno == EWOULDBLOCK ? 1 : -1;
+    ::close(fd);
+    return held;
+}
+
 void App::refresh_status()
 {
     status_timer_ = 0;
@@ -365,12 +425,22 @@ void App::refresh_status()
         status_busy_ = false;
         status_.known = true;
         status_.reachable = r.status != 0;
-        // Not running: RommPS starts the payload it carries, once by itself
-        // (Cross on the screen tries again).
+        // Not answering: RommPS starts the payload it carries, once by itself
+        // (Cross on the screen tries again), but only when none is running.
+        // One that's running is left to come up; with no way to tell, it
+        // waits a few tries first.
+        unanswered_ = status_.reachable ? 0 : unanswered_ + 1;
+        payload_waiting_ = false;
         if (!status_.reachable && !tried_start_)
         {
-            tried_start_ = true;
-            start_payload();
+            const int lock = payload_lock();
+            if (lock == 1)
+                payload_waiting_ = true;
+            else if (lock == 0 || unanswered_ >= 3)
+            {
+                tried_start_ = true;
+                start_payload();
+            }
         }
         if (!r.ok())
         {
@@ -382,20 +452,21 @@ void App::refresh_status()
             return;
         status_.error.clear();
         status_.version = str(j.get(), "version");
-        // An older payload is replaced by the one RommPS carries, once it's
-        // idle: its autostart copy first, if it has one, then the running one.
-        if (payload_too_old() && !updated_payload_ && !flag(cJSON_GetObjectItemCaseSensitive(j.get(), "sync"), "running") &&
-            active_downloads_ == 0)
+        // An older payload is replaced by the one RommPS carries once it's
+        // idle: the new one takes over from it and then, being this
+        // RommPS's own, updates the copies on disk (below). A newer one is
+        // left alone.
+        const bool idle = !flag(cJSON_GetObjectItemCaseSensitive(j.get(), "sync"), "running") && active_downloads_ == 0;
+        if (payload_too_old() && !updated_payload_ && idle)
         {
             updated_payload_ = true;
             say("Updating RomM Sync to " + std::string(kMinPayload));
-            api_.get("/api/autostart", [this](const Response &a) {
-                std::unique_ptr<cJSON, void (*)(cJSON *)> as(a.json(), cJSON_Delete);
-                if (a.ok() && flag(as.get(), "installed"))
-                    install_autostart([this](const Response &) { start_payload(); });
-                else
-                    start_payload();
-            });
+            start_payload();
+        }
+        else if (!repaired_ && version_cmp(status_.version, kMinPayload) == 0)
+        {
+            repaired_ = true;
+            repair_autostart();
         }
         status_.ip = str(j.get(), "ip");
         status_.port = static_cast<int>(num(j.get(), "web_port", 8780));
@@ -831,6 +902,9 @@ void App::refresh_update()
         u.latest = str(j.get(), "latest");
         u.available = flag(j.get(), "available");
         u.autostart = flag(j.get(), "autostart");
+        // Payloads before 1.1.1 don't say: they update themselves.
+        const cJSON *su = cJSON_GetObjectItemCaseSensitive(j.get(), "self_update");
+        u.self_update = !cJSON_IsBool(su) || cJSON_IsTrue(su);
         u.done = num(j.get(), "done");
         u.total = num(j.get(), "total");
         update_ = u;
@@ -839,7 +913,8 @@ void App::refresh_update()
             if (u.state == "error")
                 say("Update: " + (u.error.empty() ? u.message : u.error));
             else if (u.available)
-                say("RomM Sync " + u.latest + " is available");
+                say(u.self_update ? "RomM Sync " + u.latest + " is available"
+                                  : "RommPS " + u.latest + " is available in ProsperoStore");
             else if (u.state == "idle")
                 say("RomM Sync is up to date");
             else if (!u.message.empty())

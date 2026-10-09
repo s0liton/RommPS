@@ -188,6 +188,8 @@ struct Update
     bool known = false;
     std::string state, message, error, current, latest;
     bool available = false, autostart = false;
+    // false: RomM Sync doesn't update itself; a new RommPS brings it (PS5).
+    bool self_update = true;
     double done = 0, total = 0;
     bool busy() const { return state == "checking" || state == "downloading" || state == "installing" || state == "restarting"; }
 };
@@ -204,11 +206,14 @@ class App
     const Status &status() const { return status_; }
     // RommPS carries the RomM Sync payload of its own release
     // (assets/rommps/romm-sync.elf, version kMinPayload): it starts it when
-    // it isn't running, and puts it in place of an older one.
-    static constexpr const char *kMinPayload = "1.1.0";
+    // none is running, puts it in place of an older one (never of a newer
+    // one), and keeps the copies the console starts it from up to date.
+    static constexpr const char *kMinPayload = "1.1.1";
     bool payload_too_old() const;
     void start_payload(); // sends the payload to the HEN's loader
-    bool payload_starting() const { return start_state_ == 1; }
+    // Sending it, or RomM Sync is running and not answering yet (starting up,
+    // or waking from rest mode): either way it'll answer in a moment.
+    bool payload_starting() const { return start_state_ == 1 || payload_waiting_; }
     const std::string &payload_error() const { return start_error_; }
     // The payload into the HEN's autostart folder, so it starts with the console.
     void install_autostart(Api::Callback done);
@@ -269,6 +274,13 @@ class App
 
   private:
     void refresh_status();
+    // Whether a RomM Sync is running, from the lock it holds while it runs:
+    // 1 yes, 0 no, -1 can't tell.
+    static int payload_lock();
+    // Brings the copies the console starts RomM Sync from up to the one
+    // RommPS carries, leaving autostart on or off as it is; turns it on once
+    // for anyone who never chose either way (1.1.0's setup left it off).
+    void repair_autostart();
     void evict_covers(hui::gfx::Renderer *renderer);
     void send_page(const std::string &key, int page);
     void refresh_platforms();
@@ -279,7 +291,7 @@ class App
     // for only while they're on screen (wanted_), newest first.
     static constexpr int kCoverWorkers = 3;
     static constexpr int kCoversInFlight = 6;
-    Api covers_api_[kCoverWorkers]; // each to the payload on 127.0.0.1:8780
+    Api covers_api_[kCoverWorkers]; // each to the payload on 127.0.0.1
     std::vector<std::string> wanted_; // drawn since the last tick, in draw order
     // Pages of games, on workers of their own too; asked for at the tick if
     // the screen still wants them.
@@ -318,7 +330,9 @@ class App
     bool bundled_read_ = false;
     std::atomic<int> start_state_{0}; // 0 idle, 1 sending, 2 sent, 3 failed
     std::string start_error_;         // written before start_state_ becomes 3
-    bool tried_start_ = false, updated_payload_ = false;
+    bool tried_start_ = false, updated_payload_ = false, repaired_ = false;
+    bool payload_waiting_ = false;
+    int unanswered_ = 0; // status requests in a row RomM Sync didn't answer
     int active_downloads_ = 0;
     std::string toast_;
     float toast_age_ = 0;

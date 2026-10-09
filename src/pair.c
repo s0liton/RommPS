@@ -82,7 +82,7 @@ static void finish_pairing(const char *base, const char *token, const char *devi
     snprintf(msg, sizeof msg, "Paired as %s", g_cfg.username[0] ? g_cfg.username : "(unknown user)");
     set_status("ok", msg);
     LOGI("paired with %s, device %s", base, device_id);
-    plat_notify("RomM Sync paired with %s", base);
+    if (!plat_app_installed()) plat_notify("RomM Sync paired with %s", base);
     sync_new_pairing();
     sync_request("paired");
 }

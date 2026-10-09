@@ -26,7 +26,7 @@
 #include "console.h"
 #include "emulators_json.h" /* generated from platform/ps4/emulators.json */
 
-#define LOCK_FILE CONSOLE_DATA_DIR "/romm-sync.lock"
+#define LOCK_FILE CONSOLE_LOCK_FILE
 
 
 /* libkernel: layout from sdk/samples/ps/main.c (title_id is wider than the PS5's) */
@@ -67,10 +67,9 @@ static const plat_info_t INFO = {
     .retroarch_root = "/data/retroarch",
     .mednafen_root = "/data/mednafen",
     .emulator_catalog = EMULATORS_JSON,
-    /* PS4 tiles need an installed package; there's no URL shortcut. */
-    .has_tile = 0,
     /* GoldHEN runs the payload on a thread of its own process. */
     .detach = 1,
+    .self_update = 1,
 };
 
 const plat_info_t *plat_info(void) { return &INFO; }
@@ -148,9 +147,12 @@ void plat_describe(char *buf, size_t n) {
     console_describe(buf, n, host);
 }
 
-int plat_install_tile(int port) {
-    (void)port;
-    return -1;
+void plat_remove_old_tile(void) {}
+
+int plat_app_installed(void) { return 0; }
+
+void plat_app_version(char *out, size_t n) {
+    if (n) out[0] = 0;
 }
 
 /* Not used (can_relaunch is 0): GoldHEN's network loader (9090) crashes on

@@ -23,7 +23,7 @@ SRCS := src/main.c src/util.c src/http.c src/romm.c src/config.c src/state.c \
         third_party/cJSON.c third_party/md5.c third_party/monocypher.c third_party/monocypher-ed25519.c \
         $(CHDR_SRCS)
 HDRS := $(wildcard src/*.h) third_party/cJSON.h third_party/md5.h third_party/monocypher.h third_party/monocypher-ed25519.h
-UI_HEADER := build/gen/ui_index.h build/gen/icon_png.h
+UI_HEADER := build/gen/ui_index.h
 COMMON_CFLAGS := -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -Wno-unknown-warning-option -Wno-unreachable-code-generic-assoc -Isrc -Ithird_party -Ibuild/gen \
         -Ithird_party/libchdr/include -DCHDR_SYSTEM_ZLIB
 ifdef VERSION
@@ -49,10 +49,6 @@ build/gen/ui_index.h: ui/index.html ui/style.css $(wildcard ui/themes/*.css) bui
 build/gen/inter-font.css: third_party/inter-latin.woff2 tools/font_css.py
 	@mkdir -p $(dir $@)
 	python3 tools/font_css.py $< $@ Inter
-
-build/gen/icon_png.h: assets/icon0.png tools/embed.py
-	@mkdir -p $(dir $@)
-	python3 tools/embed.py $< $@ ICON_PNG
 
 # host build
 HOST_CC ?= cc

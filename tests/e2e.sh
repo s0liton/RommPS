@@ -277,7 +277,7 @@ publish ok;       r="$(install_err)"; [[ "$r" == restarting ]] || fail "good upd
 for _ in $(seq 1 10); do [[ -f "$T/data/launched.elf" ]] && break; sleep 0.5; done
 cmp -s "$REL/romm-sync.elf" "$T/data/launched.elf" || fail "the new payload was not launched"
 cmp -s "$REL/romm-sync.elf" "$T/etaHEN/payloads/romm-sync.elf" || fail "the installed payload was not replaced"
-[[ "$(cat "$T/etaHEN/payloads/romm-sync.elf.bak")" == old-payload ]] || fail "no backup of the old payload"
+[[ ! -e "$T/etaHEN/payloads/romm-sync.elf.bak" ]] || fail "the update left a .bak of the old payload behind"
 
 echo "14. diagnostics report leaves out the token"
 curl -sf "$API/api/diagnostics" > "$T/diag.txt" || fail "no diagnostics report"

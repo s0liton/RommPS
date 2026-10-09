@@ -183,6 +183,7 @@ class SetupPage
     Config finish_;
     bool finish_known_ = false;
     bool autostart_supported_ = false, autostart_installed_ = false, autostart_on_ = false;
+    bool autostart_defaulted_ = false; // turned on for a first setup already
 };
 
 } // namespace rommps
