@@ -58,6 +58,7 @@ static void set_defaults(void) {
     g_cfg.sync_states = 1;
     g_cfg.notify = 1;
     g_cfg.update_check = 1;
+    g_cfg.cover_cache = 1;
     g_cfg.keep_backups = 5;
     g_cfg.server_versions = 10;
     g_cfg.download_concurrency = 3;
@@ -88,6 +89,7 @@ void config_apply_json(const cJSON *j) {
     else if (!strcmp(states, "sync")) g_cfg.sync_states = 2;
     get_int(j, "notify", &g_cfg.notify);
     get_int(j, "update_check", &g_cfg.update_check);
+    get_int(j, "cover_cache", &g_cfg.cover_cache);
     get_int(j, "keep_backups", &g_cfg.keep_backups);
     get_int(j, "server_versions", &g_cfg.server_versions);
     if (g_cfg.server_versions < 0) g_cfg.server_versions = 0;
@@ -174,6 +176,7 @@ cJSON *config_to_json(int include_secrets) {
     cJSON_AddStringToObject(j, "states", g_cfg.sync_states == 2 ? "sync" : g_cfg.sync_states ? "upload" : "off");
     cJSON_AddBoolToObject(j, "notify", g_cfg.notify);
     cJSON_AddBoolToObject(j, "update_check", g_cfg.update_check);
+    cJSON_AddBoolToObject(j, "cover_cache", g_cfg.cover_cache);
     cJSON_AddNumberToObject(j, "keep_backups", g_cfg.keep_backups);
     cJSON_AddNumberToObject(j, "server_versions", g_cfg.server_versions);
     cJSON_AddNumberToObject(j, "download_concurrency", g_cfg.download_concurrency);

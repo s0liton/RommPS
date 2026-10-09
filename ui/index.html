@@ -458,8 +458,9 @@ function serverAtLeast(v, want) {
 }
 function emuCard(c) {
   if (c.ready === false)
-    return '<div class="emu" style="opacity:.6"><div class="head"><b>' + esc(c.name) + "</b>" + pill("not supported yet", "warn") + "</div>" +
-      '<div class="path">' + esc(c.root) + '</div><p class="muted">' + esc(c.note || "") + "</p></div>";
+    return '<div class="emu"><div class="head"><b>' + esc(c.name) + "</b>" + pill("no preset yet", "warn") + "</div>" +
+      '<div class="path">' + esc(c.root) + '</div><p class="muted">' + esc(c.note || "") +
+      " If you have it working, choose its folders below.</p></div>";
   var plats = (c.profile && c.profile.platforms) || [];
   var platPills = plats.map(function (p) {
     if (p.sync_requires_option) return pill(p.dir, "warn");
@@ -539,29 +540,53 @@ function uncoveredSystems() {
   });
   return (wz.platforms || []).filter(function (p) { return p.rom_count > 0 && !slugs[p.slug] && !slugs[p.fs_slug]; });
 }
+// Emulators found with no preset yet, one entry per system they play: set up
+// with folders the user picks, like a system with no emulator.
+function manualEntries() {
+  var out = [];
+  (wz.emus || []).forEach(function (c) {
+    if (c.ready !== false) return;
+    ((c.profile && c.profile.platforms) || []).forEach(function (p) {
+      var sys = (p.romm || [])[0];
+      if (sys) out.push({ key: c.id + "-" + sys, slugs: p.romm, name: c.name + " (" + systemName(sys) + ")", id: c.id + "-" + sys });
+    });
+  });
+  return out;
+}
+// Everything set up by its folders: [{key, slugs, name, id?, games?}].
+function ownEntries() {
+  return uncoveredSystems().map(function (p) {
+    return { key: p.slug, slugs: p.fs_slug && p.fs_slug !== p.slug ? [p.slug, p.fs_slug] : [p.slug], name: p.display_name || p.name, games: p.rom_count };
+  }).concat(manualEntries());
+}
 function renderOwn() {
   wz.own = wz.own || {};
-  var list = uncoveredSystems();
-  if (!list.length) { $("ownSystems").innerHTML = ""; return; }
+  var systems = uncoveredSystems().length, all = ownEntries();
+  if (!all.length) { $("ownSystems").innerHTML = ""; return; }
   var names = ["Games", "Saves", "States"];
-  $("ownSystems").innerHTML = "<h3>No emulator found for these</h3>" +
-    '<p class="muted">Turn one on to choose where its games, saves and save states go. Saves there are matched by the game\'s file name. Leave it off to skip it; you can set it up later in Settings.</p>' +
-    list.map(function (p) {
-      var o = wz.own[p.slug] = wz.own[p.slug] || { on: false, folders: ["", "", ""] };
-      return '<div class="emu"><label class="head"><input type="checkbox" data-own="' + esc(p.slug) + '"' + (o.on ? " checked" : "") + "><b>" +
-        esc(p.display_name || p.name) + "</b>" + pill(p.rom_count + " games", "off") + "</label>" +
-        (o.on ? names.map(function (n, k) {
-          return '<div class="row"><small style="min-width:60px">' + n + '</small><code style="flex:1">' + esc(o.folders[k] || (k ? "same as games" : "not chosen")) +
-            '</code><button class="small" data-pick="' + esc(p.slug) + '" data-which="' + k + '">Choose</button></div>';
-        }).join("") : "") + "</div>";
-    }).join("");
+  var card = function (e) {
+    var o = wz.own[e.key] = wz.own[e.key] || { on: false, folders: ["", "", ""] };
+    return '<div class="emu"><label class="head"><input type="checkbox" data-own="' + esc(e.key) + '"' + (o.on ? " checked" : "") + "><b>" +
+      esc(e.name) + "</b>" + (e.games !== undefined ? pill(e.games + (e.games == 1 ? " game" : " games"), "off") : "") + "</label>" +
+      (o.on ? names.map(function (n, k) {
+        return '<div class="row"><small style="min-width:60px">' + n + '</small><code style="flex:1">' + esc(o.folders[k] || (k ? "same as games" : "not chosen")) +
+          '</code><button class="small" data-pick="' + esc(e.key) + '" data-which="' + k + '">Choose</button></div>';
+      }).join("") : "") + "</div>";
+  };
+  $("ownSystems").innerHTML =
+    (systems ? "<h3>No emulator found for these</h3>" +
+      '<p class="muted">Turn one on to choose where its games, saves and save states go. Saves there are matched by the game\'s file name. Leave it off to skip it; you can set it up later in Settings.</p>' +
+      all.slice(0, systems).map(card).join("") : "") +
+    (all.length > systems ? "<h3>Emulators with no preset yet</h3>" +
+      '<p class="muted">RomM Sync doesn\'t know these emulators\' folders yet. If yours works, turn it on and choose them. Where another emulator plays the same system, this one gets the games too and its saves sync on their own.</p>' +
+      all.slice(systems).map(card).join("") : "");
   each("#ownSystems input[data-own]", function (x) { x.onchange = function () { wz.own[x.dataset.own].on = x.checked; renderOwn(); }; });
   each("#ownSystems button[data-pick]", function (b) { b.onclick = function () { openPicker(b.dataset.pick, +b.dataset.which); }; });
 }
 function openPicker(slug, which) {
   wz.pick = { slug: slug, which: which };
-  var o = wz.own[slug], p = (wz.platforms || []).filter(function (x) { return x.slug === slug; })[0];
-  $("pickTitle").textContent = "Choose the " + ["games", "saves", "save states"][which] + " folder for " + (p ? p.display_name || p.name : slug);
+  var o = wz.own[slug], e = ownEntries().filter(function (x) { return x.key === slug; })[0];
+  $("pickTitle").textContent = "Choose the " + ["games", "saves", "save states"][which] + " folder for " + (e ? e.name : slug);
   $("picker").style.display = "";
   browse(o.folders[which] || o.folders[0] || "");
 }
@@ -579,10 +604,10 @@ $("pickUse").onclick = function () { wz.own[wz.pick.slug].folders[wz.pick.which]
 $("pickUp").onclick = function () { browse(wz.pick.parent || ""); };
 $("pickCancel").onclick = function () { $("picker").style.display = "none"; };
 function ownCustom() {
-  return uncoveredSystems().filter(function (p) { return wz.own[p.slug] && wz.own[p.slug].on; }).map(function (p) {
-    var o = wz.own[p.slug];
-    return { slugs: p.fs_slug && p.fs_slug !== p.slug ? [p.slug, p.fs_slug] : [p.slug], name: p.display_name || p.name,
-             rom_dir: o.folders[0], save_dir: o.folders[1], state_dir: o.folders[2] };
+  return ownEntries().filter(function (e) { return wz.own[e.key] && wz.own[e.key].on; }).map(function (e) {
+    var o = wz.own[e.key], c = { slugs: e.slugs, name: e.name, rom_dir: o.folders[0], save_dir: o.folders[1], state_dir: o.folders[2] };
+    if (e.id) c.id = e.id;
+    return c;
   });
 }
 
@@ -608,8 +633,9 @@ function loadEmus() {
     (cfg.profiles || []).forEach(function (p) {
       if (p.enabled === false) return;
       if ((p.id || "").indexOf("custom-") === 0) {
-        var slug = (((p.platforms || [])[0] || {}).romm || [])[0];
-        if (slug) wz.own[slug] = { on: true, folders: [p.rom_dir || "", p.save_dir || "", p.state_dir || ""] };
+        // custom-<slug> for a system, custom-<emulator>-<system> for an emulator with no preset.
+        var slug = (((p.platforms || [])[0] || {}).romm || [])[0], key = p.id.slice(7) || slug;
+        if (key) wz.own[key] = { on: true, folders: [p.rom_dir || "", p.save_dir || "", p.state_dir || ""] };
         return;
       }
       wz.current[p.root] = true;
@@ -678,7 +704,7 @@ function loadPreview() {
       previewList("different here and on RomM", p.conflicts, "warn") +
       previewList("in the wrong folder, left alone", (p.strays || []).map(function (x) { return { game: x.rom_name, path: x.path }; }), "warn") +
       previewList("games not found in RomM", (p.unmatched || []).map(function (u) { return { path: u }; })) +
-      (p.not_on_console ? '<p class="muted">' + p.not_on_console + " saves on RomM are for games that aren't on this console.</p>" : "");
+      (p.not_on_console ? '<p class="muted">' + (p.not_on_console == 1 ? "1 save on RomM is for a game that isn't" : p.not_on_console + " saves on RomM are for games that aren't") + " on this console.</p>" : "");
   }).catch(function (e) { $("preview").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
 }
 $("wzBackedUp").onchange = function () { $("wzPreviewOk").disabled = !this.checked; };
@@ -745,7 +771,7 @@ function loadPlatforms() {
       var icon = "/cover?v=2&p=" + encodeURIComponent("/assets/platforms/" + p.slug.toLowerCase() + ".svg");
       var alt = "/cover?v=2&p=" + encodeURIComponent("/assets/platforms/" + p.fs_slug.toLowerCase() + ".svg");
       return '<button class="plat" data-id="' + p.id + '"><div class="logo"><img alt="" src="' + icon + '" data-alt="' + alt + '" onerror="platIconError(this)"></div>' +
-        '<span class="n">' + esc(p.name) + "</span><small>" + p.rom_count + " games</small>" +
+        '<span class="n">' + esc(p.name) + "</span><small>" + p.rom_count + (p.rom_count == 1 ? " game" : " games") + "</small>" +
         '<small class="' + (p.profile ? "ok" : "muted") + '">' + esc(p.profile || "No emulator") + "</small></button>";
     }).join("") || '<p class="muted">No platforms on the server.</p>';
   }).catch(function (e) { $("platforms").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
@@ -781,7 +807,7 @@ function romButton(g) {
   var j = romJob(g);
   if (j) return "<button disabled>" + (j.status === "queued" ? "Queued" : jobPct(j) + "%") + "</button>";
   return g.installed ? '<button class="icon" data-hist="' + g.id + '" title="History" aria-label="History">' + CLOCK_ICON + '</button> <button class="danger" data-del="' + g.id + '">Remove</button>'
-    : '<button class="primary" data-dl="' + g.id + '">Download</button>';
+    : '<button class="primary" data-dl="' + g.id + '" data-name="' + esc(g.name || "") + '">Download</button>';
 }
 function romStatus(g) {
   var j = romJob(g);
@@ -802,15 +828,16 @@ function syncLibraryDownloads(list) {
   if (holder) { var el = document.querySelector('[data-rom="' + holder.dataset.rom + '"] button'); if (el) el.focus(); }
 }
 function coverUrl(g) { return "/cover?p=" + encodeURIComponent(g.cover); }
+function versionText(g) { return g.version ? g.version + " · 1 of " + g.versions + " versions" : ""; }
 function renderRoms() {
-  var items = state.items;
+  var items = state.items.filter(function (g) { return !g.not_game; });
   $("viewGrid").classList.toggle("on", romView === "grid"); $("viewTable").classList.toggle("on", romView === "table");
   if (!items.length) { $("roms").innerHTML = '<p class="muted">' + (state.loading ? "Loading" : "No games found.") + "</p>"; return; }
   if (romView === "table") {
     $("roms").innerHTML = '<table class="romtable"><thead><tr><th></th><th>Name</th><th>File</th><th>Size</th><th></th><th></th></tr></thead><tbody>' +
       items.map(function (g) {
         return '<tr data-rom="' + g.id + '"><td>' + (g.cover ? '<img alt="" loading="lazy" src="' + coverUrl(g) + '" onerror="this.style.visibility=\'hidden\'">' : "") + "</td>" +
-          "<td>" + esc(g.name) + '</td><td class="muted">' + esc(g.fs_name) + "</td><td>" + fmtSize(g.size) + "</td><td>" + romStatus(g) + "</td><td>" + romButton(g) + "</td></tr>";
+          "<td>" + esc(g.name) + (g.version ? '<div class="muted">' + esc(versionText(g)) + "</div>" : "") + '</td><td class="muted">' + esc(g.fs_name) + "</td><td>" + fmtSize(g.size) + "</td><td>" + romStatus(g) + "</td><td>" + romButton(g) + "</td></tr>";
       }).join("") + "</tbody></table>";
     return;
   }
@@ -818,7 +845,7 @@ function renderRoms() {
     var cover = g.cover ? 'style="background-image:url(\'' + coverUrl(g) + '\')"' : "";
     var j = romJob(g);
     var badge = j ? '<span class="badge dl">' + (j.status === "queued" ? "Queued" : jobPct(j) + "%") + "</span>" : g.installed ? '<span class="badge">Downloaded</span>' : "";
-    return '<div class="rom" data-rom="' + g.id + '"><div class="cover" ' + cover + ">" + badge + '</div><div class="t">' + esc(g.name) + '</div><div class="s">' + fmtSize(g.size) + "</div>" + (g.installed && !romJob(g) ? '<div class="btns">' + romButton(g) + "</div>" : romButton(g)) + "</div>";
+    return '<div class="rom" data-rom="' + g.id + '"><div class="cover" ' + cover + ">" + badge + '</div><div class="t">' + esc(g.name) + '</div><div class="s">' + (g.version ? esc(g.version) + " · " : "") + fmtSize(g.size) + "</div>" + (g.installed && !romJob(g) ? '<div class="btns">' + romButton(g) + "</div>" : romButton(g)) + "</div>";
   }).join("") + "</div>";
 }
 // The list is a window of games starting at state.start; the A-Z ribbon either
@@ -878,7 +905,7 @@ $("search").onkeydown = function (e) { if (e.key === "Enter") loadRoms(); };
 $("more").onclick = function () { loadRoms(true); };
 $("roms").onclick = function (ev) {
   var b = ev.target.closest("button"); if (!b) return;
-  if (b.dataset.dl) api("POST", "/api/download", { rom_id: +b.dataset.dl }).then(function () { b.disabled = true; b.textContent = "Queued"; pollLibraryDownloads(); }).catch(function (e) { toast(e.message, 1); });
+  if (b.dataset.dl) api("POST", "/api/download", { rom_id: +b.dataset.dl, name: b.dataset.name || "" }).then(function () { b.disabled = true; b.textContent = "Queued"; pollLibraryDownloads(); }).catch(function (e) { toast(e.message, 1); });
   if (b.dataset.hist) showHistory(+b.dataset.hist);
   if (b.dataset.del && confirm("Remove this game from the console? Its saves are kept.")) api("POST", "/api/delete", { rom_id: +b.dataset.del }).then(function () { toast("Removed"); loadRoms(); }).catch(function (e) { toast(e.message, 1); });
 };

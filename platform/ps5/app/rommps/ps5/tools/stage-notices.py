@@ -204,11 +204,15 @@ def main():
         source=dict(kind="git", path=str(mesa), remote="https://github.com/mihawk-99/PS5_Mesa", revision=mesa_rev,
                     dirty=False, built_with_sdk=radv_sdk.group(1) if radv_sdk else None)))
 
-    # The LLVM runtime the SDK links in
+    # The LLVM runtime the SDK links in. Its licence comes from an LLVM checkout
+    # beside the stack when there is one, or else the copy kept in ps5/licenses/.
     llvm = ROOT.parent / "PS5_LLVM/llvm/LICENSE.TXT"
-    if llvm.exists():
-        (out / "llvm-runtime").mkdir()
-        shutil.copy2(llvm, out / "llvm-runtime/LICENSE.TXT")
+    if not llvm.exists():
+        llvm = PS5 / "licenses/llvm-LICENSE.TXT"
+    if not llvm.exists():
+        sys.exit("stage-notices: no licence text for the LLVM runtime (ps5/licenses/llvm-LICENSE.TXT)")
+    (out / "llvm-runtime").mkdir()
+    shutil.copy2(llvm, out / "llvm-runtime/LICENSE.TXT")
     parts.append(dict(
         id="llvm-runtime", name="LLVM libc++, libc++abi, libunwind and compiler-rt builtins (linked into eboot.bin)",
         licence="Apache-2.0 WITH LLVM-exception",

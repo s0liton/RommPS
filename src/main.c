@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "covers.h"
 #include "detect.h"
 #include "http.h"
 #include "icon_png.h" /* generated from assets/icon0.png */
@@ -37,6 +38,9 @@
 static int is_game_title(const char *t) {
     if (!t || !t[0]) return 0;
     if (!strncmp(t, "NPXS", 4)) return 0;
+    /* RomM Sync's own apps (RommPS on the PS5, the launcher on the PS4) aren't
+     * games: while one is open, syncs, downloads and covers carry on. */
+    if (!strcmp(t, "PPSA76677") || !strcmp(t, "ROOM00002")) return 0;
     if (!strncmp(t, "ROMM0", 5)) return 0;
     return 1;
 }
@@ -116,7 +120,7 @@ static void *app_main(void *arg) {
      * breaks HTTPS certificate checks and save timestamps. */
     if (time(NULL) < 1577836800) { /* 2020-01-01 */
         LOGW("the console clock isn't set; HTTPS and save times will be wrong");
-        plat_notify("RomM Sync: the console's date and time aren't set. Set them in Settings for syncing to work.");
+        plat_notify("RomM Sync: the console's date and time aren't set. Set them in the console's Settings for syncing to work.");
     }
 
     config_load();
@@ -127,6 +131,7 @@ static void *app_main(void *arg) {
     sync_init();
     watch_init();
     library_init();
+    covers_init();
     int port = g_cfg.web_port;
     if (web_start(port) != 0) LOGE("web UI unavailable");
 

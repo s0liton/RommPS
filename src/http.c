@@ -1,5 +1,7 @@
 #include "http.h"
 
+#include <pthread.h>
+
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,8 +24,33 @@ static size_t g_ca_blob_len;
 static int g_tls_verify = 1;
 static char g_user_agent[64];
 
+/* DNS answers and TLS sessions shared by every request, from any thread, so a
+ * cover, a list page or a save skips the lookup and the full TLS handshake.
+ * Not the connections themselves: libcurl doesn't support sharing those
+ * between threads that use them at the same time. */
+static CURLSH *g_share;
+static pthread_mutex_t g_share_locks[CURL_LOCK_DATA_LAST];
+
+static void share_lock(CURL *c, curl_lock_data data, curl_lock_access access, void *ud) {
+    (void)c, (void)access, (void)ud;
+    if (data < CURL_LOCK_DATA_LAST) pthread_mutex_lock(&g_share_locks[data]);
+}
+
+static void share_unlock(CURL *c, curl_lock_data data, void *ud) {
+    (void)c, (void)ud;
+    if (data < CURL_LOCK_DATA_LAST) pthread_mutex_unlock(&g_share_locks[data]);
+}
+
 void http_global_init(const char *ca_bundle, int tls_verify) {
     curl_global_init(CURL_GLOBAL_ALL);
+    for (int i = 0; i < CURL_LOCK_DATA_LAST; i++) pthread_mutex_init(&g_share_locks[i], NULL);
+    g_share = curl_share_init();
+    if (g_share) {
+        curl_share_setopt(g_share, CURLSHOPT_LOCKFUNC, share_lock);
+        curl_share_setopt(g_share, CURLSHOPT_UNLOCKFUNC, share_unlock);
+        curl_share_setopt(g_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+        curl_share_setopt(g_share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+    }
     snprintf(g_user_agent, sizeof g_user_agent, "%s/%s", plat_info()->client, APP_VERSION);
     if (ca_bundle && file_exists(ca_bundle)) str_copy(g_ca_bundle, sizeof g_ca_bundle, ca_bundle);
     g_tls_verify = tls_verify;
@@ -82,6 +109,7 @@ static size_t mem_write(char *ptr, size_t size, size_t nmemb, void *ud) {
 static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *auth, int verify) {
     CURL *c = curl_easy_init();
     if (!c) return NULL;
+    if (g_share) curl_easy_setopt(c, CURLOPT_SHARE, g_share);
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_USERAGENT, g_user_agent);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
@@ -132,6 +160,7 @@ static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *u
 
 static int request_impl(const char *method, const char *url, const char *auth, const char *content_type,
                         const void *body, size_t body_len, int verify, http_resp *out) {
+    memset(out, 0, sizeof *out);
     struct curl_slist *hdrs = NULL;
     membuf m = {0};
     CURL *c = easy_new(url, &hdrs, auth, verify);
@@ -143,6 +172,9 @@ static int request_impl(const char *method, const char *url, const char *auth, c
     }
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 120L);
+    /* Compressed answers where the server offers them: a page of RomM's games
+     * is about 1.4 MB of JSON, and a seventh of that gzipped. */
+    curl_easy_setopt(c, CURLOPT_ACCEPT_ENCODING, "");
     if (strcmp(method, "GET") != 0) curl_easy_setopt(c, CURLOPT_CUSTOMREQUEST, method);
     if (body || strcmp(method, "POST") == 0 || strcmp(method, "PUT") == 0) {
         curl_easy_setopt(c, CURLOPT_POSTFIELDS, body ? body : "");

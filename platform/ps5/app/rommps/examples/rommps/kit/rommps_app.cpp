@@ -8,6 +8,7 @@
 #include "stb_image.h" // implemented by base/VulkanglTFModel.cpp
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <memory>
 
@@ -21,7 +22,10 @@ constexpr float kStatusEvery = 3.0f;
 constexpr float kDownloadsEvery = 1.0f;     // while one is running
 constexpr float kDownloadsIdleEvery = 5.0f; // otherwise
 constexpr int kDecodesPerFrame = 2;         // covers turned into textures each frame
-constexpr std::size_t kListsKept = 8; // game lists kept at once
+constexpr std::size_t kCoverTextures = 360; // covers kept as textures (about 130 MB); the
+                                            // least recently drawn go, and come back from
+                                            // the payload's cache when drawn again
+constexpr std::size_t kListsKept = 24; // game lists kept at once: every tile on the platforms page, and more
 
 void *g_renderer = nullptr;
 
@@ -87,6 +91,8 @@ std::string plain(const char *text)
             out += "...";
         else if (cp == 0xA0)
             out += ' ';
+        else if (cp == 0xB7)
+            out += "\xC2\xB7"; // the middle dot is in the fonts: the app uses it too
         else
             out += '?';
     }
@@ -145,7 +151,7 @@ App &app()
     return instance;
 }
 
-App::App() : api_("127.0.0.1", 8780), covers_api_("127.0.0.1", 8780)
+App::App() : api_("127.0.0.1", 8780)
 {
     refresh_status();
 }
@@ -160,7 +166,37 @@ void App::tick(float dt, hui::gfx::Renderer *renderer)
 {
     clock_ += dt;
     api_.poll();
-    covers_api_.poll();
+    for (Api &a : covers_api_)
+        a.poll();
+    for (Api &a : pages_api_)
+        a.poll();
+    // The pages the screen wanted last frame, in the order it asked. One it
+    // stopped wanting before a worker was free is never sent.
+    for (const auto &[key, page] : wanted_pages_)
+        if (pages_in_flight_ < kPageWorkers)
+            send_page(key, page);
+    wanted_pages_.clear();
+    // The covers drawn last frame and not asked for yet, in the order they
+    // were drawn; covers scrolled away from are never asked for.
+    for (const std::string &path : wanted_)
+    {
+        if (covers_in_flight_ >= kCoversInFlight)
+            break;
+        Cover &c = covers_[path];
+        if (c.requested)
+            continue;
+        c.requested = true;
+        ++covers_in_flight_;
+        Api &worker = covers_api_[next_cover_worker_++ % kCoverWorkers];
+        worker.get("/cover?p=" + url_escape(path), [this, path](const Response &r) {
+            --covers_in_flight_;
+            if (r.ok() && !r.body.empty())
+                to_decode_.push_back({path, r.body});
+            else
+                covers_[path].failed = true;
+        });
+    }
+    wanted_.clear();
     toast_age_ += dt;
     if (!toast_.empty() && toast_age_ > 4.0f)
         toast_.clear();
@@ -175,6 +211,9 @@ void App::tick(float dt, hui::gfx::Renderer *renderer)
     if (status_.paired && !downloads_busy_ &&
         downloads_timer_ >= (active_downloads_ ? kDownloadsEvery : kDownloadsIdleEvery))
         refresh_downloads();
+
+    if (renderer)
+        evict_covers(renderer);
 
     // A few covers a frame become textures; the rest wait their turn, so a
     // shelf full of new covers never costs a frame.
@@ -198,6 +237,45 @@ void App::tick(float dt, hui::gfx::Renderer *renderer)
     }
 }
 
+void App::evict_covers(hui::gfx::Renderer *renderer)
+{
+    std::size_t loaded = 0;
+    for (const auto &[path, c] : covers_)
+        loaded += c.texture != 0;
+    if (loaded <= kCoverTextures)
+        return;
+    // Only covers not drawn for a few seconds, so no list being drawn still has one.
+    std::vector<std::pair<double, const std::string *>> old;
+    for (const auto &[path, c] : covers_)
+        if (c.texture && c.used < clock_ - 3.0)
+            old.push_back({c.used, &path});
+    std::sort(old.begin(), old.end());
+    std::vector<std::string> gone;
+    for (std::size_t i = 0; i < old.size() && loaded - gone.size() > kCoverTextures * 3 / 4; ++i)
+        gone.push_back(*old[i].second);
+    for (const std::string &path : gone)
+    {
+        renderer->destroy_texture(covers_[path].texture);
+        covers_.erase(path);
+    }
+}
+
+// "1.0.2" < "1.1.0", number by number. A build without a version ("dev")
+// counts as new enough.
+bool App::payload_too_old() const
+{
+    const std::string &v = status_.version;
+    if (v.empty() || !std::isdigit(static_cast<unsigned char>(v[0])))
+        return false;
+    int have[3] = {}, want[3] = {};
+    std::sscanf(v.c_str(), "%d.%d.%d", &have[0], &have[1], &have[2]);
+    std::sscanf(kMinPayload, "%d.%d.%d", &want[0], &want[1], &want[2]);
+    for (int i = 0; i < 3; ++i)
+        if (have[i] != want[i])
+            return have[i] < want[i];
+    return false;
+}
+
 void App::refresh_status()
 {
     status_timer_ = 0;
@@ -216,6 +294,11 @@ void App::refresh_status()
             return;
         status_.error.clear();
         status_.version = str(j.get(), "version");
+        if (payload_too_old() && !warned_old_payload_)
+        {
+            warned_old_payload_ = true;
+            say("RommPS needs RomM Sync " + std::string(kMinPayload) + " or newer. Update it in Settings.");
+        }
         status_.ip = str(j.get(), "ip");
         status_.port = static_cast<int>(num(j.get(), "web_port", 8780));
         status_.paired = flag(j.get(), "paired");
@@ -230,11 +313,17 @@ void App::refresh_status()
         status_.sync_count = static_cast<int>(num(sync, "sync_count"));
         status_.tracked_saves = static_cast<int>(num(sync, "tracked_saves"));
         status_.conflicts = cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(sync, "conflicts"));
-        const cJSON *last = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(sync, "history"), 0);
+        // The payload adds each sync at the end of its history: the last one is the newest.
+        const cJSON *history = cJSON_GetObjectItemCaseSensitive(sync, "history");
+        const cJSON *last = cJSON_GetArrayItem(history, cJSON_GetArraySize(history) - 1);
         status_.last_result = last ? (str(last, "error")[0] ? str(last, "error") : "OK") : "";
         status_.last_up = static_cast<int>(num(last, "uploaded"));
         status_.last_down = static_cast<int>(num(last, "downloaded"));
         status_.server_version = str(j.get(), "server_version");
+        const cJSON *covers = cJSON_GetObjectItemCaseSensitive(j.get(), "covers");
+        status_.covers_state = str(covers, "state");
+        status_.covers_done = static_cast<int>(num(covers, "done"));
+        status_.covers_total = static_cast<int>(num(covers, "total"));
         const cJSON *pairing = cJSON_GetObjectItemCaseSensitive(j.get(), "pairing");
         if (status_.pairing == "starting")
             pairing = nullptr; // the answer to /api/pair/start says how it went
@@ -330,20 +419,37 @@ void App::ensure(GameList &list, int first, int last)
     if (!list.ready())
         last = 0; // the first page says how many there are
     else
-        last = std::min(last, list.total - 1);
-    first = std::max(first, 0);
+        last = list.raw(std::min(last, list.total - 1));
+    first = list.ready() ? list.raw(std::max(first, 0)) : 0;
     for (int page = first / GameList::kPage; page <= last / GameList::kPage && last >= 0; ++page)
     {
         if (static_cast<int>(list.pages.size()) <= page)
             list.pages.resize(static_cast<std::size_t>(page) + 1, 0);
         if (list.pages[static_cast<std::size_t>(page)])
             continue;
-        list.pages[static_cast<std::size_t>(page)] = 1;
         const std::string key = std::to_string(list.platform_id) + "|" + list.search;
+        const std::pair<std::string, int> want{key, page};
+        if (std::find(wanted_pages_.begin(), wanted_pages_.end(), want) == wanted_pages_.end())
+            wanted_pages_.push_back(want);
+    }
+}
+
+void App::send_page(const std::string &key, int page)
+{
+    auto found = lists_.find(key);
+    if (found == lists_.end() || !found->second.list)
+        return;
+    GameList &list = *found->second.list;
+    if (static_cast<int>(list.pages.size()) <= page || list.pages[static_cast<std::size_t>(page)])
+        return;
+    list.pages[static_cast<std::size_t>(page)] = 1;
+    ++pages_in_flight_;
+    {
         char path[512];
         std::snprintf(path, sizeof path, "/api/roms?platform_id=%d&offset=%d&limit=%d&search=%s", list.platform_id,
                       page * GameList::kPage, GameList::kPage, url_escape(list.search).c_str());
-        api_.get(path, [this, key, page](const Response &r) {
+        pages_api_[next_page_worker_++ % kPageWorkers].get(path, [this, key, page](const Response &r) {
+            --pages_in_flight_;
             auto it = lists_.find(key);
             if (it == lists_.end() || !it->second.list)
                 return; // let go of meanwhile
@@ -358,26 +464,26 @@ void App::ensure(GameList &list, int first, int last)
             std::unique_ptr<cJSON, void (*)(cJSON *)> j(r.json(), cJSON_Delete);
             l.error.clear();
             const int total = static_cast<int>(num(j.get(), "total"));
-            if (!l.ready() || total != l.total)
+            if (!l.ready() || total != static_cast<int>(l.games.size()))
             {
-                l.total = total;
                 l.games.resize(static_cast<std::size_t>(total));
+                l.total = total; // until reindex() below takes out what isn't a game
                 l.pages.resize(static_cast<std::size_t>((total + GameList::kPage - 1) / GameList::kPage), 0);
                 if (page < static_cast<int>(l.pages.size()))
                     l.pages[static_cast<std::size_t>(page)] = 1;
             }
-            if (l.letters.empty())
+            if (l.raw_letters.empty())
             {
                 const cJSON *ci = cJSON_GetObjectItemCaseSensitive(j.get(), "char_index"), *c;
-                cJSON_ArrayForEach(c, ci) if (cJSON_IsNumber(c)) l.letters.push_back({c->string, c->valueint});
-                std::sort(l.letters.begin(), l.letters.end(),
+                cJSON_ArrayForEach(c, ci) if (cJSON_IsNumber(c)) l.raw_letters.push_back({c->string, c->valueint});
+                std::sort(l.raw_letters.begin(), l.raw_letters.end(),
                           [](const auto &a, const auto &b) { return a.second < b.second; });
             }
             int index = page * GameList::kPage;
             const cJSON *g;
             cJSON_ArrayForEach(g, cJSON_GetObjectItemCaseSensitive(j.get(), "items"))
             {
-                if (index >= l.total)
+                if (index >= total)
                     break;
                 Game &game = l.games[static_cast<std::size_t>(index++)];
                 game.id = static_cast<int>(num(g, "id"));
@@ -388,7 +494,11 @@ void App::ensure(GameList &list, int first, int last)
                 game.size = num(g, "size");
                 game.installed = flag(g, "installed");
                 game.multi = flag(g, "multi");
+                game.not_game = flag(g, "not_game");
+                game.version = plain(str(g, "version"));
+                game.versions = static_cast<int>(num(g, "versions"));
             }
+            l.reindex();
             if (page < static_cast<int>(l.pages.size()))
                 l.pages[static_cast<std::size_t>(page)] = 2;
         });
@@ -459,16 +569,10 @@ const Cover &App::cover(const std::string &path)
     if (path.empty())
         return kNone;
     Cover &c = covers_[path];
-    if (!c.requested)
-    {
-        c.requested = true;
-        covers_api_.get("/cover?p=" + url_escape(path), [this, path](const Response &r) {
-            if (r.ok() && !r.body.empty())
-                to_decode_.push_back({path, r.body});
-            else
-                covers_[path].failed = true;
-        });
-    }
+    c.used = clock_;
+    // Asked for at the next tick, if it's still on screen then.
+    if (!c.requested && wanted_.size() < 64)
+        wanted_.push_back(path);
     return c;
 }
 
@@ -524,13 +628,27 @@ const Download *App::download_for(int rom_id) const
     return found;
 }
 
-void App::download(int rom_id)
+void App::download(int rom_id, const std::string &name)
 {
-    char body[64];
-    std::snprintf(body, sizeof body, "{\"rom_id\":%d}", rom_id);
+    // The name goes along, so the download shows it from the start.
+    std::unique_ptr<cJSON, void (*)(cJSON *)> j(cJSON_CreateObject(), cJSON_Delete);
+    cJSON_AddNumberToObject(j.get(), "rom_id", rom_id);
+    cJSON_AddStringToObject(j.get(), "name", name.c_str());
+    char *text = cJSON_PrintUnformatted(j.get());
+    const std::string body = text ? text : "{}";
+    cJSON_free(text);
     api_.post("/api/download", body, [this](const Response &r) {
         if (!r.ok())
             say("Couldn't start the download: " + r.message());
+        refresh_downloads();
+    });
+}
+
+void App::clear_finished_downloads()
+{
+    api_.post("/api/downloads/clear", "{}", [this](const Response &r) {
+        if (!r.ok())
+            say("Couldn't clear the list: " + r.message());
         refresh_downloads();
     });
 }
@@ -575,6 +693,7 @@ void App::refresh_config()
         c.states = str(j.get(), "states", "off");
         c.conflict_policy = str(j.get(), "conflict_policy", "ask");
         c.ps2_cards = str(j.get(), "ps2_cards", "per_game");
+        c.cover_cache = flag(j.get(), "cover_cache");
         c.download_concurrency = static_cast<int>(num(j.get(), "download_concurrency", 1));
         config_ = c;
     });

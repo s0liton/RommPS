@@ -246,7 +246,7 @@ static cJSON *resolve_rom_on_server(const scan_ctx *c, const profile_map *m, con
     else
         path_stem(stem, sizeof stem, name);
     char *q = url_q(stem);
-    int o = snprintf(path, sizeof path, "/api/roms?search_term=%s&with_total=false", q);
+    int o = snprintf(path, sizeof path, "/api/roms?search_term=%s&with_total=false&with_char_index=false" ROMS_LEAN, q);
     free(q);
     for (int i = 0; i < nids; i++) o += snprintf(path + o, sizeof path - (size_t)o, "&platform_ids=%d", ids[i]);
 
@@ -867,7 +867,9 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
     }
     char *dev = url_q(c->device_id);
     if (record) {
-        int o = snprintf(api, sizeof api, "/api/saves/%d/content?device_id=%s", save_id, dev);
+        /* optimistic=false: RomM counts the save as on this console once
+         * /downloaded confirms it's written, not as soon as it's served. */
+        int o = snprintf(api, sizeof api, "/api/saves/%d/content?device_id=%s&optimistic=false", save_id, dev);
         if (session_id) snprintf(api + o, sizeof api - (size_t)o, "&session_id=%d", session_id);
     } else {
         snprintf(api, sizeof api, "/api/saves/%d/content", save_id);
@@ -902,7 +904,9 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
         cJSON_AddStringToObject(body, "device_id", c->device_id);
         cJSON_AddStringToObject(body, "content_hash", server_hash && server_hash[0] ? server_hash : f.hash);
         snprintf(api, sizeof api, "/api/saves/%d/downloaded", save_id);
-        cJSON_Delete(romm_call("POST", api, body, NULL));
+        long st = 0;
+        cJSON_Delete(romm_call("POST", api, body, &st));
+        if (st != 200) LOGW("RomM didn't take the confirmation for save %d (HTTP %ld); it may come down again", save_id, st);
         cJSON_Delete(body);
     }
 out:
@@ -981,7 +985,7 @@ static int do_download(const scan_ctx *c, int save_id, const char *dest, const l
                        const char *server_updated_at) {
     char path[512], tmp[PATH_MAX_LEN];
     char *dev = url_q(c->device_id);
-    int o = snprintf(path, sizeof path, "/api/saves/%d/content?device_id=%s", save_id, dev);
+    int o = snprintf(path, sizeof path, "/api/saves/%d/content?device_id=%s&optimistic=false", save_id, dev);
     if (session_id) snprintf(path + o, sizeof path - (size_t)o, "&session_id=%d", session_id);
     free(dev);
     snprintf(tmp, sizeof tmp, "%s/tmp/save-%d.bin", plat_data_dir(), save_id);
@@ -1014,7 +1018,9 @@ static int do_download(const scan_ctx *c, int save_id, const char *dest, const l
     cJSON_AddStringToObject(body, "device_id", c->device_id);
     cJSON_AddStringToObject(body, "content_hash", server_hash && server_hash[0] ? server_hash : hash);
     snprintf(path, sizeof path, "/api/saves/%d/downloaded", save_id);
-    cJSON_Delete(romm_call("POST", path, body, NULL));
+    long st = 0;
+    cJSON_Delete(romm_call("POST", path, body, &st));
+    if (st != 200) LOGW("RomM didn't take the confirmation for save %d (HTTP %ld); it may come down again", save_id, st);
     cJSON_Delete(body);
     LOGI("downloaded save %d -> %s", save_id, dest);
     return 0;
@@ -1555,13 +1561,13 @@ static void *worker(void *arg) {
         config_unlock();
         if (r.error[0]) {
             LOGE("sync failed: %s", r.error);
-            if (notify) plat_notify("RomM sync failed: %s", r.error);
+            if (notify) plat_notify("RomM Sync: sync failed: %s", r.error);
         } else {
             LOGI("sync done: %d up, %d down, %d conflicts, %d failed, %d states", r.uploaded,
                  r.downloaded, r.conflicts, r.failed, r.states_up);
             if (notify && (r.uploaded || r.downloaded || r.conflicts || r.failed))
-                plat_notify("RomM: %d save(s) uploaded, %d downloaded%s", r.uploaded, r.downloaded,
-                            r.conflicts ? " - conflicts need attention" : "");
+                plat_notify("RomM Sync: %d uploaded, %d downloaded%s", r.uploaded, r.downloaded,
+                            r.conflicts ? ", conflicts to resolve" : "");
         }
     }
     return NULL;

@@ -2,18 +2,51 @@
 
 ![Project Screenshot](assets/library.png)
 
-A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN or onionHEN, with kstuff) and PS4 consoles (GoldHEN). Through my insatiable need to mod everything electronic I encounter, I had my 12.70 PS5 jailbroken the minute that P2JB was out. I maintain a RomM server to centralize all my _legal_ ROMs, saves, and savestates which all my devices sync with, and the PS5 needs similar treatment.
+A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN or onionHEN, with kstuff) and PS4 consoles (GoldHEN). Through my insatiable need to mod everything electronic I encounter, I had my 12.70 PS5 jailbroken the minute that P2JB was out. I maintain a RomM server to centralize all my _legal_ ROMs, saves, and savestates, which all my devices sync with, and the PS5 needs similar treatment.
 
 - **Background save sync**
   - Monitors save file changes in the background, and uploads them as soon as they've changed. Periodic syncs also ensure that your PS5 always has the latest saves and savestates.
 - **Interactive library**
-  - Browse your RomM library from the installed Romm Sync app (or some other device), download games and BIOS files into the right emulator folders, and resolve save conflicts.
-- **Pluggable emulator profiles**
-  - RetroArch is supported out of the box. Mednafen and a PS2-ISO profile are included but disabled. I'll make sure we update as more emulators become available on the console.
+  - Browse your RomM library from RommPS, the native app (or some other device), download games and BIOS files into the right emulator folders, and resolve save conflicts.
+- **Pluggable emulator profiles and multiple emulators per platform**
+  - Fully customizable sync destinations, but includes frequently updated preset profiles for existing homebrew emulators. 
+  - Can sync games and saves and states for multiple emulators per platform (PS2 on RetroArch and PS5SX2 as an example) using hardlinks.
+- **Beautiful and Responsive UI**
+  - Based on mihawk-99's Vulkan homebrew apps and BlackBearReloaded's UI kit, we get a nice, responsive feel. So worth it, it looks 1000x better.
+- **Easter Egg**
+  - Check in the Settings, scroll the settings list, see if you find the X.
 
 ## Supported Emulators and Games
 
-Technically, this RomM client will work with all emulators, but the PS5 is currently limited on emulators available. This is simply a matter of time, and the client will be updated frequently as new emulators are released. Currently, we have focused on using mihawk-99's unofficial implementation of RetroArch. It works beautifully!
+Technically, this RomM client will work with all emulators, but I have included profiles for the emulators that exist for the console as of Oct 2026.
+
+### Supported out of the box
+
+Setup finds these on its own. Anything else can still sync by picking its folders during setup.
+
+**PS5**
+
+| Emulator | Systems | Saves |
+| --- | --- | --- |
+| RetroArch (mihawk-99's port) | NES, Famicom Disk System, SNES, Game Boy, Game Boy Color, Game Boy Advance, Genesis/Mega Drive, Master System, Game Gear, Sega CD, SG-1000, arcade (FinalBurn Neo), PS2 (LRPS2), PSP (PPSSPP), GameCube and Wii (Dolphin) | Saves and states |
+| PSXS5 / SwanStationPS5 | PS1 | One memory card per game, and states |
+| PS5SX2 | PS2 | Its two shared memory cards, backed up to RomM (5.3 or newer) |
+| PS5N64 | N64 | Saves and states |
+
+PS5NES and Porpoise don't have presets yet, because neither works properly on my console right now:
+
+- **PS5NES** v7 looks for its games in PS5SX2's folder instead of its own.
+- **Porpoise** crashes the moment it leaves the app sandbox, with both OnionHEN and Lapy freeing it, so it fails to launch. Issue reported to the dev. In the meantime, you can sync files into the sandbox, but you won't have access to /data.
+
+
+**PS4** (experimental)
+
+| Emulator | Systems |
+| --- | --- |
+| RetroArch | The RetroArch systems above, wherever the PS4 build has the core |
+| pSNES, pNES, pGEN, pGBA, pFBN | SNES; NES; Genesis, Master System, Game Gear, Sega CD, SG-1000; GBA, GBC, GB; arcade |
+
+Only RetroArch has been tested on the PS4 so far.
 
 ## PS4/PS5 Games
 
@@ -22,8 +55,9 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
 ## Requirements
 
 - A PS5 running etaHEN or onionHEN, or a PS4 running GoldHEN
-- RomM 5.0 or newer. (5.3.0 if you want to do shared memory card syncing instead of per-game)
-- RetroArch installed as a homebrew app (on the PS4, the RetroArch package that keeps its files in `/data/retroarch`)
+- RomM 5.2.0 or newer (5.3.0 if you want to do shared memory card syncing instead of per-game)
+- RetroArch installed
+- Whichever other emulators you want
 
 ## Install
 
@@ -38,7 +72,7 @@ To start RomM Sync with the console, let your HEN start it: the last setup step 
 
 ### PS4
 
-> **Experimental.** The PS4 build has only been tested with RetroArch so far. Standalone emulators may work, but haven't been confirmed. On my console with GoldHEN 2.4b18.9, closing some homebrew emulators from the PS button menu crashes the console whether or not RomM Sync is running. Quitting them from their own menu avoids it.
+> **Experimental.** The PS4 build has only been tested with RetroArch so far. Standalone emulators may work, but haven't been confirmed. I spent all my focus on the PS5 build, so I didn't get to test as much, so consider it experimental and there may be gremlins for now.
 
 Needs GoldHEN 2.4b18.5 or newer, whose payload menu runs ELF payloads.
 
@@ -51,13 +85,14 @@ The app only installs the payload and shows the web UI; the payload does the syn
 
 Don't send the payload to GoldHEN's network loader on port 9090: GoldHEN 2.4 crashes on ELFs sent there. Make sure the console's date and time are set (GoldHEN can keep them updated), or HTTPS won't work. RetroArch is found in `/data/retroarch`, with its cores in `/data/self/retroarch/cores`, as its `retroarch.cfg` says.
 
-HTTP and HTTPS servers both work, on both consoles. Common certificate authorities (the Mozilla list) are built in, so there's nothing to copy for HTTPS. If your server uses a self-signed certificate, tick _Skip certificate checks_ during setup, or turn off _Verify TLS certificates_ in Settings. If it uses a certificate from your own CA, you can instead put that CA's certificate in `/data/romm-sync/cacert.pem`; it's trusted in addition to the built-in list.
-
 ## Updates
 
-Settings shows when a new version is out (it checks GitHub once a day, which you can turn off) and can install it for you. Nothing installs on its own. The update waits until no sync, download or game is running, replaces the payload in the HEN's autostart folder (keeping the old one as `romm-sync.elf.bak`), and restarts RomM Sync. On the PS4 it replaces the payload in `/data/payloads`, and the new version starts on the next jailbreak.
+There are two pieces to keep updated, and they update separately:
 
-Each release is signed, with a manifest per console. RomM Sync only installs an update whose signature matches a key built into it, whose manifest names its own console's payload, and whose file matches the signed checksum, so a modified download (or the other console's build) is rejected.
+- **RomM Sync (the payload)** checks GitHub once a day (you can turn that off) and tells you when there's a new version. Settings can install it for you, but nothing installs on its own. Each payload release is signed, and RomM Sync only installs a file whose signature matches the key built into it, so nobody can slip a modified payload in through the updater.
+- **RommPS (the app)** updates through ProsperoStore, like any other homebrew in its catalog. If the payload ever falls behind what the app needs, RommPS tells you to update it.
+
+You can always update either one by hand from the releases page.
 
 ## Setup
 
@@ -84,7 +119,7 @@ My opinion? One card per game is better since 8MB memory cards fill up quick.
 
 ## Emulator Profiles
 
-Setup finds RetroArch, plus the standalone emulators the console's catalog knows about (on the PS4: the pEMU family, pSNES, pNES, pGEN, pGBA and pFBN, from `platform/ps4/emulators.json`). When more than one of your emulators plays a system, setup asks which one to use for it, with a shortcut to use RetroArch for everything. Games for that system download to the chosen emulator, and its saves are the ones that sync. Settings has an "Emulator for each system" card to change it later; the others list the system under `"exclude"` in their profile.
+I've included direct support for most of the emulators that are out right now, except for the ones that won't even launch... you can sync games, states, and saves anywhere you want, but the presets should do it for most people.
 
 Settings has a JSON editor for emulator profiles, and a table showing which folders are used for each platform. A profile lists an emulator's folders and the RomM platforms it plays:
 
@@ -103,7 +138,6 @@ Settings has a JSON editor for emulator profiles, and a table showing which fold
 }
 ```
 
-For RetroArch, it reads save and state folders from its own config, including its "sort by core" and "sort by content" options. RomM Sync never changes the emulator's settings. A save found outside the folder the emulator reads is listed on the status page and left alone.
 
 ## Building
 
@@ -117,15 +151,13 @@ tests/e2e.sh          # end-to-end tests against a mock RomM server
 
 Both consoles build from the same code in `src/`. What differs lives in `platform/<console>/`: `platform.c` (the `src/platform.h` interface), the make rules and the Docker SDK image. `platform/console/` has the parts the PS4 and PS5 share, and `platform/host/` is the development build.
 
-## Releasing
-
-Merge a pull request from a branch named with the version, such as `release/v1.0.2`. The release workflow tags the merge commit, builds both payloads, signs them and publishes the release. You can also push a `v1.2.3` tag yourself.
-
-Signing needs the `RELEASE_SIGNING_KEY` repository secret: the 64-character hex key printed by `build/host/release-sign keygen`. Its public half must be in `src/update_keys.h`, which also holds a backup key that is kept offline. If the release key is ever lost or leaked, sign the next release with the backup key, and ship a new key pair in that release.
-
 ## P.S to the industry
 
 If buying isn't **owning**, then piracy **isn't** stealing. 🖕
+
+## Shameless Plug
+
+<a href='https://ko-fi.com/M7G128GENT' target='_blank'><img height='36' style='border:0px;height:36px;' src='https://storage.ko-fi.com/cdn/kofi4.png?v=6' border='0' alt='Buy Me a Coffee at ko-fi.com' /></a>
 
 ## License
 

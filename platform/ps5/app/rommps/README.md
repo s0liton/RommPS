@@ -1,50 +1,21 @@
 # RommPS
 
-A PS5 homebrew title (`PPSA76677`) on RADV, made from the
-[PS5 Vulkan Template](https://github.com/mihawk-99/PS5_VulkanTemplate) foundation at
-`b577e950` with its UI module: Sascha Willems' Vulkan example base class with its PS5
-hooks, the PS5 layer (the launch, the pad, sound, klog, test runs, the build and the
-console tools), BlackBearReloaded's UI kit drawn with Vulkan (through my fork
-PS5_VKHomebrewUI), and one program, `examples/rommps/rommps.cpp`, whose screen is its
-own copy of the kit's "aurora" design, `examples/rommps/kit/screen.cpp`.
+The native PS5 app for RomM Sync (`PPSA76677`): your RomM library, downloads, save sync status and settings, on the TV with the controller. It talks to the RomM Sync payload on the console (its local API on port 8780), so the payload has to be running; RommPS shows how to load it when it isn't.
+
+It's built on mihawk-99's [PS5 Vulkan Template](https://github.com/mihawk-99/PS5_VulkanTemplate) (at `b577e950`): Sascha Willems' Vulkan example base class with its PS5 hooks, RADV for the GPU, and BlackBearReloaded's UI kit drawn with Vulkan through mihawk-99's PS5_VKHomebrewUI. The app itself is `examples/rommps/rommps.cpp` and the screens in `examples/rommps/kit/`.
 
 ## Building and running
 
-It builds against my PS5 stack, checked out beside it: PS5_Vulkan (the RADV release
-archive, the link recipe, the native tool and `libc.prx`), the payload SDK fork
-(`ps5/tools/setup-sdk.sh` installs it at the pinned revision) and PS5_VKHomebrewUI
-(`ps5/ui/setup-kit.sh` exports the kit at the pinned revision, from GitHub when it is
-not beside it).
+It builds against mihawk-99's PS5 stack, checked out in `../ps5-stack` beside this repository (PS5_Vulkan, the payload SDK fork, PS5_Mesa), inside the Docker image from `platform/ps5/app/docker`. From the repository's root:
 
 ```bash
-ps5/tools/build.sh              # dist/PPSA76677/: eboot.bin, sce_sys, assets (the kit's fonts and sounds)
-ps5/tools/deploy.sh             # upload what changed, over the console's FTP server
-ps5/tools/run.sh                # a test run: 300 frames, the last one saved and checked
-ps5/tools/run.sh --menu         # no test: the program, until it ends itself
-ps5/tools/host-reference.sh     # the same frames on this PC's Vulkan driver
+tools/ps5-app-build.sh bash -c 'cd /repo/platform/ps5/app/rommps && bash ps5/tools/build.sh rommps'   # dist/PPSA76677/
+tools/ps5-app-build.sh bash -c 'cd /repo/platform/ps5/app/rommps && bash ps5/tools/run.sh rommps'     # deploy and a test run
+tools/release-app.sh v1.2.3                                                                           # the release zip
 ```
 
-A launch from the home screen shows the screen at once. Every button is the
-design's; holding OPTIONS for a second ends the title.
-
-## Growing it
-
-- **The screen** is `examples/rommps/kit/screen.cpp`: a class with `update(input, dt,
-  feedback)` and a const `draw(frame)`, assembled from the kit's components and
-  themes. The kit's guides are in PS5_VKHomebrewUI's `docs/` (CRAFT.md first, then
-  COMPONENTS.md, THEMES.md and KIT.md), its headers in `.deps/hui/src/`.
-- **The program** around it, `examples/rommps/rommps.cpp`, owns the frame: input, sound,
-  the light bar, the layers. A 3D scene goes under the screen as in the template's
-  `uioverlay` sample (`kit.renderer.import_texture`).
-- **Assets** go in `ps5/assets.json`, each with its origin and licence; only assets
-  with a clear licence are shipped (`ps5/ASSETS.md` is written from it).
-- How the foundation and the UI module work: PS5_VulkanTemplate's `ps5/README.md`
-  and `ps5/ui/README.md`; the agent skills for this stack are in its `skills/`.
+The menu sounds aren't in git. Put them in `platform/ps5/app/assets/sounds/` (`focus_01.wav`, `back_01.wav` and so on, named after the kit's cues) before building; without them the kit's own sounds are used.
 
 ## Licences
 
-The UI kit is GPL-3.0-or-later, and so are this title's program, its screen, the UI
-module (`ps5/ui/`) and the kit's sounds (`ps5/licenses/GPL-3.0.txt`); the kit's fonts
-are OFL-1.1 and Bitstream Vera (`ps5/ASSETS.md`). The rest of the foundation is MIT
-(`LICENSE.md`, Sascha Willems'; the PS5 layer is mine, under the same licence). The
-title as distributed is under GPL-3.0.
+The UI kit is GPL-3.0-or-later, and so is RommPS as distributed: its screens, the UI module (`ps5/ui/`) and the kit's sounds (`ps5/licenses/GPL-3.0.txt`). The kit's fonts are OFL-1.1 and Bitstream Vera. The rest of the template is MIT (`LICENSE.md`: Sascha Willems', and mihawk-99's PS5 layer). The menu sounds are Konami's, used with permission (`ps5/SOUNDS-LICENCE.txt`). Every asset and its licence is listed in `ps5/ASSETS.md`, and the built app carries all of it in `LEGAL.txt` and `licenses/`.

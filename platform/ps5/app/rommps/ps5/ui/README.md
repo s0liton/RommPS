@@ -1,5 +1,7 @@
 # The UI module
 
+> This is PS5_VulkanTemplate's README for its UI module, kept as it came with the module. The samples, `new-title.py` and `skills/` it mentions are in [the template](https://github.com/mihawk-99/PS5_VulkanTemplate), not in this repository, and "my" in it is mihawk-99.
+
 Console-grade interfaces for a title, drawn with Vulkan: the kit of
 BlackBearReloaded's [ps5-homebrew-ui](https://github.com/blackbearreloaded/ps5-homebrew-ui)
 (an instanced signed-distance-field renderer, springs, a 32-voice mixer with two

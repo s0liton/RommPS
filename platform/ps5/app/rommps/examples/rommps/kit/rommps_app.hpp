@@ -40,6 +40,7 @@ struct Cover
     Palette palette;
     bool requested = false;
     bool failed = false;
+    double used = 0; // when it was last drawn
 };
 
 struct Game
@@ -50,6 +51,9 @@ struct Game
     double size = 0;
     bool installed = false;
     bool multi = false;
+    bool not_game = false; // a file RomM scanned beside the games (metadata.txt...): hidden
+    std::string version;   // what sets this version apart, when RomM has others of the game
+    int versions = 0;      // how many versions RomM has, this one included; 0 if just one
 };
 
 // More about a game (/api/roms/<id>/details): RomM's metadata, the user's own
@@ -80,17 +84,49 @@ struct GameList
     static constexpr int kPage = 60;
     int platform_id = 0;
     std::string search;
-    int total = -1;                   // unknown until the first page arrives
-    std::vector<Game> games;          // sized to total; a game with id 0 isn't loaded yet
+    int total = -1;                   // games to show; unknown until the first page arrives
+    std::vector<Game> games;          // RomM's whole list, by RomM's offset; id 0 isn't loaded yet
     std::vector<unsigned char> pages; // per page: 0 not asked, 1 asked, 2 here
     std::vector<std::pair<std::string, int>> letters; // first letter -> the index of its first game
+    std::vector<std::pair<std::string, int>> raw_letters; // the same, by RomM's offset
+    std::vector<int> hidden;          // RomM offsets of the files that aren't games, sorted
     std::string error;
     bool ready() const { return total >= 0; }
+    // Positions in the list as shown, which skips what isn't a game, and
+    // RomM's offsets. What isn't a game is known once its page is here.
+    int raw(int index) const
+    {
+        for (int h : hidden)
+            if (h <= index)
+                ++index;
+        return index;
+    }
+    int shown(int raw_index) const
+    {
+        int before = 0;
+        for (int h : hidden)
+            before += h < raw_index;
+        return raw_index - before;
+    }
     const Game *at(int index) const
     {
-        return index >= 0 && index < static_cast<int>(games.size()) && games[static_cast<std::size_t>(index)].id
-                   ? &games[static_cast<std::size_t>(index)]
+        if (index < 0 || index >= total)
+            return nullptr;
+        const int r = raw(index);
+        return r < static_cast<int>(games.size()) && games[static_cast<std::size_t>(r)].id
+                   ? &games[static_cast<std::size_t>(r)]
                    : nullptr;
+    }
+    void reindex() // after a page arrives
+    {
+        hidden.clear();
+        for (std::size_t i = 0; i < games.size(); ++i)
+            if (games[i].id && games[i].not_game)
+                hidden.push_back(static_cast<int>(i));
+        total = static_cast<int>(games.size() - hidden.size());
+        letters.clear();
+        for (const auto &[key, offset] : raw_letters)
+            letters.push_back({key, shown(offset)});
     }
 };
 
@@ -100,7 +136,10 @@ struct Download
     std::string name, platform, status, error;
     double done = 0, total = 0, speed = 0;
     float progress() const { return total > 0 ? static_cast<float>(done / total) : 0.0f; }
-    bool active() const { return status == "queued" || status == "running" || status == "cancelling"; }
+    // The payload's states: queued, downloading, cancelling, then done, error or cancelled.
+    bool running() const { return status == "downloading"; }
+    bool active() const { return status == "queued" || running() || status == "cancelling"; }
+    bool finished() const { return !active(); }
 };
 
 struct Status
@@ -118,6 +157,9 @@ struct Status
     std::string last_result; // "OK", or the last sync's error
     int last_up = 0, last_down = 0;
     std::string server_version;
+    // Every cover kept on the console (covers.h in the payload).
+    std::string covers_state;
+    int covers_done = 0, covers_total = 0;
     // Pairing in progress (/api/pair/start): "pending" while RomM waits for
     // the code to be approved, "error" when it failed, "" otherwise.
     std::string pairing, pairing_message, user_code, verification_url;
@@ -135,6 +177,7 @@ struct Config
     std::string states = "off";          // off, upload, sync
     std::string conflict_policy = "ask"; // ask, newest, local, server
     std::string ps2_cards = "per_game";  // per_game, backup
+    bool cover_cache = true;
     int download_concurrency = 1;
 };
 
@@ -158,6 +201,10 @@ class App
     void tick(float dt, hui::gfx::Renderer *renderer);
 
     const Status &status() const { return status_; }
+    // RommPS updates from the store and the payload updates itself, so the two
+    // can drift apart: this RommPS needs at least kMinPayload's API.
+    static constexpr const char *kMinPayload = "1.1.0";
+    bool payload_too_old() const;
     const std::vector<Platform> &platforms() const { return platforms_; }
     const std::vector<Download> &downloads() const { return downloads_; }
     const Download *download_for(int rom_id) const;
@@ -177,8 +224,9 @@ class App
     // A cover's texture and palette; asks for it the first time.
     const Cover &cover(const std::string &path);
 
-    void download(int rom_id);
+    void download(int rom_id, const std::string &name);
     void cancel_download(int job_id);
+    void clear_finished_downloads();
     void sync_now();
 
     const Config &config() const { return config_; }
@@ -214,11 +262,25 @@ class App
 
   private:
     void refresh_status();
+    void evict_covers(hui::gfx::Renderer *renderer);
+    void send_page(const std::string &key, int page);
     void refresh_platforms();
     void refresh_downloads();
 
     Api api_;
-    Api covers_api_; // covers on a worker of their own, so lists never wait behind them
+    // Covers on workers of their own, so lists never wait behind them; asked
+    // for only while they're on screen (wanted_), newest first.
+    static constexpr int kCoverWorkers = 3;
+    static constexpr int kCoversInFlight = 6;
+    Api covers_api_[kCoverWorkers]; // each to the payload on 127.0.0.1:8780
+    std::vector<std::string> wanted_; // drawn since the last tick, in draw order
+    // Pages of games, on workers of their own too; asked for at the tick if
+    // the screen still wants them.
+    static constexpr int kPageWorkers = 2;
+    Api pages_api_[kPageWorkers];
+    std::vector<std::pair<std::string, int>> wanted_pages_; // since the last tick
+    int pages_in_flight_ = 0, next_page_worker_ = 0;
+    int covers_in_flight_ = 0, next_cover_worker_ = 0;
     Status status_;
     std::vector<Platform> platforms_;
     std::vector<Download> downloads_;
@@ -244,6 +306,7 @@ class App
     float status_timer_ = 0, downloads_timer_ = 0;
     bool status_busy_ = false, downloads_busy_ = false, platforms_busy_ = false;
     bool was_paired_ = false;
+    bool warned_old_payload_ = false;
     int active_downloads_ = 0;
     std::string toast_;
     float toast_age_ = 0;

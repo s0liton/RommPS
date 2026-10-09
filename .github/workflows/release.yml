@@ -47,6 +47,22 @@ jobs:
         with:
           ref: ${{ steps.version.outputs.sha }}
 
+      # RommPS (built with tools/release-app.sh, outside this workflow) is
+      # offered as an update by the homebrew catalog only if its contentVersion
+      # goes up, so the tag has to match it: v1.1.0 is 01.001.000.
+      - name: Check RommPS's contentVersion
+        if: steps.version.outputs.tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          IFS=. read -r major minor patch <<< "${TAG#v}"
+          want=$(printf "%02d.%03d.%03d" "$major" "$minor" "$patch")
+          have=$(jq -r .contentVersion platform/ps5/app/rommps/ps5/sce_sys/param.json)
+          if [ "$have" != "$want" ]; then
+            echo "::error::RommPS's contentVersion is $have, $TAG needs $want (platform/ps5/app/rommps/ps5/sce_sys/param.json)"
+            exit 1
+          fi
+
       - uses: docker/setup-buildx-action@v3
         if: steps.version.outputs.tag
 
@@ -113,6 +129,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.version.outputs.tag }}
           SHA: ${{ steps.version.outputs.sha }}
+        # The notes are written by hand, in docs/releases/<tag>.md: the homebrew
+        # catalog shows them as RommPS's release notes, and drops GitHub's
+        # generated list.
         run: |
+          notes="docs/releases/$TAG.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::$notes is missing; write the release notes before tagging"
+            exit 1
+          fi
           gh release create "$TAG" dist/* \
-            --target "$SHA" --title "$TAG" --generate-notes
+            --target "$SHA" --title "$TAG" --notes-file "$notes"

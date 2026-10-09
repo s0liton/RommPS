@@ -61,17 +61,18 @@ class SetupPage
     {
         std::vector<std::string> slugs;
         std::string name;
-        int games = 0;
+        int games = -1; // the server's count, -1 for an emulator's system
         bool on = false;
         std::string folder[3]; // games, saves, states
+        std::string id;        // for an emulator with no preset: its profile, "<emulator>-<system>"
     };
     struct Emulator
     {
-        std::string root, name, kind;
+        std::string root, name, kind, id;
         std::vector<std::string> cores;
         std::vector<System> systems;
         bool on = true;
-        bool ready = true; // false: found, not supported yet
+        bool ready = true; // false: found, no preset yet (set up by its folders, like a system with no emulator)
         bool fresh = false; // found since the last setup
         std::string note;
     };
@@ -164,6 +165,7 @@ class SetupPage
     std::string ps2_cards_ = "per_game";
     std::map<std::string, Own> own_;    // by system key (first slug)
     std::vector<std::string> own_order_; // the server's order
+    std::vector<std::string> manual_;    // own_ keys of emulators with no preset, in the order found
     bool picking_ = false;
     std::string pick_key_;
     int pick_which_ = 0;

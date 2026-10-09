@@ -44,6 +44,7 @@ class SettingsPage
         kConcurrency,
         kNotify,
         kUpdateCheck,
+        kCovers,
         kUpdate,
         kEmulators,
         kSetup,

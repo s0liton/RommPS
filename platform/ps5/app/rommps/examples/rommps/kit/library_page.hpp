@@ -35,6 +35,10 @@ void draw_cover(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Loo
 // "Downloaded", or a running download's progress, on a card.
 void draw_badge(hui::gfx::DrawList &list, const Look &look, App &app, const Game *g, const hui::gfx::Rect &rect,
                 Color accent);
+// When RomM has more than one version of the game, what sets this one apart
+// ("USA, Rev 1"), in a tag along the cover's bottom edge.
+void draw_version(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, const Game *g,
+                  const hui::gfx::Rect &rect);
 std::string human_size(double bytes);
 // "1994 · Nintendo · Platform, Adventure" ("" while there's nothing to say).
 std::string details_line(const Details &d);
@@ -75,6 +79,7 @@ class LibraryPage
     // ---- a grid of games
     void open_grid(App &app, int platform_id, const std::string &search);
     void update_grid(App &app, const hui::InputFrame &input, hui::ui::Feedback &feedback, bool &details);
+    void move_in_grid(App &app, const hui::InputFrame &input, hui::ui::Feedback &feedback, bool &details);
     void draw_grid(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, App &app, Color accent,
                    float clock, float age) const;
     GameList &grid(App &app) const { return app.games(grid_platform_, grid_search_); }
@@ -103,6 +108,11 @@ class LibraryPage
     int grid_platform_ = 0;
     std::string grid_search_;
     int index_ = 0;
+    // The focused game by RomM's offset, so it stays put when a page turns out
+    // to hold files that aren't games, which shifts the shown positions.
+    const GameList *focus_list_ = nullptr;
+    int focus_raw_ = 0;
+    std::size_t focus_hidden_ = 0;
     bool on_letters_ = false;
     int letter_ = 0; // the A to Z bar's focus, an index into the list's letters
     hui::tween::Spring grid_scroll_; // in rows

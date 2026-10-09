@@ -35,6 +35,7 @@ typedef struct {
     int setup_complete;       /* background syncs wait for the setup wizard */
     char ps2_cards[16];       /* "per_game" or "backup" */
     char ui_theme[24];        /* web UI theme id (ui/themes/<id>.css) */
+    int cover_cache;          /* keep every game's cover on the console (covers.h) */
     char server_version[32];
 } config_t;
 

@@ -337,7 +337,8 @@ static void add_standalone(cJSON *out) {
         cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "detect"))
             if (!present && cJSON_IsString(x) && dir_exists(x->valuestring)) present = 1;
         if (!present) continue;
-        /* Found but not supported yet: shown in setup, never a profile. */
+        /* Found, but with no preset yet: setup offers it with folders the user
+         * picks (a custom profile), not this profile. */
         const int ready = !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(e, "ready"));
         cJSON *profile = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(e, "profile"), 1);
         if (!profile) continue;
@@ -348,6 +349,7 @@ static void add_standalone(cJSON *out) {
         jset_num(profile, "generated", PROFILE_GENERATION);
         cJSON *c = cJSON_CreateObject();
         cJSON_AddStringToObject(c, "kind", "standalone");
+        cJSON_AddStringToObject(c, "id", jget_str(e, "id", "standalone"));
         cJSON_AddStringToObject(c, "name", jget_str(e, "name", ""));
         cJSON_AddStringToObject(c, "root", jget_str(profile, "root", ""));
         cJSON_AddStringToObject(c, "title_id", found);
@@ -356,7 +358,7 @@ static void add_standalone(cJSON *out) {
         cJSON_AddBoolToObject(c, "ready", ready);
         cJSON_AddStringToObject(c, "note", jget_str(e, "note", ""));
         LOGI("detected %s (%s)%s", jget_str(e, "name", ""), found[0] ? found : jget_str(c, "root", ""),
-             ready ? "" : ", not supported yet");
+             ready ? "" : ", no preset yet");
         cJSON_AddItemToArray(out, c);
     }
     cJSON_Delete(catalog);

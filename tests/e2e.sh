@@ -58,7 +58,7 @@ EOF
 # An installed payload in a stand-in etaHEN folder, for the update test.
 mkdir -p "$T/etaHEN/payloads"; echo "old-payload" > "$T/etaHEN/payloads/romm-sync.elf"
 ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" \
-  ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" \
+  ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" ROMM_SYNC_COVERS_TICK=1 \
   ROMM_SYNC_UPDATE_URL="http://127.0.0.1:$MOCK_PORT/_github/release" "$ROOT/build/host/romm-sync" >"$T/daemon.log" 2>&1 &
 sleep 6   # let the (unpaired, skipped) startup sync pass
 
@@ -87,14 +87,17 @@ wait_sync 1
 [[ "$(last reason)" == "first sync" && "$(last uploaded)" == 1 ]] || fail "expected the first sync to upload the local save"
 
 echo "2. game download, then its server save"
-post /api/download '{"rom_id":11}' >/dev/null; sleep 1
+post /api/download '{"rom_id":11,"name":"Super Metroid"}' >/dev/null
+[[ "$(curl -sf "$API/api/downloads" | python3 -c "import json,sys; print([d['name'] for d in json.load(sys.stdin) if d.get('rom_id') == 11][-1])")" == "Super Metroid" ]] \
+  || fail "a download must show its name from the start"
+sleep 1
 [[ -f "$RA/roms/snes/Super Metroid (USA).sfc" ]] || fail "ROM not downloaded"
 curl -sf -X POST "http://127.0.0.1:$MOCK_PORT/_admin/save" -d '{"rom_id":11,"slot":"autosave","file_name":"Super Metroid (USA).srm","content":"server-save"}' >/dev/null
 post /api/sync >/dev/null; wait_sync 2
 [[ "$(cat "$RA/saves/Snes9x/Super Metroid (USA).srm")" == "server-save" ]] || fail "server save not downloaded"
 
 ci=$(curl -sf "$API/api/roms?platform_id=1" | python3 -c "import json,sys; print(sorted(json.load(sys.stdin)['char_index'].items()))")
-[[ "$ci" == "[('c', 0), ('e', 1), ('s', 2)]" ]] || fail "library char_index for the A-Z ribbon: $ci"
+[[ "$ci" == "[('c', 0), ('e', 1), ('m', 2), ('s', 3)]" ]] || fail "library char_index for the A-Z ribbon: $ci"
 inst=$(curl -sf "$API/api/installed" | python3 -c "import json,sys; print([(g['id'], g['name'], g['platform_id'] > 0) for g in json.load(sys.stdin)])")
 [[ "$inst" == "[(11, 'Super Metroid', True), (10, 'Chrono Trigger', True)]" ]] || fail "the games on this console, for the app: $inst"
 all=$(curl -sf "$API/api/roms?platform_id=0&search=metroid" | python3 -c "import json,sys; print([(g['name'], g['platform_id']) for g in json.load(sys.stdin)['items']])")
@@ -334,11 +337,16 @@ for b in open('$T/n64emu/games/Test Racer (U).z64','rb').read(): h=((h^b)*0x1000
 print(f'{h:016x}')")
 printf 'n64-save' > "$T/n64emu/saves/$fnv.sav"
 printf 'card-ps2' > "$T/ps2emu/Mcd001.ps2"
+printf 'ROM:Old Racer (U).z64' > "$T/n64emu/games/Old Racer (U).z64"   # already there before the extra is turned on
 det=$(curl -sf "$API/api/setup/detect" | python3 -c "import json,sys; print(sorted((c['name'], c.get('ready', True)) for c in json.load(sys.stdin) if c['kind'] == 'standalone'))")
 [[ "$det" == *"('Not yet', False)"* && "$det" == *"('PSX-like', True)"* ]] || fail "detection of the new kinds: $det"
 post /api/setup/emulators "{\"roots\":[\"$HB\",\"$T/psxemu\",\"$T/n64emu\",\"$T/n64b\",\"$T/ps2emu\",\"$T/nope\"],
   \"choices\":{\"psx\":\"$T/psxemu\",\"n64\":\"$T/n64emu\",\"ps2\":\"$T/ps2emu\"},\"also\":{\"n64\":[\"$T/n64b\"]}}" >/dev/null \
   || fail "setup with extras refused"
+for _ in $(seq 1 20); do [[ -f "$T/n64b/roms/Old Racer (U).z64" ]] && break; sleep 0.25; done
+[[ -f "$T/n64b/roms/Old Racer (U).z64" ]] || fail "turning an extra on must give it the games already there"
+for _ in $(seq 1 20); do grep -q "NOTIFY.*now also sync with" "$T/daemon.log" && break; sleep 0.25; done
+grep -q "NOTIFY\] RomM Sync: [0-9]* N64 games\{0,1\} now also sync with" "$T/daemon.log" || fail "no notice that the games now also sync with the extra"
 dirs=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print(sorted(m['rom_dir'] for m in json.load(sys.stdin)))")
 [[ "$dirs" != *"$T/nope"* ]] || fail "an emulator not supported yet got a profile: $dirs"
 post /api/config '{"states":"upload"}' >/dev/null
@@ -395,5 +403,49 @@ post /api/setup/emulators "{\"roots\":[\"$HB\"],\"custom\":[{\"slugs\":[\"psp\"]
   || fail "setup with picked folders refused"
 mine=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print([(m['rom_dir'], m['save_dir']) for m in json.load(sys.stdin) if m['rom_dir'].startswith('$T/mine')])")
 [[ "$mine" == "[('$T/mine/games', '$T/mine/saves')]" ]] || fail "the picked folders weren't used: $mine"
+# An emulator with no preset, set up by its folders, for a system RetroArch plays too: an extra.
+mkdir -p "$T/porp/games" "$T/porp/saves"
+post /api/setup/emulators "{\"roots\":[\"$HB\"],\"custom\":[{\"id\":\"newemu-snes\",\"slugs\":[\"snes\",\"sfam\"],\"name\":\"NewEmu (SNES)\",\"rom_dir\":\"$T/porp/games\",\"save_dir\":\"$T/porp/saves\"}]}" >/dev/null \
+  || fail "setup with an emulator's own folders refused"
+porp=$(curl -sf "$API/api/config" | python3 -c "
+import json,sys
+for p in json.load(sys.stdin)['profiles']:
+    if p['id'].startswith('custom-'): print(p['id'], p.get('extra'), p['rom_dir'] == '$T/porp/games')")
+[[ "$porp" == "custom-newemu-snes ['snes'] True" ]] || fail "an emulator with no preset should be an extra next to RetroArch: $porp"
+
+echo "19. every cover kept on the console, then only the missing and changed ones fetched"
+# Paired with the HTTPS mock since scenario 17.
+TM="https://127.0.0.1:$TLS_PORT"
+hits() { curl -sfk "$TM/_admin/dump" | python3 -c "import json,sys; print(json.load(sys.stdin)['asset_hits'])"; }
+covers_done() { # waits for a full pass to finish; prints done/total
+  for _ in $(seq 1 120); do
+    r=$(curl -sf "$API/api/status" | python3 -c "import json,sys; c=json.load(sys.stdin)['covers']; print(c['state'], c['done'], c['total'])")
+    set -- $r; [[ "$1" == done && "$2" == "$3" && "$3" -gt 0 ]] && { echo "$2/$3"; return; }; sleep 0.5
+  done; echo "timeout: $r"
+}
+post /api/covers/refresh >/dev/null
+first=$(covers_done); [[ "$first" != timeout* ]] || fail "the full cover pass didn't finish: $first"
+cached=$(ls "$T/data/cache/assets" | grep -vc '\.missing$')
+[[ "$cached" -ge "${first#*/}" ]] || fail "every game's cover should be on the console: $cached files for $first"
+before=$(hits)
+p=$(curl -sf "$API/api/roms?platform_id=1&limit=1" | python3 -c "import json,sys; print(json.load(sys.stdin)['items'][0]['cover'])")
+curl -sf -o /dev/null "$API/cover?p=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$p")" || fail "a cached cover wasn't served"
+post /api/covers/refresh >/dev/null; sleep 3; covers_done >/dev/null
+[[ "$(hits)" == "$before" ]] || fail "a second pass must not download covers it has: $before then $(hits)"
+curl -sfk -X POST "$TM/_admin/cover_ts" -d '{"rom_id":11}' >/dev/null
+post /api/covers/refresh >/dev/null; sleep 3; covers_done >/dev/null
+[[ "$(hits)" == "$((before + 1))" ]] || fail "only the changed cover should be fetched again: $before then $(hits)"
+
+echo "20. files that aren't games are hidden and never downloaded; versions say what sets them apart"
+lib=$(curl -sf "$API/api/roms?platform_id=1&limit=50" | python3 -c "
+import json,sys
+for g in json.load(sys.stdin)['items']: print(g['id'], g.get('not_game', False), g.get('version', ''), g.get('versions', 0))")
+grep -q "^13 True" <<<"$lib" || fail "systeminfo.txt must be marked as not a game: $lib"
+grep -q "^14 False" <<<"$lib" || fail "a Mega Drive .md ROM is a game: $lib"
+grep -q "^12 False USA · Rev 1 · Beta 2$" <<<"$lib" || fail "the version label: $lib"
+grep -q "^10 False  0$" <<<"$lib" || fail "a game with one version has no label: $lib"
+post /api/download '{"rom_id":13}' >/dev/null; sleep 1
+grep -q "systeminfo.txt isn't a game" "$T/daemon.log" || fail "a file that isn't a game was downloaded"
+[[ -z "$(find "$T" -name systeminfo.txt -not -path '*/data/*')" ]] || fail "systeminfo.txt reached an emulator's folder"
 
 echo "PASS"

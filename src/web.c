@@ -16,6 +16,7 @@
 
 #include "autostart.h"
 #include "config.h"
+#include "covers.h"
 #include "detect.h"
 #include "http.h"
 #include "library.h"
@@ -241,6 +242,7 @@ static cJSON *status_json(void) {
     pthread_mutex_unlock(&g_fg_lock);
     cJSON_AddItemToObject(j, "sync", sync_status_json());
     cJSON_AddItemToObject(j, "pairing", pair_status());
+    cJSON_AddItemToObject(j, "covers", covers_status());
     return j;
 }
 
@@ -391,161 +393,17 @@ static char *diagnostics_text(void) {
     return b.s;
 }
 
-static const char *image_type(const char *p) {
-    char path[1024];
-    str_copy(path, sizeof path, p);
-    char *q = strchr(path, '?');
-    if (q) *q = 0;
-    if (str_ends_with_ci(path, ".png")) return "image/png";
-    if (str_ends_with_ci(path, ".webp")) return "image/webp";
-    if (str_ends_with_ci(path, ".svg")) return "image/svg+xml";
-    if (str_ends_with_ci(path, ".ico")) return "image/x-icon";
-    return "image/jpeg";
-}
-
-/* RomM's platform icons only carry a viewBox, and the console browser renders an
- * unsized SVG at 0x0. Because of course it does. Adds width and height from
- * the viewBox. NULL if nothing changed. */
-static char *svg_with_size(const char *svg, size_t len, size_t *out_len) {
-    const char *tag = strstr(svg, "<svg");
-    if (!tag) return NULL;
-    const char *end = strchr(tag, '>');
-    if (!end) return NULL;
-    /* Already sized? */
-    for (const char *q = tag; q < end; q++)
-        if (!strncmp(q, " width=", 7)) return NULL;
-    const char *vb = strstr(tag, "viewBox=\"");
-    double x, y, w = 0, h = 0;
-    if (!vb || vb > end || sscanf(vb + 9, "%lf %lf %lf %lf", &x, &y, &w, &h) != 4 || w <= 0 || h <= 0) return NULL;
-    char attrs[96];
-    int al = snprintf(attrs, sizeof attrs, " width=\"%g\" height=\"%g\"", w, h);
-    size_t pos = (size_t)(tag - svg) + 4; /* after "<svg" */
-    char *outp = malloc(len + (size_t)al + 1);
-    if (!outp) return NULL;
-    memcpy(outp, svg, pos);
-    memcpy(outp + pos, attrs, (size_t)al);
-    memcpy(outp + pos + (size_t)al, svg + pos, len - pos);
-    *out_len = len + (size_t)al;
-    outp[*out_len] = 0;
-    return outp;
-}
-
-/* Proxies covers and icons from RomM. Cover paths come with literal spaces in
- * them ("?ts=2026-08-03 07:20:30") and libcurl 8.18 flat out refuses those.
- * Fair enough, so they get encoded here. */
-/* Covers and platform icons are kept on disk, so each comes from RomM once:
- * the console's link to the server can be slow (PS4 Wi-Fi), and the PS4's
- * in-app browser starts without a cache. An asset RomM doesn't have is
- * remembered for a day (a .missing file), so it isn't asked for again on every
- * page. The folder is pruned, oldest first, when it passes ASSET_CACHE_MAX. */
-#define ASSET_CACHE_MAX (200LL * 1024 * 1024)
-#define ASSET_MISSING_SEC (24 * 60 * 60)
-static pthread_mutex_t g_asset_lock = PTHREAD_MUTEX_INITIALIZER;
-static int g_asset_writes;
-
-static void asset_cache_path(const char *p, const char *suffix, char *out, size_t n) {
-    uint64_t h = 0xcbf29ce484222325ULL; /* FNV-1a of the asset path and query */
-    for (const unsigned char *c = (const unsigned char *)p; *c; c++) h = (h ^ *c) * 0x100000001b3ULL;
-    snprintf(out, n, "%s/cache/assets/%016llx%s", plat_data_dir(), (unsigned long long)h, suffix);
-}
-
-/* Deletes the oldest cached assets until the folder is under the limit. */
-static void asset_cache_prune(void) {
-    char dir[PATH_MAX_LEN], path[PATH_MAX_LEN];
-    snprintf(dir, sizeof dir, "%s/cache/assets", plat_data_dir());
-    for (int round = 0; round < 64; round++) {
-        DIR *d = opendir(dir);
-        struct dirent *de;
-        long long total = 0;
-        time_t oldest_t = 0;
-        char oldest[256] = "";
-        if (!d) return;
-        while ((de = readdir(d))) {
-            struct stat st;
-            if (de->d_name[0] == '.') continue;
-            path_join(path, sizeof path, dir, de->d_name);
-            if (stat(path, &st) != 0) continue;
-            total += st.st_size;
-            if (!oldest[0] || st.st_mtime < oldest_t) {
-                oldest_t = st.st_mtime;
-                str_copy(oldest, sizeof oldest, de->d_name);
-            }
-        }
-        closedir(d);
-        if (total <= ASSET_CACHE_MAX || !oldest[0]) return;
-        path_join(path, sizeof path, dir, oldest);
-        unlink(path);
-    }
-}
-
-static void asset_cache_store(const char *path, const void *body, size_t len) {
-    char tmp[PATH_MAX_LEN + 32];
-    snprintf(tmp, sizeof tmp, "%s.%lx.tmp", path, (unsigned long)pthread_self());
-    mkdir_parent(path);
-    FILE *f = fopen(tmp, "wb");
-    if (!f) return;
-    int ok = fwrite(body, 1, len, f) == len;
-    if (fclose(f) != 0 || !ok || rename(tmp, path) != 0) {
-        unlink(tmp);
-        return;
-    }
-    pthread_mutex_lock(&g_asset_lock);
-    int prune = ++g_asset_writes % 100 == 0;
-    pthread_mutex_unlock(&g_asset_lock);
-    if (prune) asset_cache_prune();
-}
-
+/* Covers and platform icons, from the console's cache or RomM (covers.h). */
 static void proxy_asset(const request *r) {
-    char p[1024], base[512], auth[300], url[3200], cached[PATH_MAX_LEN], missing[PATH_MAX_LEN];
+    char p[1024];
     qparam(r, "p", p, sizeof p);
-    if (strncmp(p, "/assets/", 8) != 0 || strstr(p, "..")) {
-        send_error(r->fd, 400, "bad asset path");
-        return;
-    }
-    const char *type = image_type(p);
-    asset_cache_path(p, "", cached, sizeof cached);
-    asset_cache_path(p, ".missing", missing, sizeof missing);
-    size_t clen = 0;
-    char *cbody = read_file(cached, &clen);
-    if (cbody) {
-        send_response(r->fd, 200, type, cbody, clen, "Cache-Control: max-age=86400\r\n");
-        free(cbody);
-        return;
-    }
-    time_t miss = file_mtime(missing);
-    if (miss && time(NULL) - miss < ASSET_MISSING_SEC) {
-        send_error(r->fd, 404, "asset unavailable");
-        return;
-    }
-    config_lock();
-    str_copy(base, sizeof base, g_cfg.server_url);
-    snprintf(auth, sizeof auth, "Bearer %s", g_cfg.token);
-    config_unlock();
-    size_t o = (size_t)snprintf(url, sizeof url, "%s", base);
-    for (const unsigned char *c = (const unsigned char *)p; *c && o + 4 < sizeof url; c++) {
-        if (*c <= 0x20 || *c >= 0x7f || *c == '"' || *c == '<' || *c == '>' || *c == '\\' || *c == '^' ||
-            *c == '`' || *c == '{' || *c == '|' || *c == '}')
-            o += (size_t)snprintf(url + o, sizeof url - o, "%%%02X", *c);
-        else
-            url[o++] = (char)*c;
-    }
-    url[o] = 0;
-    http_resp resp;
-    if (http_request("GET", url, auth, NULL, NULL, 0, &resp) != 0 || resp.status != 200) {
-        if (resp.status == 404) asset_cache_store(missing, "", 0);
-        http_resp_free(&resp);
-        send_error(r->fd, 404, "asset unavailable");
-        return;
-    }
-    unlink(missing);
-    char *body = resp.body;
-    size_t len = resp.len;
-    char *fixed = !strcmp(type, "image/svg+xml") ? svg_with_size(body, len, &len) : NULL;
-    if (fixed) body = fixed;
-    asset_cache_store(cached, body, len);
-    send_response(r->fd, 200, type, body, len, "Cache-Control: max-age=86400\r\n");
-    free(fixed);
-    http_resp_free(&resp);
+    char *body = NULL;
+    size_t len = 0;
+    const char *type = "image/jpeg";
+    int rc = covers_fetch(p, &body, &len, &type);
+    if (rc == 0) send_response(r->fd, 200, type, body, len, "Cache-Control: max-age=86400\r\n");
+    else send_error(r->fd, rc == 1 ? 404 : (strncmp(p, "/assets/", 8) ? 400 : 404), rc == 1 ? "asset unavailable" : "bad asset path");
+    free(body);
 }
 
 static cJSON *body_json(const request *r) { return r->body_len ? cJSON_Parse(r->body) : cJSON_CreateObject(); }
@@ -750,7 +608,7 @@ static void route(request *r) {
         cJSON_ArrayForEach(root, cJSON_GetObjectItemCaseSensitive(j, "roots")) {
             cJSON_ArrayForEach(c, found) {
                 if (!cJSON_IsString(root) || strcmp(jget_str(c, "root", ""), root->valuestring) != 0) continue;
-                if (cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(c, "ready"))) continue; /* not supported yet */
+                if (cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(c, "ready"))) continue; /* no preset: "custom" below */
                 cJSON *p = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(c, "profile"), 1), *ex = cJSON_CreateArray(),
                       *extra = cJSON_CreateArray();
                 const cJSON *e, *x;
@@ -770,16 +628,19 @@ static void route(request *r) {
                 cJSON_AddItemToArray(profiles, p);
             }
         }
-        /* "custom": systems no emulator was found for, with folders the user
-         * picked: [{"slugs": ["snes", "sfam"], "name", "rom_dir", "save_dir",
-         * "state_dir"}]. Saves there are matched by the game's file name. */
+        /* "custom": folders the user picked, for a system no emulator was found
+         * for or for an emulator with no preset yet: [{"slugs": ["snes", "sfam"],
+         * "name", "rom_dir", "save_dir", "state_dir", "id"}] ("id" names the
+         * profile when it's an emulator's, e.g. "porpoise-ngc"). Saves there are
+         * matched by the game's file name. */
+        const int presets = cJSON_GetArraySize(profiles);
         cJSON_ArrayForEach(c, cJSON_GetObjectItemCaseSensitive(j, "custom")) {
             const cJSON *slugs = cJSON_GetObjectItemCaseSensitive(c, "slugs");
             const char *first = cJSON_IsString(cJSON_GetArrayItem(slugs, 0)) ? cJSON_GetArrayItem(slugs, 0)->valuestring : "";
             const char *rom_dir = jget_str(c, "rom_dir", "");
             if (!first[0] || rom_dir[0] != '/') continue;
             char id[96];
-            snprintf(id, sizeof id, "custom-%s", first);
+            snprintf(id, sizeof id, "custom-%s", jget_str(c, "id", first)[0] ? jget_str(c, "id", first) : first);
             cJSON *p = cJSON_CreateObject(), *plat = cJSON_CreateObject(), *plats = cJSON_CreateArray();
             cJSON_AddStringToObject(p, "id", id);
             cJSON_AddStringToObject(p, "name", jget_str(c, "name", first));
@@ -795,6 +656,24 @@ static void route(request *r) {
             cJSON_AddStringToObject(plat, "dir", first);
             cJSON_AddItemToArray(plats, plat);
             cJSON_AddItemToObject(p, "platforms", plats);
+            /* A system another emulator already plays: this one gets its games
+             * too, as an extra, and its saves sync on their own. */
+            int played = 0;
+            for (int k = 0; k < presets && !played; k++) {
+                const cJSON *other = cJSON_GetArrayItem(profiles, k), *e2, *s2;
+                cJSON_ArrayForEach(e2, cJSON_GetObjectItemCaseSensitive(other, "platforms")) {
+                    if (profiles_excludes(other, profiles_system_key(e2))) continue;
+                    cJSON_ArrayForEach(s2, cJSON_GetObjectItemCaseSensitive(e2, "romm")) {
+                        const cJSON *mine;
+                        cJSON_ArrayForEach(mine, slugs) if (cJSON_IsString(s2) && cJSON_IsString(mine) &&
+                                                            !strcmp(s2->valuestring, mine->valuestring)) played = 1;
+                    }
+                }
+            }
+            if (played) {
+                cJSON *extra = cJSON_AddArrayToObject(p, "extra");
+                cJSON_AddItemToArray(extra, cJSON_CreateString(profiles_system_key(plat)));
+            }
             cJSON_AddItemToArray(profiles, p);
         }
         cJSON_Delete(found);
@@ -812,7 +691,10 @@ static void route(request *r) {
         config_unlock();
         cJSON_Delete(cfg);
         if (rc) send_error(fd, 500, "could not save config");
-        else send_ok(fd);
+        else {
+            library_link_extras(); /* extras get the games already there */
+            send_ok(fd);
+        }
         return;
     }
     if (is_get && !strcmp(r->path, "/api/setup/preview")) {
@@ -941,6 +823,11 @@ static void route(request *r) {
         else send_error(fd, 400, err);
         return;
     }
+    if (is_post && !strcmp(r->path, "/api/covers/refresh")) {
+        covers_refresh();
+        send_ok(fd);
+        return;
+    }
     if (is_get && !strcmp(r->path, "/api/installed")) {
         int limit = qint(r, "limit", 20);
         send_json(fd, 200, library_installed(limit < 1 || limit > 200 ? 20 : limit));
@@ -950,7 +837,7 @@ static void route(request *r) {
         cJSON *j = body_json(r);
         int rc;
         if (cJSON_GetObjectItemCaseSensitive(j, "rom_id"))
-            rc = library_queue_rom((int)jget_num(j, "rom_id", 0), err, sizeof err);
+            rc = library_queue_rom((int)jget_num(j, "rom_id", 0), jget_str(j, "name", ""), err, sizeof err);
         else
             rc = library_queue_firmware((int)jget_num(j, "platform_id", 0), err, sizeof err);
         cJSON_Delete(j);

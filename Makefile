@@ -19,7 +19,7 @@
 CHDR_SRCS := $(filter-out %microflac.cpp,$(wildcard third_party/libchdr/src/*.c)) \
         third_party/libchdr/deps/lzma/src/LzmaDec.c third_party/libchdr/deps/zstd/zstddeclib.c
 SRCS := src/main.c src/util.c src/http.c src/romm.c src/config.c src/state.c \
-        src/profiles.c src/sync.c src/watch.c src/detect.c src/autostart.c src/memcard.c src/zip.c src/bundle.c src/gameid.c src/library.c src/pair.c src/web.c src/update.c \
+        src/profiles.c src/sync.c src/watch.c src/detect.c src/autostart.c src/memcard.c src/zip.c src/bundle.c src/gameid.c src/covers.c src/library.c src/pair.c src/web.c src/update.c \
         third_party/cJSON.c third_party/md5.c third_party/monocypher.c third_party/monocypher-ed25519.c \
         $(CHDR_SRCS)
 HDRS := $(wildcard src/*.h) third_party/cJSON.h third_party/md5.h third_party/monocypher.h third_party/monocypher-ed25519.h

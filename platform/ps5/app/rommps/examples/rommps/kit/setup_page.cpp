@@ -342,6 +342,7 @@ void SetupPage::load_emulators(App &app)
             return;
         }
         Json j(r.json(), cJSON_Delete);
+        manual_.clear();
         const cJSON *c;
         cJSON_ArrayForEach(c, j.get())
         {
@@ -349,6 +350,7 @@ void SetupPage::load_emulators(App &app)
             e.root = str(c, "root");
             e.name = str(c, "name");
             e.kind = str(c, "kind");
+            e.id = str(c, "id");
             e.ready = !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(c, "ready"));
             e.note = str(c, "note");
             e.on = e.ready;
@@ -368,6 +370,18 @@ void SetupPage::load_emulators(App &app)
                     sy.slugs.push_back(slug->valuestring);
                 e.systems.push_back(std::move(sy));
             }
+            // No preset: each of its systems is set up with folders the user picks.
+            if (!e.ready)
+                for (const System &sy : e.systems)
+                {
+                    const std::string key = e.id + "-" + sy.key;
+                    Own &o = own_[key];
+                    o.slugs = sy.slugs;
+                    o.name = e.name + " (" + system_name(sy.key) + ")";
+                    o.id = key;
+                    if (std::find(manual_.begin(), manual_.end(), key) == manual_.end())
+                        manual_.push_back(key);
+                }
             emulators_.push_back(std::move(e));
         }
         if (!editing_)
@@ -386,16 +400,19 @@ void SetupPage::load_emulators(App &app)
                 return;
             choices_.clear();
             also_.clear();
-            // Folders picked before (custom-<slug> profiles).
+            // Folders picked before: custom-<slug> profiles for systems, and
+            // custom-<emulator>-<system> for emulators with no preset.
             cJSON_ArrayForEach(p, profiles)
             {
-                if (std::string(str(p, "id")).rfind("custom-", 0) != 0)
+                const std::string id = str(p, "id");
+                if (id.rfind("custom-", 0) != 0)
                     continue;
                 const cJSON *plat = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(p, "platforms"), 0);
                 const cJSON *slug = cJSON_GetArrayItem(cJSON_GetObjectItemCaseSensitive(plat, "romm"), 0);
                 if (!cJSON_IsString(slug))
                     continue;
-                Own &o = own_[slug->valuestring];
+                const std::string key = own_.count(id.substr(7)) ? id.substr(7) : std::string(slug->valuestring);
+                Own &o = own_[key];
                 o.on = true;
                 o.folder[0] = str(p, "rom_dir");
                 o.folder[1] = str(p, "save_dir");
@@ -617,6 +634,26 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
         if (refs)
             refs->push_back(std::move(ref));
     };
+    // Something set up by its folders: a switch, then its three folders when on.
+    auto add_own = [&](const std::string &key, const std::string &detail) {
+        const auto it = own_.find(key);
+        if (it == own_.end())
+            return;
+        const Own &o = it->second;
+        add({RowKind::toggle, o.name, "", detail, o.on}, {RowRef::kOwn, -1, key});
+        if (!o.on)
+            return;
+        static const char *const kLabels[] = {"   Games folder", "   Saves folder", "   States folder"};
+        for (int k = 0; k < 3; ++k)
+        {
+            std::string value = o.folder[k];
+            if (value.size() > 34)
+                value = "\xE2\x80\xA6" + value.substr(value.size() - 33);
+            if (value.empty())
+                value = k == 0 ? "Choose" : "Same as games";
+            add({RowKind::action, kLabels[k], value, ""}, {RowRef::kOwnFolder, k, key});
+        }
+    };
     if (!emulators_loaded_)
     {
         add({RowKind::info, "Looking for emulators", "", ""}, {});
@@ -633,7 +670,10 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
         const Emulator &e = emulators_[i];
         if (!e.ready)
         {
-            add({RowKind::info, e.name, "Not supported yet", e.note}, {RowRef::kEmulator, static_cast<int>(i)});
+            add({RowKind::info, e.name, "No preset yet", e.note + " If yours works, turn it on below and choose its folders."},
+                {RowRef::kEmulator, static_cast<int>(i)});
+            for (const System &sy : e.systems)
+                add_own(e.id + "-" + sy.key, "Choose its folders; with another emulator for it, this one gets the games too");
             continue;
         }
         std::string detail = e.kind == "retroarch" ? "RetroArch" : e.kind == "mednafen" ? "Mednafen" : "Standalone";
@@ -685,19 +725,7 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
         char detail[96];
         std::snprintf(detail, sizeof detail, "%d game%s  \xC2\xB7  no emulator found: turn on to choose its folders",
                       o.games, o.games == 1 ? "" : "s");
-        add({RowKind::toggle, o.name, "", detail, o.on}, {RowRef::kOwn, -1, key});
-        if (!o.on)
-            continue;
-        static const char *const kLabels[] = {"   Games folder", "   Saves folder", "   States folder"};
-        for (int k = 0; k < 3; ++k)
-        {
-            std::string value = o.folder[k];
-            if (value.size() > 34)
-                value = "\xE2\x80\xA6" + value.substr(value.size() - 33);
-            if (value.empty())
-                value = k == 0 ? "Choose" : "Same as games";
-            add({RowKind::action, kLabels[k], value, ""}, {RowRef::kOwnFolder, k, key});
-        }
+        add_own(key, detail);
     }
     if (has_ps2())
     {
@@ -779,8 +807,12 @@ void SetupPage::update_emulators(App &app, const hui::InputFrame &input, float d
     default:
         return;
     }
-    // A system turned on needs its games folder.
-    for (const std::string &key : uncovered())
+    // Everything set up by its folders: the systems no emulator plays, and the
+    // systems of emulators with no preset.
+    std::vector<std::string> by_folders = uncovered();
+    by_folders.insert(by_folders.end(), manual_.begin(), manual_.end());
+    // Each one turned on needs its games folder.
+    for (const std::string &key : by_folders)
         if (own_[key].on && own_[key].folder[0].empty())
         {
             app.say("Choose a games folder for " + own_[key].name + ", or turn it off");
@@ -806,7 +838,7 @@ void SetupPage::update_emulators(App &app, const hui::InputFrame &input, float d
                 cJSON_AddItemToArray(extras, cJSON_CreateString(o.root.c_str()));
     }
     cJSON *custom = cJSON_AddArrayToObject(body.get(), "custom");
-    for (const std::string &key : uncovered())
+    for (const std::string &key : by_folders)
     {
         const Own &o = own_[key];
         if (!o.on)
@@ -818,6 +850,8 @@ void SetupPage::update_emulators(App &app, const hui::InputFrame &input, float d
         cJSON_AddStringToObject(c, "rom_dir", o.folder[0].c_str());
         cJSON_AddStringToObject(c, "save_dir", o.folder[1].c_str());
         cJSON_AddStringToObject(c, "state_dir", o.folder[2].c_str());
+        if (!o.id.empty())
+            cJSON_AddStringToObject(c, "id", o.id.c_str());
         cJSON_AddItemToArray(custom, c);
     }
     busy_ = true;
@@ -1173,7 +1207,7 @@ void SetupPage::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, cons
     {
         draw_heading(list, fonts, look, editing_ ? "Emulators" : "Your emulators",
                      "RomM Sync keeps the saves of the ones you leave on, and downloads games into their folders. "
-                     "A system several play has a main one; the others can have its games too.");
+                     "When several play a system, one is the main one; the others can get its games too.");
         rows = emulator_rows(app);
         // Beside the list: the focused emulator's systems.
         const int focus = rows_.focus() - lead();
@@ -1201,7 +1235,7 @@ void SetupPage::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, cons
                 y += 34;
             }
             if (e.systems.empty())
-                ui::text(list, fonts.regular, "None that RomM Sync knows", kSide.x + 36, y, 22, look.panel_muted);
+                ui::text(list, fonts.regular, "None that RomM Sync knows of", kSide.x + 36, y, 22, look.panel_muted);
             list.pop_opacity();
         }
     }

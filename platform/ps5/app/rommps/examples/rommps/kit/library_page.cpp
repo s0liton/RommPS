@@ -168,6 +168,19 @@ void draw_badge(hui::gfx::DrawList &list, const Look &look, App &app, const Game
     }
 }
 
+void draw_version(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &, const Game *g,
+                  const Rect &rect)
+{
+    if (!g || g->version.empty())
+        return;
+    const float size = rect.w > 160 ? 17.0f : 15.0f, pad = 10;
+    const std::string text = fonts.semibold.font->fit(g->version, size, rect.w - 24 - 2 * pad);
+    const float w = fonts.semibold.font->measure(text, size) + 2 * pad;
+    const Rect tag{rect.x + 12, rect.y + rect.h - size - 30, w, size + 14};
+    list.rounded_rect(tag, tag.h * 0.5f, Color::rgb(0x0b0d16, 0.78f));
+    ui::text(list, fonts.semibold, text, tag.x + pad, tag.y + size + 3, size, Color::rgb(0xffffff));
+}
+
 // ------------------------------------------------------------------ the page
 
 LibraryPage::LibraryPage()
@@ -523,14 +536,30 @@ void LibraryPage::jump_letter(GameList &l, int slot, hui::ui::Feedback &feedback
         return;
     }
     index_ = std::min(s[static_cast<std::size_t>(slot)], std::max(0, l.total - 1));
-    feedback.play(Cue::tab, 1.0f + 0.01f * static_cast<float>(slot));
+    feedback.play(Cue::focus);
 }
 
 void LibraryPage::update_grid(App &app, const hui::InputFrame &input, hui::ui::Feedback &feedback, bool &details)
 {
     GameList &l = grid(app);
-    const int first_row = std::max(0, static_cast<int>(grid_scroll_.value) - 1);
-    app.ensure(l, first_row * kCols, (first_row + 5) * kCols);
+    if (&l == focus_list_ && l.hidden.size() != focus_hidden_)
+        index_ = l.shown(focus_raw_);
+    if (l.ready())
+        index_ = std::min(index_, std::max(0, l.total - 1)); // the list can come out shorter than first thought
+    move_in_grid(app, input, feedback, details);
+    GameList &now = grid(app);
+    focus_list_ = &now;
+    focus_raw_ = now.ready() ? now.raw(index_) : index_;
+    focus_hidden_ = now.hidden.size();
+}
+
+void LibraryPage::move_in_grid(App &app, const hui::InputFrame &input, hui::ui::Feedback &feedback, bool &details)
+{
+    GameList &l = grid(app);
+    // The games around where the grid is going, not the rows it scrolls past
+    // on the way (a jump to a letter animates through everything between).
+    const int target_row = std::max(0, index_ / kCols - 2);
+    app.ensure(l, target_row * kCols, (target_row + 7) * kCols);
     const int total = std::max(0, l.total);
     const Slots slots = slots_of(l);
     const bool repeat = input.nav_repeat;
@@ -564,7 +593,7 @@ void LibraryPage::update_grid(App &app, const hui::InputFrame &input, hui::ui::F
             if (next >= 0 && next < kSlots)
             {
                 letter_ = next;
-                feedback.play(Cue::tick, 1.0f + 0.01f * static_cast<float>(next));
+                feedback.play(Cue::focus, 1.0f, 0.0f, 0.6f);
             }
             else if (!repeat)
                 refuse(feedback);
@@ -686,6 +715,8 @@ void LibraryPage::draw_grid(hui::gfx::DrawList &list, const hui::ui::Fonts &font
         ui::text(list, fonts.display, fonts.display.font->fit(g->name, 60, 1600), kMargin - 3 + 12.0f * (1.0f - fade), 268,
                  60, look.text);
         std::string meta = human_size(g->size);
+        if (g->versions > 1)
+            meta = g->version + ", 1 of " + std::to_string(g->versions) + " versions  \xC2\xB7  " + meta;
         if (!grid_search_.empty() || !own)
             meta += "  \xC2\xB7  " + (p ? p->name : std::string());
         meta += "  \xC2\xB7  " + (p && !p->profile.empty() ? p->profile : std::string("No emulator"));
@@ -761,6 +792,7 @@ void LibraryPage::draw_grid(hui::gfx::DrawList &list, const hui::ui::Fonts &font
             {
                 draw_cover(list, fonts, look, app, game, r, dim, 14);
                 draw_badge(list, look, app, game, r, accent);
+                draw_version(list, fonts, look, game, r);
             }
             else
                 list.rounded_rect(r, 14, look.panel.with_alpha(look.panel.a * 0.6f));
@@ -775,10 +807,16 @@ void LibraryPage::draw_grid(hui::gfx::DrawList &list, const hui::ui::Fonts &font
             list.glow(r, 18, 24, accent.with_alpha(0.4f + 0.15f * ui::breathe(clock)));
         draw_cover(list, fonts, look, app, l.at(index_), r, 1.0f, 18);
         draw_badge(list, look, app, l.at(index_), r, accent);
+        draw_version(list, fonts, look, l.at(index_), r);
         list.bordered_rect(r.inset(-5), 22, Color::rgb(0x000000, 0.0f), 4,
                            look.focus.with_alpha(on_letters_ ? 0.35f : 1.0f));
     }
     list.pop_clip();
+    // The covers of the two rows below are asked for too (after the ones on
+    // screen), so scrolling down finds them ready.
+    for (int i = (first_row + 5) * kCols; i < (first_row + 7) * kCols && i < total; ++i)
+        if (const Game *game = l.at(i))
+            app.cover(game->cover);
     // The row below fades out under the button hints.
     list.gradient_rect({0, 930, kBarX - 10, 150}, 0, look.page.with_alpha(0.0f), look.page.with_alpha(0.85f));
 
@@ -894,6 +932,7 @@ void LibraryPage::draw_search(hui::gfx::DrawList &list, const hui::ui::Fonts &fo
             const Rect r{kMargin + static_cast<float>(i) * 192.0f, 340, 168, 224};
             draw_cover(list, fonts, look, app, g, r, 1.0f, 14);
             draw_badge(list, look, app, g, r, accent);
+            draw_version(list, fonts, look, g, r);
         }
     }
     ui::Canvas canvas{list, fonts, 0, clock};

@@ -7,6 +7,11 @@
 #include "cJSON.h"
 #include "http.h"
 
+/* For GET /api/roms: by default every page also carries the ids of every
+ * matching game and the platform's filter values, which nothing here uses and
+ * which grow with the library. */
+#define ROMS_LEAN "&with_rom_id_index=false&with_filter_values=false"
+
 /* Scopes requested when pairing. */
 #define ROMM_SCOPES                                                                           \
     "me.read", "platforms.read", "roms.read", "roms.user.read", "firmware.read", "assets.read", \

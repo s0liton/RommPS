@@ -66,6 +66,25 @@ std::vector<Row> SettingsPage::rows(const App &app) const
     r[kConcurrency] = {RowKind::choice, "Downloads at once", std::to_string(c.download_concurrency), ""};
     r[kNotify] = {RowKind::toggle, "Notifications", "", "On the console when a sync ends or fails", c.notify};
     r[kUpdateCheck] = {RowKind::toggle, "Look for updates every day", "", "", c.update_check};
+    {
+        const Status &s = app.status();
+        char detail[96];
+        if (!c.cover_cache)
+            std::snprintf(detail, sizeof detail, "Covers come from RomM as you browse");
+        else if (s.covers_state == "paused")
+            std::snprintf(detail, sizeof detail, "Paused while you play or download (%d of %d saved)", s.covers_done,
+                          s.covers_total);
+        else if (s.covers_state == "full")
+            std::snprintf(detail, sizeof detail, "The cover space is nearly full (%d of %d saved)", s.covers_done,
+                          s.covers_total);
+        else if (s.covers_total > 0 && s.covers_done < s.covers_total)
+            std::snprintf(detail, sizeof detail, "Saving covers: %d of %d", s.covers_done, s.covers_total);
+        else if (s.covers_total > 0)
+            std::snprintf(detail, sizeof detail, "All %d covers are on the console", s.covers_total);
+        else
+            std::snprintf(detail, sizeof detail, "Faster browsing: every game's cover, kept up to date");
+        r[kCovers] = {RowKind::toggle, "Keep all covers on the console", "", detail, c.cover_cache};
+    }
 
     Row &update = r[kUpdate];
     update.kind = RowKind::action;
@@ -102,7 +121,7 @@ std::vector<Row> SettingsPage::rows(const App &app) const
     if (armed_ == kSetup || armed_ == kForget)
         r[static_cast<std::size_t>(armed_)].value = "Press again to confirm";
     if (!c.known)
-        for (int i = kInterval; i <= kUpdateCheck; ++i)
+        for (int i = kInterval; i <= kCovers; ++i)
             r[static_cast<std::size_t>(i)].enabled = false;
     return r;
 }
@@ -206,6 +225,9 @@ void SettingsPage::update(App &app, const hui::InputFrame &input, float dt, hui:
         break;
     case kUpdateCheck:
         app.set_config(flag_json("update_check", !c.update_check), [](Config &k) { k.update_check = !k.update_check; });
+        break;
+    case kCovers:
+        app.set_config(flag_json("cover_cache", !c.cover_cache), [](Config &k) { k.cover_cache = !k.cover_cache; });
         break;
     case kUpdate:
         if (app.update().available)

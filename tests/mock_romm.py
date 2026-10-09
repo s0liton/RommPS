@@ -48,7 +48,14 @@ DB = {
                            "genres": ["Platform", "Adventure"], "player_count": "1", "average_rating": 92.5},
              "hltb_metadata": {"main_story": 28800, "release_year": 1994},
              "rom_user": {"last_played": "2026-10-01T20:00:00", "status": "finished", "completion": 100, "rating": 9}},
-        12: {"id": 12, "platform_id": 1, "name": "EarthBound", "fs_name": "EarthBound (USA).sfc"},
+        # One of two versions RomM has of the game.
+        12: {"id": 12, "platform_id": 1, "name": "EarthBound", "fs_name": "EarthBound (USA).sfc",
+             "regions": ["USA"], "revision": "1", "tags": ["!", "M3", "Beta"], "fs_extension": "sfc",
+             "sibling_roms": [{"id": 99, "name": "EarthBound", "is_main_sibling": True}]},
+        # A frontend's file a RomM scan lists as a game.
+        13: {"id": 13, "platform_id": 1, "name": "systeminfo", "fs_name": "systeminfo.txt"},
+        # .md is a Mega Drive ROM, not a readme.
+        14: {"id": 14, "platform_id": 1, "name": "Mega Test", "fs_name": "Mega Test (USA).md"},
         20: {"id": 20, "platform_id": 2, "name": "Okami", "fs_name": "Okami.iso"},
         21: {"id": 21, "platform_id": 2, "name": "Other", "fs_name": "Other.iso"},
         30: {"id": 30, "platform_id": 3, "name": "Crisis Core", "fs_name": "Crisis Core (USA).iso"},
@@ -65,6 +72,8 @@ DB = {
     "sessions": {},
     "pending": {},  # device_code -> {"polls": n, "user_code":..}
     "play_sessions": [{"id": 1, "rom_id": 11, "duration_ms": 3600000}, {"id": 2, "rom_id": 11, "duration_ms": 1800000}],
+    "cover_ts": {},   # rom id -> its cover's change stamp
+    "asset_hits": 0,  # cover requests served
     "next_id": 100,
 }
 TOKEN = "rmm_" + "a" * 64
@@ -82,7 +91,10 @@ def rom_public(r):
     content = ("ROM:" + r["fs_name"]).encode()
     return {**r, "fs_name_no_ext": stem, "fs_size_bytes": len(content), "platform_slug": p["slug"],
             "platform_fs_slug": p["fs_slug"], "has_multiple_files": False, "files": [],
-            "md5_hash": hashlib.md5(content).hexdigest(), "path_cover_small": ""}
+            "md5_hash": hashlib.md5(content).hexdigest(),
+            # Like RomM's: the cover's path carries a stamp that changes with it.
+            "path_cover_small": "/assets/romm/resources/roms/%d/%d/cover/small.png?ts=%s" % (
+                r["platform_id"], r["id"], DB["cover_ts"].get(r["id"], "2026-01-01 00:00:00"))}
 
 
 def save_public(s):
@@ -181,6 +193,12 @@ class H(BaseHTTPRequestHandler):
         parts = [unquote(x) for x in p.strip("/").split("/")]
         with LOCK:
             # no auth needed
+            if p.startswith("/assets/"):
+                DB["asset_hits"] += 1
+                return self.reply(200, raw=b"\x89PNG-test-" + p.encode(), ctype="image/png")
+            if p == "/_admin/cover_ts" and method == "POST":
+                DB["cover_ts"][int(self.json_body()["rom_id"])] = "2026-02-02 00:00:00"
+                return self.reply(200, {"ok": True})
             if p == "/api/heartbeat":
                 return self.reply(200, {"SYSTEM": {"VERSION": "5.3.1"}})
             if p == "/api/auth/device/init" and method == "POST":
@@ -225,6 +243,7 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(200, {"saves": [save_public(s) | {"content": s["content"].decode("latin1")} for s in DB["saves"].values()],
                                         "states": [save_public(s) for s in DB["states"].values()],
                                         "sessions": DB["sessions"],
+                                        "asset_hits": DB["asset_hits"],
                                         "cards": [{"name": c["name"], "emulator": c["emulator"], "versions": len(c["versions"])} for c in DB["cards"].values()]})
             if not self.authed():
                 return
