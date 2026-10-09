@@ -12,7 +12,7 @@ A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN 
   - Fully customizable sync destinations, but includes frequently updated preset profiles for existing homebrew emulators. 
   - Can sync games and saves and states for multiple emulators per platform (PS2 on RetroArch and PS5SX2 as an example) using hardlinks.
 - **Beautiful and Responsive UI**
-  - Based on mihawk-99's Vulkan homebrew apps and BlackBearReloaded's UI kit, we get a nice, responsive feel. So worth it, it looks 1000x better.
+  - Based on mihawk-99's Vulkan homebrew apps and BlackBearReloaded's UI kit, we get a nice, responsive feel. So worth it, it looks 1000x better. 15+ different themes to pick from.
 - **Easter Egg**
   - Check in the Settings, scroll the settings list, see if you find the X.
 
@@ -61,7 +61,7 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
 
 ## Install
 
-Install **RommPS** from ProsperoStore and open it. That's it: RommPS carries the RomM Sync payload and starts it for you, then walks you through setup. Its last step makes RomM Sync start with every jailbreak, so you don't have to open the app for syncing to work.
+Install **RommPS** from [ProsperoStore](https://homebrew.page) and open it. It'll set up the background daemon, and take you through a setup wizard. That's it: RommPS carries the RomM Sync payload and starts it for you.
 
 Not using the store? Download `PPSA76677.zip` from the releases page, unzip it and copy the `PPSA76677` folder to `/data/homebrew/` on the console.
 
@@ -74,11 +74,11 @@ If you'd rather run just the payload, without the app:
    ```
 3. Set it up at `http://<ps5-ip>:8780` from another device.
 
-To start RomM Sync with the console, let your HEN start it: the last setup step does this for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, in `/data/etaHEN/payloads` or `/data/OnionHEN/payloads` (onionHEN's Toolbox has a toggle for it under Payloads). RomM Sync works out which HEN is running. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it there over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
+To start RommPS with the console, let your HEN start it: the last setup step does this for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, in `/data/etaHEN/payloads` or `/data/OnionHEN/payloads` (onionHEN's Toolbox has a toggle for it under Payloads). RomM Sync works out which HEN is running. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it there over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
 
 ### PS4
 
-> **Experimental.** The PS4 build has only been tested with RetroArch so far. Standalone emulators may work, but haven't been confirmed. I spent all my focus on the PS5 build, so I didn't get to test as much, so consider it experimental and there may be gremlins for now.
+> **Experimental.** The PS4 build has only been tested with RetroArch so far. Standalone emulators may work, but haven't been confirmed. I spent all my focus on the PS5 build, so I didn't get to test as much, so consider it unstable and there may be gremlins for now.
 
 Needs GoldHEN 2.4b18.5 or newer, whose payload menu runs ELF payloads.
 
@@ -93,12 +93,7 @@ Don't send the payload to GoldHEN's network loader on port 9090: GoldHEN 2.4 cra
 
 ## Updates
 
-There are two pieces to keep updated, and they update separately:
-
-- **RomM Sync (the payload)** checks GitHub once a day (you can turn that off) and tells you when there's a new version. Settings can install it for you, but nothing installs on its own. Each payload release is signed, and RomM Sync only installs a file whose signature matches the key built into it, so nobody can slip a modified payload in through the updater.
-- **RommPS (the app)** updates through ProsperoStore, like any other homebrew in its catalog. If the payload ever falls behind what the app needs, RommPS tells you to update it.
-
-You can always update either one by hand from the releases page.
+There are two pieces to keep updated, the front end application, and the background service/daemon. You can update via the ProsperoStore (or other homebrew storefronts eventually), in the app itself, or manually using the zip file.
 
 ## Setup
 
