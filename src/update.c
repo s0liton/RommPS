@@ -1,9 +1,12 @@
 /* Updates from GitHub releases. Nothing installs by itself: the UI checks,
  * shows the release notes and installs when the user asks.
  *
- * A release carries romm-sync.elf, manifest.json ({version, file, size, sha512})
- * and manifest.sig, an Ed25519 signature of manifest.json by one of the keys in
- * update_keys.h. The payload is only installed if all of that checks out.
+ * A release carries a payload, manifest and signature for each console, named in
+ * plat_info(): romm-sync.elf, manifest.json and manifest.sig for the PS5,
+ * romm-sync-ps4.elf, manifest-ps4.json and manifest-ps4.sig for the PS4. The
+ * manifest is {version, file, size, sha512} and the signature is Ed25519 by one
+ * of the keys in update_keys.h. The payload is only installed if all of that
+ * checks out, including the manifest naming this console's payload.
  * tools/release-sign.c makes the manifest and signature in CI.
  *
  * ROMM_SYNC_UPDATE_URL points the check somewhere else, for tests. */
@@ -31,7 +34,7 @@
 #include "util.h"
 
 #ifndef RELEASES_URL /* overridable for test builds */
-#define RELEASES_URL "https://api.github.com/repos/s0liton/ps5-romm/releases/latest"
+#define RELEASES_URL "https://api.github.com/repos/s0liton/RommPS/releases/latest"
 #endif
 #define CHECK_EVERY_SEC (24 * 60 * 60)
 /* A failed daily check (no network yet after boot, say) is retried sooner. */
@@ -39,8 +42,10 @@
 /* The new copy stops this one within a few seconds of starting. */
 #define RESTART_TIMEOUT_SEC 60
 
-typedef enum { U_IDLE, U_CHECKING, U_DOWNLOADING, U_WAITING, U_INSTALLING, U_RESTARTING, U_ERROR } ustate;
-static const char *const STATE_NAMES[] = {"idle", "checking", "downloading", "waiting", "installing", "restarting", "error"};
+/* U_PENDING: installed, but this console can't restart into it (PS4); it runs
+ * from the next jailbreak. */
+typedef enum { U_IDLE, U_CHECKING, U_DOWNLOADING, U_WAITING, U_INSTALLING, U_RESTARTING, U_ERROR, U_PENDING } ustate;
+static const char *const STATE_NAMES[] = {"idle", "checking", "downloading", "waiting", "installing", "restarting", "error", "pending"};
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static ustate g_state;
@@ -49,7 +54,7 @@ static char g_latest[32], g_published[32], g_page_url[512];
 static char g_elf_url[512], g_manifest_url[512], g_sig_url[512];
 static char *g_notes;
 static time_t g_checked_at, g_auto_checked_at;
-static char g_notified[32];
+static char g_notified[32], g_pending[32];
 static int64_t g_done, g_total;
 
 static const char *release_url(void) {
@@ -72,7 +77,7 @@ static int newer_than(const char *a, const char *b) {
     return 0;
 }
 
-static int busy(ustate s) { return s != U_IDLE && s != U_ERROR; }
+static int busy(ustate s) { return s != U_IDLE && s != U_ERROR && s != U_PENDING; }
 
 /* Call with g_lock held. */
 static void set_error(const char *fmt, ...) {
@@ -121,9 +126,9 @@ static void *check_thread(void *arg) {
         str_copy(g_latest, sizeof g_latest, tag[0] == 'v' ? tag + 1 : tag);
         str_copy(g_published, sizeof g_published, jget_str(j, "published_at", ""));
         str_copy(g_page_url, sizeof g_page_url, jget_str(j, "html_url", ""));
-        asset_url(assets, "romm-sync.elf", g_elf_url, sizeof g_elf_url);
-        asset_url(assets, "manifest.json", g_manifest_url, sizeof g_manifest_url);
-        asset_url(assets, "manifest.sig", g_sig_url, sizeof g_sig_url);
+        asset_url(assets, plat_info()->payload, g_elf_url, sizeof g_elf_url);
+        asset_url(assets, plat_info()->manifest, g_manifest_url, sizeof g_manifest_url);
+        asset_url(assets, plat_info()->manifest_sig, g_sig_url, sizeof g_sig_url);
         free(g_notes);
         g_notes = strdup(jget_str(j, "body", ""));
         g_state = U_IDLE;
@@ -172,7 +177,8 @@ void update_tick(void) {
 }
 
 /* The manifest must carry a valid signature by a trusted key, name the release
- * being installed, and match the downloaded payload byte for byte. */
+ * being installed and this console's payload, and match the downloaded payload
+ * byte for byte. */
 static int verify(const http_resp *man, const http_resp *sig, const unsigned char *elf, size_t elf_len,
                   const char *want, char *err, size_t en) {
     int trusted = 0;
@@ -193,11 +199,13 @@ static int verify(const http_resp *man, const http_resp *sig, const unsigned cha
     crypto_sha512(hash, elf, elf_len);
     for (int i = 0; i < 64; i++) snprintf(hex + 2 * i, 3, "%02x", hash[i]);
     if (!m) snprintf(err, en, "the release manifest is not valid JSON");
+    else if (strcmp(jget_str(m, "file", ""), plat_info()->payload) != 0) snprintf(err, en, "the manifest is for %s, not %s", jget_str(m, "file", "?"), plat_info()->payload);
     else if (strcmp(jget_str(m, "version", ""), want) != 0) snprintf(err, en, "the manifest is for version %s, not %s", jget_str(m, "version", "?"), want);
     else if (!newer_than(want, APP_VERSION)) snprintf(err, en, "%s is not newer than this version", want);
     else if (jget_num(m, "size", -1) != (double)elf_len) snprintf(err, en, "the download is incomplete");
     else if (strcmp(jget_str(m, "sha512", ""), hex) != 0) snprintf(err, en, "the download doesn't match the signed checksum");
-    else if (elf_len < 4 || memcmp(elf, "\x7f" "ELF", 4) != 0) snprintf(err, en, "the download is not an ELF payload");
+    else if (str_ends_with_ci(plat_info()->payload, ".elf") && (elf_len < 4 || memcmp(elf, "\x7f" "ELF", 4) != 0))
+        snprintf(err, en, "the download is not an ELF payload");
     else rc = 0;
     cJSON_Delete(m);
     return rc;
@@ -232,7 +240,7 @@ static void *install_thread(void *arg) {
     else if (http_get_verified(sig_url, &sig) != 0 || sig.status != 200)
         snprintf(err, sizeof err, "can't download the release signature: %s", sig.error);
     else if (http_download_verified(elf_url, path, progress_cb, NULL, &dl) != 0)
-        snprintf(err, sizeof err, "can't download romm-sync.elf: %s", dl.error);
+        snprintf(err, sizeof err, "can't download %s: %s", plat_info()->payload, dl.error);
     else if (!(elf = (unsigned char *)read_file(path, &elf_len)))
         snprintf(err, sizeof err, "can't read the download");
     else if (verify(&man, &sig, elf, elf_len, want, err, sizeof err) == 0)
@@ -258,6 +266,23 @@ static void *install_thread(void *arg) {
     int persisted = autostart_replace(elf, elf_len, err, sizeof err);
     if (persisted < 0) goto fail;
 
+    if (!plat_info()->can_relaunch) {
+        if (!persisted) {
+            snprintf(err, sizeof err, "%s isn't in %s's payload folder, so there's nowhere to install the update. Set up autostart first.",
+                     plat_info()->payload, plat_info()->loader);
+            goto fail;
+        }
+        free(elf);
+        LOGI("update: %s installed, starts with the next jailbreak", want);
+        plat_notify("RomM Sync %s is installed and starts with the next jailbreak", want);
+        pthread_mutex_lock(&g_lock);
+        g_state = U_PENDING;
+        str_copy(g_pending, sizeof g_pending, want);
+        str_copy(g_message, sizeof g_message, "Installed. It starts with the next jailbreak.");
+        pthread_mutex_unlock(&g_lock);
+        return NULL;
+    }
+
     set_message(U_RESTARTING, persisted ? "Restarting" : "Restarting (until the next reboot, autostart isn't set up)");
     plat_notify("Updating RomM Sync to %s", want);
     sleep(1); /* lets the UI see the restart coming */
@@ -270,7 +295,7 @@ static void *install_thread(void *arg) {
     LOGI("update: started %s, waiting to be replaced", want);
     sleep(RESTART_TIMEOUT_SEC);
     pthread_mutex_lock(&g_lock);
-    set_error("the new version didn't start. %s", persisted ? "It starts with the next reboot." : "Send romm-sync.elf to the console again.");
+    set_error("the new version didn't start. %s", persisted ? "It starts with the next reboot." : "Send the payload to the console again.");
     pthread_mutex_unlock(&g_lock);
     return NULL;
 
@@ -287,6 +312,7 @@ int update_install(char *err, int en) {
     int rc = -1;
     if (busy(g_state)) snprintf(err, (size_t)en, "an update check or install is already running");
     else if (!g_latest[0] || !newer_than(g_latest, APP_VERSION)) snprintf(err, (size_t)en, "no newer version found, check again first");
+    else if (!strcmp(g_pending, g_latest)) snprintf(err, (size_t)en, "%s is already installed and starts with the next jailbreak", g_latest);
     else if (!g_elf_url[0] || !g_manifest_url[0] || !g_sig_url[0])
         snprintf(err, (size_t)en, "release %s isn't signed for in-app updates, download it from GitHub instead", g_latest);
     else rc = 0;
@@ -316,7 +342,8 @@ cJSON *update_status(void) {
     cJSON_AddStringToObject(j, "message", g_message);
     cJSON_AddStringToObject(j, "error", g_error);
     cJSON_AddStringToObject(j, "latest", g_latest);
-    cJSON_AddBoolToObject(j, "available", g_latest[0] && newer_than(g_latest, APP_VERSION));
+    cJSON_AddBoolToObject(j, "available", g_latest[0] && newer_than(g_latest, APP_VERSION) && strcmp(g_pending, g_latest) != 0);
+    cJSON_AddStringToObject(j, "pending", g_pending);
     cJSON_AddBoolToObject(j, "signed", g_manifest_url[0] && g_sig_url[0] && g_elf_url[0]);
     cJSON_AddStringToObject(j, "notes", g_notes ? g_notes : "");
     cJSON_AddStringToObject(j, "published_at", g_published);
@@ -326,6 +353,7 @@ cJSON *update_status(void) {
     cJSON_AddNumberToObject(j, "total", (double)g_total);
     pthread_mutex_unlock(&g_lock);
     cJSON_AddBoolToObject(j, "autostart", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(as, "installed")));
+    cJSON_AddBoolToObject(j, "autostart_supported", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(as, "supported")));
     cJSON_Delete(as);
     return j;
 }

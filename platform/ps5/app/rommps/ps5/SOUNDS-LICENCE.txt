@@ -1,0 +1,13 @@
+RommPS's interface sounds (assets/rommps/sounds)
+
+Sound effects from Konami's Metal Gear Solid series, (c) Konami Digital
+Entertainment. Supplied by RommPS's author, s0liton, who uses them with
+Konami's permission under its creative artists programme, in a
+non-commercial title. They are not covered by RommPS's own licence and may
+not be reused apart from it.
+
+The cursor, select, tab, switch and setting sounds are mgs1-menu-move;
+the rest come from the first set supplied.
+
+Changes: converted from MP3 to 48 kHz 16-bit PCM WAV, one file per interface
+cue (the same sound under several cue names where it serves several).

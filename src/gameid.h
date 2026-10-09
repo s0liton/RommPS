@@ -10,6 +10,9 @@ int gameid_psp(const char *path, char *out, size_t n);
 /* GameCube or Wii game id ("GALE01") from .iso, .gcm, .rvz, .wia, .ciso or .wbfs. */
 int gameid_dolphin(const char *path, char *out, size_t n);
 
+/* PlayStation serial ("SCUS-94194") from SYSTEM.CNF: .iso, .bin, .cue or .chd. */
+int gameid_psx(const char *path, char *out, size_t n);
+
 /* A string value from a PARAM.SFO file, e.g. "TITLE" or "DISC_ID". */
 int sfo_get(const unsigned char *sfo, size_t len, const char *key, char *out, size_t n);
 int sfo_file_get(const char *path, const char *key, char *out, size_t n);

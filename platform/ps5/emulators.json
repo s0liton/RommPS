@@ -1,0 +1,61 @@
+[
+  {
+    "id": "psxs5", "name": "PSXS5 / SwanStationPS5",
+    "title_ids": ["PPSA97510", "PPSA98510"],
+    "detect": ["/data/PSXS5", "/data/homebrew/PPSA97510", "/data/homebrew/PPSA98510"],
+    "note": "Both apps share /data/PSXS5. One memory card per game, named after the disc.",
+    "profile": {
+      "root": "/data/PSXS5", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/states",
+      "bios_dir": "{root}/bios",
+      "save_exts": ".mcd", "save_name": "{serial}_1{ext}", "save_stems": "{serial}_1",
+      "state_exts": ".state*", "state_stems": "{rom_stem_safe}", "state_name": "{rom_stem_safe}{ext}",
+      "platforms": [{"romm": ["psx", "ps1", "playstation"], "dir": "psx", "save_format": "psx-card"}]
+    }
+  },
+  {
+    "id": "ps5sx2", "name": "PS5SX2",
+    "title_ids": ["PPSA99203"],
+    "detect": ["/data/PCSX2", "/data/homebrew/PPSA99203"],
+    "note": "Two memory cards for every game, backed up to RomM (5.3 or newer).",
+    "profile": {
+      "root": "/data/PCSX2", "rom_dir": "{root}/games", "bios_dir": "{root}",
+      "sync_saves": false, "memcards": "{root}/Mcd001.ps2,{root}/Mcd002.ps2",
+      "platforms": [{"romm": ["ps2"], "dir": "ps2"}]
+    }
+  },
+  {
+    "id": "ps5n64", "name": "PS5N64",
+    "title_ids": ["PPSA99206"],
+    "detect": ["/data/PS5N64", "/data/homebrew/PPSA99206"],
+    "note": "Saves and states are named after a hash of the game file.",
+    "profile": {
+      "root": "/data/PS5N64", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/saves",
+      "save_exts": ".sav", "save_name": "{rom_fnv64}{ext}", "save_stems": "{rom_fnv64}",
+      "state_exts": ".state", "state_stems": "{rom_fnv64}", "state_name": "{rom_fnv64}{ext}",
+      "platforms": [{"romm": ["n64"], "dir": "n64", "save_format": "n64-srm"}]
+    }
+  },
+  {
+    "id": "ps5nes", "name": "PS5NES",
+    "title_ids": ["PPSA99204"],
+    "detect": ["/data/homebrew/PPSA99204"],
+    "ready": false,
+    "note": "PS5NES v7 looks for its games in PS5SX2's folder, so there's no preset for it yet.",
+    "profile": {
+      "root": "/data/PS5NES", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/saves",
+      "save_exts": ".sav", "save_name": "{rom_fnv64}{ext}", "save_stems": "{rom_fnv64}",
+      "platforms": [{"romm": ["nes", "famicom"], "dir": "nes"}]
+    }
+  },
+  {
+    "id": "porpoise", "name": "Porpoise",
+    "title_ids": ["PPSA99764"],
+    "detect": ["/data/porpoise", "/data/homebrew/PPSA99764"],
+    "ready": false,
+    "note": "The current build crashes when it leaves the app sandbox, so there's no preset for it yet.",
+    "profile": {
+      "root": "/data/porpoise", "rom_dir": "{root}/games", "save_dir": "{root}/saves",
+      "platforms": [{"romm": ["ngc", "gamecube"], "dir": "gamecube"}, {"romm": ["wii"], "dir": "wii"}]
+    }
+  }
+]

@@ -3,3 +3,10 @@ host-data/
 *.part
 .DS_Store
 .vscode/
+*.elf
+
+# MGS interface sounds: used with permission in release builds, never published
+mgs-licensed-sounds.zip
+mgs-licensed-sounds/
+mgs1-menu-move.mp3
+platform/ps5/app/assets/sounds/

@@ -1,6 +1,15 @@
-/* Finds emulators under homebrew/ on internal storage and USB drives. For
- * RetroArch the platform list comes from the cores folder. Each .info file gives
- * "corename", the folder name for sorted saves, and "database", its systems. */
+/* Finds emulators in the folders plat_info() names: homebrew/ on internal
+ * storage and USB drives on the PS5, /data/retroarch on the PS4. For RetroArch
+ * the platform list comes from the installed cores. Each core's .info file gives
+ * "corename", the folder name for sorted saves, and "database", its systems.
+ * The PS5 keeps both in <root>/cores; the PS4 has cores in /data/self/retroarch/cores
+ * and every core's .info in /data/retroarch/info, as retroarch.cfg says.
+ *
+ * Standalone emulators come from the console's catalog (plat_info, e.g.
+ * platform/ps4/emulators.json): one is offered when its app is installed or
+ * one of its folders exists. Each entry is
+ *   {"id", "name", "title_ids": [...], "detect": [paths], "profile": {...}}
+ * where the profile uses the system keys of DB_MAP below for its platforms. */
 #include "detect.h"
 
 #include <dirent.h>
@@ -8,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "platform.h"
 #include "profiles.h"
 #include "state.h"
 #include "util.h"
@@ -94,6 +104,18 @@ static cJSON *slug_array(const char *csv) {
     return a;
 }
 
+/* The save format a RetroArch core keeps, where another emulator keeps the
+ * same: a raw 128 KB PS1 memory card, or N64's combined .srm (EEPROM, four
+ * controller paks, SRAM and flash). */
+static const char *save_format_of(const char *system, const char *corename) {
+    if (!strcmp(system, "psx") && (strstr(corename, "Beetle PSX") || str_ieq(corename, "PCSX-ReARMed") ||
+                                   str_ieq(corename, "SwanStation")))
+        return "psx-card";
+    if (!strcmp(system, "n64") && (strstr(corename, "ParaLLEl") || strstr(corename, "Mupen64Plus")))
+        return "n64-srm";
+    return NULL;
+}
+
 /* One platform entry per system; the first core found for a system wins. */
 static void add_core_platforms(cJSON *plats, cJSON *cores, const char *core_id, const char *info) {
     char corename[64] = "", dbs[1024] = "";
@@ -121,6 +143,9 @@ static void add_core_platforms(cJSON *plats, cJSON *cores, const char *core_id, 
         cJSON_AddStringToObject(e, "dir", first);
         cJSON_AddStringToObject(e, "emulator", core_id);
         cJSON_AddStringToObject(e, "core_name", corename);
+        /* Saves other emulators keep in the same format share one save on RomM. */
+        const char *format = save_format_of(first, corename);
+        if (format) cJSON_AddStringToObject(e, "save_format", format);
         if (str_ieq(corename, "LRPS2") || str_ieq(corename, "PCSX2")) {
             /* Per-game cards (<game>.ps2) sync like any other save. */
             cJSON_AddStringToObject(e, "save_exts", ".ps2");
@@ -154,14 +179,30 @@ static void app_title(const char *root, char *name, size_t n, char *title_id, si
     cJSON_Delete(j);
 }
 
+/* A folder setting from retroarch.cfg, with ":", "~" and "/app0" meaning root.
+ * Leaves out untouched if the key is unset or "default". */
+static void cfg_dir(const char *cfg, const char *key, const char *root, char *out, size_t n) {
+    char v[PATH_MAX_LEN];
+    if (!cfg || !info_get(cfg, key, v, sizeof v) || !v[0] || !strcmp(v, "default")) return;
+    if (v[0] == ':' || v[0] == '~') snprintf(out, n, "%s%s", root, v + 1);
+    else if (!strncmp(v, "/app0", 5) && (v[5] == '/' || !v[5])) snprintf(out, n, "%s%s", root, v + 5);
+    else str_copy(out, n, v);
+}
+
 static cJSON *retroarch_candidate(const char *root) {
-    char p[PATH_MAX_LEN], cores_dir[PATH_MAX_LEN];
-    path_join(cores_dir, sizeof cores_dir, root, "cores");
-    int has_cfg = 0;
+    char p[PATH_MAX_LEN], cores_dir[PATH_MAX_LEN], info_dir[PATH_MAX_LEN];
+    char *cfg = NULL;
     path_join(p, sizeof p, root, "config/retroarch.cfg");
-    has_cfg |= file_exists(p);
-    path_join(p, sizeof p, root, "retroarch.cfg");
-    has_cfg |= file_exists(p);
+    if (!(cfg = read_file(p, NULL))) {
+        path_join(p, sizeof p, root, "retroarch.cfg");
+        cfg = read_file(p, NULL);
+    }
+    int has_cfg = cfg != NULL;
+    path_join(cores_dir, sizeof cores_dir, root, "cores");
+    cfg_dir(cfg, "libretro_directory", root, cores_dir, sizeof cores_dir);
+    str_copy(info_dir, sizeof info_dir, cores_dir);
+    cfg_dir(cfg, "libretro_info_path", root, info_dir, sizeof info_dir);
+    free(cfg);
     if (!has_cfg && !dir_exists(cores_dir)) return NULL;
 
     char name[128] = "RetroArch", title_id[16] = "";
@@ -169,12 +210,21 @@ static cJSON *retroarch_candidate(const char *root) {
     if (!strstr(name, "RetroArch") && !strstr(name, "retroarch") && !has_cfg) return NULL;
 
     cJSON *plats = cJSON_CreateArray(), *cores = cJSON_CreateArray();
+    /* Core ids from the cores folder: snes9x from snes9x_libretro.info,
+     * snes9x_libretro.prx or snes9x_libretro_ps4.self. */
     DIR *d = opendir(cores_dir);
     struct dirent *de;
-    char names[64][128];
+    char names[128][128];
     int n = 0;
-    while (d && (de = readdir(d)) && n < 64)
-        if (str_ends_with_ci(de->d_name, "_libretro.info")) str_copy(names[n++], sizeof names[0], de->d_name);
+    while (d && (de = readdir(d)) && n < 128) {
+        const char *tag = strstr(de->d_name, "_libretro");
+        if (!tag || tag == de->d_name) continue;
+        char id[128];
+        snprintf(id, sizeof id, "%.*s", (int)(tag - de->d_name), de->d_name);
+        int dup = 0;
+        for (int i = 0; i < n && !dup; i++) dup = !strcmp(names[i], id);
+        if (!dup) str_copy(names[n++], sizeof names[0], id);
+    }
     if (d) closedir(d);
     /* Sorted so the first core per system doesn't depend on readdir order. */
     for (int i = 0; i < n; i++)
@@ -185,13 +235,19 @@ static cJSON *retroarch_candidate(const char *root) {
                 memcpy(names[i], names[k], sizeof t);
                 memcpy(names[k], t, sizeof t);
             }
+    LOGI("retroarch at %s: config %s, cores in %s (%d found), core info in %s", root, has_cfg ? "found" : "missing",
+         cores_dir, n, info_dir);
     for (int i = 0; i < n; i++) {
-        char info_path[PATH_MAX_LEN], core_id[128];
-        path_join(info_path, sizeof info_path, cores_dir, names[i]);
-        str_copy(core_id, sizeof core_id, names[i]);
-        core_id[strlen(core_id) - strlen("_libretro.info")] = 0;
+        char info_name[160], info_path[PATH_MAX_LEN];
+        snprintf(info_name, sizeof info_name, "%s_libretro.info", names[i]);
+        path_join(info_path, sizeof info_path, info_dir, info_name);
         char *txt = read_file(info_path, NULL);
-        if (txt) add_core_platforms(plats, cores, core_id, txt);
+        if (!txt) {
+            path_join(info_path, sizeof info_path, cores_dir, info_name);
+            txt = read_file(info_path, NULL);
+        }
+        if (txt) add_core_platforms(plats, cores, names[i], txt);
+        else LOGD("no %s for core %s", info_name, names[i]);
         free(txt);
     }
 
@@ -242,17 +298,94 @@ static cJSON *mednafen_candidate(const char *root) {
     return c;
 }
 
+/* Installed apps live in /user/app/<title id>, or the same on extended storage.
+ * ROMM_SYNC_APP_DIRS (comma separated) replaces the list, for tests. */
+static int app_installed(const char *title_id) {
+    const char *env = getenv("ROMM_SYNC_APP_DIRS");
+    char dirs[PATH_MAX_LEN], p[PATH_MAX_LEN], *save = NULL;
+    str_copy(dirs, sizeof dirs, env && *env ? env : "/user/app,/mnt/ext0/user/app,/mnt/ext1/user/app");
+    for (char *d = strtok_r(dirs, ",", &save); d; d = strtok_r(NULL, ",", &save)) {
+        path_join(p, sizeof p, d, title_id);
+        if (dir_exists(p)) return 1;
+    }
+    return 0;
+}
+
+/* The catalog: ROMM_SYNC_CATALOG names a file (for tests), else the console's. */
+static cJSON *emulator_catalog(void) {
+    const char *env = getenv("ROMM_SYNC_CATALOG");
+    if (env && *env) {
+        char *txt = read_file(env, NULL);
+        cJSON *j = txt ? cJSON_Parse(txt) : NULL;
+        free(txt);
+        return j;
+    }
+    return plat_info()->emulator_catalog ? cJSON_Parse(plat_info()->emulator_catalog) : NULL;
+}
+
+static void add_standalone(cJSON *out) {
+    cJSON *catalog = emulator_catalog();
+    const cJSON *e, *x;
+    cJSON_ArrayForEach(e, catalog) {
+        char found[16] = "";
+        int present = 0;
+        cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "title_ids"))
+            if (!present && cJSON_IsString(x) && app_installed(x->valuestring)) {
+                str_copy(found, sizeof found, x->valuestring);
+                present = 1;
+            }
+        cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "detect"))
+            if (!present && cJSON_IsString(x) && dir_exists(x->valuestring)) present = 1;
+        if (!present) continue;
+        /* Found, but with no preset yet: setup offers it with folders the user
+         * picks (a custom profile), not this profile. */
+        const int ready = !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(e, "ready"));
+        cJSON *profile = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(e, "profile"), 1);
+        if (!profile) continue;
+        jset_str(profile, "id", jget_str(e, "id", "standalone"));
+        jset_str(profile, "name", jget_str(e, "name", "Emulator"));
+        cJSON_DeleteItemFromObjectCaseSensitive(profile, "enabled");
+        cJSON_AddBoolToObject(profile, "enabled", 1);
+        jset_num(profile, "generated", PROFILE_GENERATION);
+        cJSON *c = cJSON_CreateObject();
+        cJSON_AddStringToObject(c, "kind", "standalone");
+        cJSON_AddStringToObject(c, "id", jget_str(e, "id", "standalone"));
+        cJSON_AddStringToObject(c, "name", jget_str(e, "name", ""));
+        cJSON_AddStringToObject(c, "root", jget_str(profile, "root", ""));
+        cJSON_AddStringToObject(c, "title_id", found);
+        cJSON_AddItemToObject(c, "cores", cJSON_CreateArray());
+        cJSON_AddItemToObject(c, "profile", profile);
+        cJSON_AddBoolToObject(c, "ready", ready);
+        cJSON_AddStringToObject(c, "note", jget_str(e, "note", ""));
+        LOGI("detected %s (%s)%s", jget_str(e, "name", ""), found[0] ? found : jget_str(c, "root", ""),
+             ready ? "" : ", no preset yet");
+        cJSON_AddItemToArray(out, c);
+    }
+    cJSON_Delete(catalog);
+}
+
+static void try_root(cJSON *out, const char *root) {
+    if (!dir_exists(root)) return;
+    cJSON *c = retroarch_candidate(root);
+    if (!c) c = mednafen_candidate(root);
+    if (c) {
+        LOGI("detected %s at %s", jget_str(c, "kind", ""), root);
+        cJSON_AddItemToArray(out, c);
+    }
+}
+
 cJSON *detect_emulators(void) {
     cJSON *out = cJSON_CreateArray();
-    char bases[16][PATH_MAX_LEN];
-    int nb = 0;
+    const plat_info_t *pi = plat_info();
     const char *env = getenv("ROMM_SYNC_HOMEBREW"); /* for tests */
-    if (env && *env) str_copy(bases[nb++], sizeof bases[0], env);
-    str_copy(bases[nb++], sizeof bases[0], "/data/homebrew");
-    for (int i = 0; i < 4; i++) snprintf(bases[nb++], sizeof bases[0], "/mnt/usb%d/homebrew", i);
-    for (int i = 0; i < 2; i++) snprintf(bases[nb++], sizeof bases[0], "/mnt/ext%d/homebrew", i);
+    const char *bases[17];
+    int nb = 0;
+    if (env && *env) bases[nb++] = env;
+    for (int i = 0; pi->homebrew_dirs[i] && nb < 16; i++) bases[nb++] = pi->homebrew_dirs[i];
+    bases[nb] = NULL;
 
-    for (int b = 0; b < nb; b++) {
+    for (int i = 0; pi->emulator_dirs[i]; i++) try_root(out, pi->emulator_dirs[i]);
+    for (int b = 0; bases[b]; b++) {
         DIR *d = opendir(bases[b]);
         if (!d) continue;
         struct dirent *de;
@@ -260,16 +393,11 @@ cJSON *detect_emulators(void) {
             if (de->d_name[0] == '.') continue;
             char root[PATH_MAX_LEN];
             path_join(root, sizeof root, bases[b], de->d_name);
-            if (!dir_exists(root)) continue;
-            cJSON *c = retroarch_candidate(root);
-            if (!c) c = mednafen_candidate(root);
-            if (c) {
-                LOGI("detected %s at %s", jget_str(c, "kind", ""), root);
-                cJSON_AddItemToArray(out, c);
-            }
+            try_root(out, root);
         }
         closedir(d);
     }
+    add_standalone(out);
     return out;
 }
 
@@ -289,6 +417,9 @@ int detect_refresh_profiles(cJSON *profiles) {
             cJSON *fresh = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(c, "profile"), 1);
             const cJSON *en = cJSON_GetObjectItemCaseSensitive(p, "enabled");
             if (cJSON_IsBool(en)) cJSON_ReplaceItemInObjectCaseSensitive(fresh, "enabled", cJSON_CreateBool(cJSON_IsTrue(en)));
+            /* The user's choice of emulator per system survives a refresh. */
+            const cJSON *ex = cJSON_GetObjectItemCaseSensitive(p, "exclude");
+            if (ex) cJSON_AddItemToObject(fresh, "exclude", cJSON_Duplicate(ex, 1));
             LOGI("updated the %s profile for %s", jget_str(fresh, "name", ""), jget_str(p, "root", ""));
             cJSON_ReplaceItemInArray(profiles, i, fresh);
             changed++;

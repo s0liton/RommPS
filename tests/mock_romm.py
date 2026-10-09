@@ -35,15 +35,34 @@ DB = {
          "rom_count": 1, "firmware_count": 0, "url_logo": ""},
         {"id": 4, "slug": "ngc", "fs_slug": "ngc", "name": "GameCube", "display_name": "GameCube",
          "rom_count": 1, "firmware_count": 0, "url_logo": ""},
+        {"id": 5, "slug": "psx", "fs_slug": "psx", "name": "PlayStation", "display_name": "PlayStation",
+         "rom_count": 1, "firmware_count": 0, "url_logo": ""},
+        {"id": 6, "slug": "n64", "fs_slug": "n64", "name": "Nintendo 64", "display_name": "N64",
+         "rom_count": 2, "firmware_count": 0, "url_logo": ""},
     ],
     "roms": {
         10: {"id": 10, "platform_id": 1, "name": "Chrono Trigger", "fs_name": "Chrono Trigger (USA).sfc"},
-        11: {"id": 11, "platform_id": 1, "name": "Super Metroid", "fs_name": "Super Metroid (USA).sfc"},
-        12: {"id": 12, "platform_id": 1, "name": "EarthBound", "fs_name": "EarthBound (USA).sfc"},
+        11: {"id": 11, "platform_id": 1, "name": "Super Metroid", "fs_name": "Super Metroid (USA).sfc",
+             "summary": "A test summary.",
+             "metadatum": {"first_release_date": 764553600000, "publishers": ["Nintendo"], "developers": ["Nintendo R&D1"],
+                           "genres": ["Platform", "Adventure"], "player_count": "1", "average_rating": 92.5},
+             "hltb_metadata": {"main_story": 28800, "release_year": 1994},
+             "rom_user": {"last_played": "2026-10-01T20:00:00", "status": "finished", "completion": 100, "rating": 9}},
+        # One of two versions RomM has of the game.
+        12: {"id": 12, "platform_id": 1, "name": "EarthBound", "fs_name": "EarthBound (USA).sfc",
+             "regions": ["USA"], "revision": "1", "tags": ["!", "M3", "Beta"], "fs_extension": "sfc",
+             "sibling_roms": [{"id": 99, "name": "EarthBound", "is_main_sibling": True}]},
+        # A frontend's file a RomM scan lists as a game.
+        13: {"id": 13, "platform_id": 1, "name": "systeminfo", "fs_name": "systeminfo.txt"},
+        # .md is a Mega Drive ROM, not a readme.
+        14: {"id": 14, "platform_id": 1, "name": "Mega Test", "fs_name": "Mega Test (USA).md"},
         20: {"id": 20, "platform_id": 2, "name": "Okami", "fs_name": "Okami.iso"},
         21: {"id": 21, "platform_id": 2, "name": "Other", "fs_name": "Other.iso"},
         30: {"id": 30, "platform_id": 3, "name": "Crisis Core", "fs_name": "Crisis Core (USA).iso"},
         40: {"id": 40, "platform_id": 4, "name": "Wind Waker", "fs_name": "Wind Waker (USA).iso"},
+        50: {"id": 50, "platform_id": 5, "name": "Test Quest", "fs_name": "Test Quest (USA).bin"},
+        60: {"id": 60, "platform_id": 6, "name": "Test Racer", "fs_name": "Test Racer (U).z64"},
+        61: {"id": 61, "platform_id": 6, "name": "Other Racer", "fs_name": "Other Racer (U).z64"},
     },
     "firmware": [{"id": 1, "platform_id": 1, "file_name": "bsx.bin", "content": b"BSXBIOS"}],
     "saves": {},    # id -> save dict (+ "content")
@@ -52,6 +71,9 @@ DB = {
     "device_syncs": {},  # (device_id, save_id) -> last_synced_at
     "sessions": {},
     "pending": {},  # device_code -> {"polls": n, "user_code":..}
+    "play_sessions": [{"id": 1, "rom_id": 11, "duration_ms": 3600000}, {"id": 2, "rom_id": 11, "duration_ms": 1800000}],
+    "cover_ts": {},   # rom id -> its cover's change stamp
+    "asset_hits": 0,  # cover requests served
     "next_id": 100,
 }
 TOKEN = "rmm_" + "a" * 64
@@ -69,7 +91,10 @@ def rom_public(r):
     content = ("ROM:" + r["fs_name"]).encode()
     return {**r, "fs_name_no_ext": stem, "fs_size_bytes": len(content), "platform_slug": p["slug"],
             "platform_fs_slug": p["fs_slug"], "has_multiple_files": False, "files": [],
-            "md5_hash": hashlib.md5(content).hexdigest(), "path_cover_small": ""}
+            "md5_hash": hashlib.md5(content).hexdigest(),
+            # Like RomM's: the cover's path carries a stamp that changes with it.
+            "path_cover_small": "/assets/romm/resources/roms/%d/%d/cover/small.png?ts=%s" % (
+                r["platform_id"], r["id"], DB["cover_ts"].get(r["id"], "2026-01-01 00:00:00"))}
 
 
 def save_public(s):
@@ -168,6 +193,12 @@ class H(BaseHTTPRequestHandler):
         parts = [unquote(x) for x in p.strip("/").split("/")]
         with LOCK:
             # no auth needed
+            if p.startswith("/assets/"):
+                DB["asset_hits"] += 1
+                return self.reply(200, raw=b"\x89PNG-test-" + p.encode(), ctype="image/png")
+            if p == "/_admin/cover_ts" and method == "POST":
+                DB["cover_ts"][int(self.json_body()["rom_id"])] = "2026-02-02 00:00:00"
+                return self.reply(200, {"ok": True})
             if p == "/api/heartbeat":
                 return self.reply(200, {"SYSTEM": {"VERSION": "5.3.1"}})
             if p == "/api/auth/device/init" and method == "POST":
@@ -212,7 +243,8 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(200, {"saves": [save_public(s) | {"content": s["content"].decode("latin1")} for s in DB["saves"].values()],
                                         "states": [save_public(s) for s in DB["states"].values()],
                                         "sessions": DB["sessions"],
-                                        "cards": [{"name": c["name"], "versions": len(c["versions"])} for c in DB["cards"].values()]})
+                                        "asset_hits": DB["asset_hits"],
+                                        "cards": [{"name": c["name"], "emulator": c["emulator"], "versions": len(c["versions"])} for c in DB["cards"].values()]})
             if not self.authed():
                 return
             dev = qs("device_id")
@@ -221,6 +253,9 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(200, {"id": 1, "username": "tester"})
             if p == "/api/platforms":
                 return self.reply(200, DB["platforms"])
+            if p == "/api/play-sessions" and method == "GET":
+                rid = int(qs("rom_id", 0) or 0)
+                return self.reply(200, [x for x in DB["play_sessions"] if not rid or x["rom_id"] == rid])
             if len(parts) == 3 and parts[:2] == ["api", "platforms"]:
                 return self.reply(200, next(x for x in DB["platforms"] if x["id"] == int(parts[2])))
             if p == "/api/roms":

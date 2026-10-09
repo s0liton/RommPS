@@ -8,6 +8,8 @@
 
 void sync_init(void);                    /* starts the worker thread */
 void sync_request(const char *reason);   /* queued; repeats are merged */
+/* After pairing: forgets the game and save ids of any server before. */
+void sync_new_pairing(void);
 int sync_is_running(void);
 time_t sync_last_run(void);
 cJSON *sync_status_json(void);           /* caller frees */

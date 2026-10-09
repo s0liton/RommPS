@@ -58,12 +58,14 @@ static void set_defaults(void) {
     g_cfg.sync_states = 1;
     g_cfg.notify = 1;
     g_cfg.update_check = 1;
+    g_cfg.cover_cache = 1;
     g_cfg.keep_backups = 5;
     g_cfg.server_versions = 10;
     g_cfg.download_concurrency = 3;
     g_cfg.conflicts = CONFLICT_ASK;
     str_copy(g_cfg.slot, sizeof g_cfg.slot, "autosave");
     str_copy(g_cfg.ps2_cards, sizeof g_cfg.ps2_cards, "per_game");
+    str_copy(g_cfg.ui_theme, sizeof g_cfg.ui_theme, "classic");
 }
 
 void config_apply_json(const cJSON *j) {
@@ -87,6 +89,7 @@ void config_apply_json(const cJSON *j) {
     else if (!strcmp(states, "sync")) g_cfg.sync_states = 2;
     get_int(j, "notify", &g_cfg.notify);
     get_int(j, "update_check", &g_cfg.update_check);
+    get_int(j, "cover_cache", &g_cfg.cover_cache);
     get_int(j, "keep_backups", &g_cfg.keep_backups);
     get_int(j, "server_versions", &g_cfg.server_versions);
     if (g_cfg.server_versions < 0) g_cfg.server_versions = 0;
@@ -97,6 +100,11 @@ void config_apply_json(const cJSON *j) {
     get_str(j, "slot", g_cfg.slot, sizeof g_cfg.slot);
     get_str(j, "ps2_cards", g_cfg.ps2_cards, sizeof g_cfg.ps2_cards);
     if (strcmp(g_cfg.ps2_cards, "backup") != 0) str_copy(g_cfg.ps2_cards, sizeof g_cfg.ps2_cards, "per_game");
+    /* Written into the page as an attribute, so only [a-z0-9-] gets through. */
+    char theme[sizeof g_cfg.ui_theme] = "";
+    get_str(j, "ui_theme", theme, sizeof theme);
+    if (theme[0] && strspn(theme, "abcdefghijklmnopqrstuvwxyz0123456789-") == strlen(theme))
+        str_copy(g_cfg.ui_theme, sizeof g_cfg.ui_theme, theme);
     get_str(j, "conflict_policy", pol, sizeof pol);
     if (pol[0]) g_cfg.conflicts = parse_policy(pol);
     if (!g_cfg.slot[0]) str_copy(g_cfg.slot, sizeof g_cfg.slot, "autosave");
@@ -168,12 +176,14 @@ cJSON *config_to_json(int include_secrets) {
     cJSON_AddStringToObject(j, "states", g_cfg.sync_states == 2 ? "sync" : g_cfg.sync_states ? "upload" : "off");
     cJSON_AddBoolToObject(j, "notify", g_cfg.notify);
     cJSON_AddBoolToObject(j, "update_check", g_cfg.update_check);
+    cJSON_AddBoolToObject(j, "cover_cache", g_cfg.cover_cache);
     cJSON_AddNumberToObject(j, "keep_backups", g_cfg.keep_backups);
     cJSON_AddNumberToObject(j, "server_versions", g_cfg.server_versions);
     cJSON_AddNumberToObject(j, "download_concurrency", g_cfg.download_concurrency);
     cJSON_AddStringToObject(j, "conflict_policy", conflict_policy_name(g_cfg.conflicts));
     cJSON_AddStringToObject(j, "slot", g_cfg.slot);
     cJSON_AddStringToObject(j, "ps2_cards", g_cfg.ps2_cards);
+    cJSON_AddStringToObject(j, "ui_theme", g_cfg.ui_theme);
     cJSON_AddStringToObject(j, "server_version", g_cfg.server_version);
     cJSON_AddBoolToObject(j, "profiles_custom", g_cfg.profiles_custom);
     cJSON_AddBoolToObject(j, "setup_complete", g_cfg.setup_complete);

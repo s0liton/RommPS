@@ -7,6 +7,11 @@
 #include "cJSON.h"
 #include "http.h"
 
+/* For GET /api/roms: by default every page also carries the ids of every
+ * matching game and the platform's filter values, which nothing here uses and
+ * which grow with the library. */
+#define ROMS_LEAN "&with_rom_id_index=false&with_filter_values=false"
+
 /* Scopes requested when pairing. */
 #define ROMM_SCOPES                                                                           \
     "me.read", "platforms.read", "roms.read", "roms.user.read", "firmware.read", "assets.read", \
@@ -24,6 +29,16 @@ typedef enum { POLL_OK, POLL_PENDING, POLL_SLOW_DOWN, POLL_DENIED, POLL_EXPIRED,
 
 /* JSON request to the paired server. Returns the parsed body (free it) or NULL. */
 cJSON *romm_call(const char *method, const char *path, const cJSON *body, long *status);
+
+/* GETs a paged RomM list such as /api/roms?..., limit items from offset,
+ * ROMM_LIST_PAGE at a time. RomM's game lists carry each game's full metadata,
+ * so a page of 30 can be too much to parse in the PS4's memory. cb gets each
+ * item with its page (first is set for the first page, and cb is called once
+ * with a NULL item for an empty list); nonzero stops. Returns how many items
+ * were seen, -1 on an error (status holds the HTTP status). */
+#define ROMM_LIST_PAGE 16
+typedef int (*romm_list_cb)(const cJSON *item, const cJSON *page, int first, void *ctx);
+int romm_list(const char *path, int offset, int limit, romm_list_cb cb, void *ctx, long *status);
 /* Same, with an explicit server and auth, for use before pairing. */
 cJSON *romm_call_raw(const char *base, const char *auth, const char *method, const char *path,
                      const cJSON *body, long *status);

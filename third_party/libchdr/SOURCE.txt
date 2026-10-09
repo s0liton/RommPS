@@ -1,0 +1,1 @@
+libchdr 607694ca0812edfc9cc2030c64634fc2393668de (Sun Sep 27 16:54:31 2026 +0200), https://github.com/rtissera/libchdr
