@@ -17,7 +17,7 @@
 namespace rommps
 {
 
-inline constexpr const char *kSourceUrl = "https://github.com/s0liton/ps5-romm";
+inline constexpr const char *kSourceUrl = "https://github.com/s0liton/RommPS";
 
 // A QR code's modules, true for dark. Empty if the text didn't fit.
 struct QrCode

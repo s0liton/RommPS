@@ -34,7 +34,7 @@
 #include "util.h"
 
 #ifndef RELEASES_URL /* overridable for test builds */
-#define RELEASES_URL "https://api.github.com/repos/s0liton/ps5-romm/releases/latest"
+#define RELEASES_URL "https://api.github.com/repos/s0liton/RommPS/releases/latest"
 #endif
 #define CHECK_EVERY_SEC (24 * 60 * 60)
 /* A failed daily check (no network yet after boot, say) is retried sooner. */
