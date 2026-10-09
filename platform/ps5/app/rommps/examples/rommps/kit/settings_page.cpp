@@ -89,7 +89,18 @@ std::vector<Row> SettingsPage::rows(const App &app) const
     Row &update = r[kUpdate];
     update.kind = RowKind::action;
     update.label = "RomM Sync " + (u.current.empty() ? app.status().version : u.current);
-    if (u.busy())
+    if (!u.self_update)
+    {
+        // RommPS brings RomM Sync with it: the store updates both.
+        update.label = std::string("RommPS ") + App::kMinPayload;
+        update.value = u.state == "checking" ? "Checking" : "Check for updates";
+        update.enabled = u.state != "checking";
+        update.detail = u.available           ? "RommPS " + u.latest + " is out: update it in ProsperoStore"
+                        : u.state == "error"  ? (u.error.empty() ? u.message : u.error)
+                        : u.latest.empty()    ? "Updates come from ProsperoStore, with RomM Sync in them"
+                                              : "Up to date";
+    }
+    else if (u.busy())
     {
         update.value = u.message.empty() ? "Working" : u.message;
         if (u.total > 0)
@@ -230,7 +241,7 @@ void SettingsPage::update(App &app, const hui::InputFrame &input, float dt, hui:
         app.set_config(flag_json("cover_cache", !c.cover_cache), [](Config &k) { k.cover_cache = !k.cover_cache; });
         break;
     case kUpdate:
-        if (app.update().available)
+        if (app.update().available && app.update().self_update)
             app.install_update();
         else
             app.check_update();
@@ -286,7 +297,7 @@ void SettingsPage::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, c
     std::snprintf(web, sizeof web, "http://%s:%d", s.ip.c_str(), s.port);
     item("ALSO ON YOUR PHONE OR COMPUTER", s.ip.empty() ? "" : web);
     const Update &u = app.update();
-    item("STARTS WITH THE CONSOLE", !u.known ? "" : u.autostart ? "Yes" : "No, load romm-sync.elf after each boot");
+    item("STARTS WITH THE CONSOLE", !u.known ? "" : u.autostart ? "Yes" : "No: turn it on in Set up again");
     list.line(panel.x + 36, panel.y + panel.h - 196, panel.x + panel.w - 36, panel.y + panel.h - 196, 1.5f, look.outline);
     draw_credits(list, fonts, look, {x, panel.y + panel.h - 168, panel.w - 72, 136}, on_credits_, clock);
     list.pop_opacity();

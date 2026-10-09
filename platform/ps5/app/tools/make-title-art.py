@@ -4,14 +4,14 @@
     make-title-art.py OUT.png
 
 A 3840x2160 picture for sce_sys/pic0.dds and pic1.dds (tools/title-art.sh
-turns it into BC7): RommPS's Acrylic aurora, a shelf of abstract cover cards
-easing into the distance, and the RommPS wordmark in Montserrat (OFL,
-third_party/Montserrat-Medium.ttf). No game's art: every shape is drawn here.
+turns it into BC7): deep space with soft nebulae, a spiral galaxy swirling on
+the right, a field of stars, and the RommPS wordmark in Montserrat (OFL,
+third_party/Montserrat-Medium.ttf), its "PS" lit in the app's cyan and violet.
+Every shape is drawn here.
 
 SPDX-License-Identifier: GPL-3.0-or-later
 """
 import math
-import random
 import sys
 from pathlib import Path
 
@@ -21,111 +21,177 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 W, H = 3840, 2160
 REPO = Path(__file__).resolve().parents[4]
 FONT = REPO / "third_party/Montserrat-Medium.ttf"
+CYAN, VIOLET, BLUE = 0x76d6ff, 0xc04bd6, 0x3a5bd9
 
 
 def hex_rgb(value):
     return np.array([(value >> 16) & 255, (value >> 8) & 255, value & 255], dtype=np.float32)
 
 
-def aurora():
-    """The app's Acrylic backdrop: deep navy, with blue and violet light."""
+def blur(field, radius):
+    """A float field blurred, through Pillow (values kept in 0..1)."""
+    img = Image.fromarray(np.clip(field * 255, 0, 255).astype(np.uint8), "L")
+    return np.asarray(img.filter(ImageFilter.GaussianBlur(radius)), dtype=np.float32) / 255
+
+
+def noise(rng, cells, radius):
+    """Smooth clouds: random cells scaled up and softened."""
+    small = Image.fromarray((rng.random((cells[1], cells[0])) * 255).astype(np.uint8), "L")
+    big = small.resize((W, H), Image.BICUBIC).filter(ImageFilter.GaussianBlur(radius))
+    return np.asarray(big, dtype=np.float32) / 255
+
+
+def space(rng):
+    """Deep navy, with nebulae in the app's blue, violet and cyan."""
     y, x = np.mgrid[0:H, 0:W].astype(np.float32)
     u, v = x / W, y / H
-    base = hex_rgb(0x070a1c) * (1 - v[..., None]) + hex_rgb(0x0b1026) * v[..., None]
-    img = base.copy()
-    # Soft lights: centre, radius, colour, strength.
-    for cx, cy, r, colour, k in [
-        (0.78, 0.18, 0.55, 0x3a5bd9, 0.85),
-        (0.95, 0.70, 0.45, 0xc04bd6, 0.55),
-        (0.30, 0.95, 0.60, 0x1b1f4a, 0.90),
-        (0.55, 0.45, 0.35, 0x76d6ff, 0.18),
-    ]:
-        d = np.sqrt(((u - cx) * (W / H)) ** 2 + (v - cy) ** 2) / r
-        fall = np.exp(-d * d * 2.2)[..., None] * k
-        img = img * (1 - fall) + hex_rgb(colour) * fall
-    # Aurora ribbons: sine bands across the upper half.
-    for phase, colour, k in [(0.0, 0x76d6ff, 0.10), (1.7, 0xc04bd6, 0.08)]:
-        band = 0.30 + 0.06 * np.sin(u * 5.0 + phase) + 0.03 * np.sin(u * 13.0 + phase * 2)
-        d = (v - band) / 0.05
-        fall = (np.exp(-d * d) * (0.4 + 0.6 * u))[..., None] * k
-        img = img + hex_rgb(colour) * fall
-    # A whisper of grain, so the gradients never band.
-    rng = np.random.default_rng(7)
-    img += rng.normal(0, 1.2, img.shape).astype(np.float32)
-    return Image.fromarray(np.clip(img, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
+    img = hex_rgb(0x03050d) * (1 - v[..., None]) + hex_rgb(0x090c20) * v[..., None]
+    clouds = 0.55 * noise(rng, (8, 5), 260) + 0.30 * noise(rng, (16, 9), 140) + 0.15 * noise(rng, (32, 18), 70)
+    clouds = np.clip((clouds - 0.40) * 2.6, 0, 1) ** 1.8
+    # Brighter towards the galaxy, quiet behind the wordmark.
+    near = np.exp(-(((u - 0.70) * W / H) ** 2 + (v - 0.42) ** 2) / 0.35)
+    for colour, k, shift in [(BLUE, 0.55, 0.0), (VIOLET, 0.40, 0.25), (CYAN, 0.18, 0.5)]:
+        tint = np.roll(clouds, int(shift * W / 3), axis=1) * (0.25 + 0.75 * near)
+        img = img + hex_rgb(colour) * (tint * k)[..., None]
+    return img
 
 
-def cards(canvas):
-    """A shelf of cover-shaped cards on the right, receding and fading."""
-    rnd = random.Random(42)
-    hues = [0x3a5bd9, 0xc04bd6, 0x76d6ff, 0x4ade80, 0xfbbf24, 0xf87171, 0x8b5cf6, 0x22d3ee]
-    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+def galaxy(rng, img):
+    """A two-armed spiral seen at a slant, its arms trailing into the swirl."""
+    cx, cy, tilt, squash = 0.68 * W, 0.43 * H, math.radians(-22), 0.52
+    stars = np.zeros((H, W), dtype=np.float32)
+    colour = np.zeros((H, W, 3), dtype=np.float32)
+
+    def place(r, theta, bright, rgb):
+        # The disc: a circle squashed into an ellipse, then tilted.
+        dx, dy = r * np.cos(theta), r * np.sin(theta) * squash
+        x = cx + dx * math.cos(tilt) - dy * math.sin(tilt)
+        y = cy + dx * math.sin(tilt) + dy * math.cos(tilt)
+        keep = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+        xi, yi = x[keep].astype(int), y[keep].astype(int)
+        np.add.at(stars, (yi, xi), bright[keep])
+        np.add.at(colour, (yi, xi), rgb[None, :] * bright[keep, None])
+
+    n = 160000
+    for arm in range(2):
+        t = rng.random(n) ** 0.8 * 4.2 * math.pi            # how far round the arm
+        r = 95 * np.exp(0.185 * t)                           # a logarithmic spiral
+        spread = 0.07 + 0.05 * t / (4.2 * math.pi)
+        theta = t + arm * math.pi + rng.normal(0, spread, n) * (1 + t / 8)
+        r = r * (1 + rng.normal(0, 0.10, n))
+        bright = (0.15 + rng.random(n) ** 3) * (1.3 - 0.8 * t / (4.2 * math.pi))
+        place(r, theta, bright, hex_rgb(0xcfdcff))
+        # The outer arms take the app's colours.
+        far = t > 2.2 * math.pi
+        place(r[far] * 1.01, theta[far] + 0.02, bright[far] * 0.6, hex_rgb(CYAN if arm else VIOLET))
+    # The bulge: a dense, warm core.
+    m = 40000
+    r = np.abs(rng.normal(0, 150, m))
+    place(r, rng.random(m) * 2 * math.pi, rng.random(m) ** 2 * 0.5, hex_rgb(0xffe6c4))
+
+    norm = np.maximum(stars, 1e-6)[..., None]
+    tint = colour / norm
+    sharp = np.clip(stars, 0, 1)
+    haze = blur(np.clip(stars * 0.08, 0, 1), 40) * 6 + blur(np.clip(stars * 0.2, 0, 1), 10) * 2.5
+    glow_tint = np.stack([blur(np.clip(tint[..., c] / 255 * np.clip(stars, 0, 1), 0, 1), 30) for c in range(3)], -1)
+    glow_tint = glow_tint / np.maximum(blur(sharp, 30), 1e-3)[..., None] * 255
+    img = img + glow_tint * np.clip(haze, 0, 1.5)[..., None] * 0.55
+    img = img + tint * sharp[..., None] * 0.9
+    # The core's light, falling off over the whole disc.
+    y, x = np.mgrid[0:H, 0:W].astype(np.float32)
+    dx, dy = x - cx, y - cy
+    rx = dx * math.cos(-tilt) - dy * math.sin(-tilt)
+    ry = (dx * math.sin(-tilt) + dy * math.cos(-tilt)) / squash
+    d = np.sqrt(rx * rx + ry * ry)
+    img = img + hex_rgb(0xfff1dc) * (np.exp(-d / 45) * 0.75 + np.exp(-d / 220) * 0.28)[..., None]
+    img = img + hex_rgb(BLUE) * (np.exp(-d / 1100) * 0.22)[..., None]
+    return img
+
+
+def starfield(rng, img):
+    """Stars across the sky; a few bright ones with a soft cross."""
+    n = 14000
+    x, y = rng.integers(0, W, n), rng.integers(0, H, n)
+    bright = 0.12 + 0.88 * rng.random(n) ** 5
+    field = np.zeros((H, W), dtype=np.float32)
+    np.add.at(field, (y, x), bright * 1.4)
+    img = img + 255 * np.clip(field, 0, 1)[..., None] + 255 * blur(np.clip(field * 0.5, 0, 1), 2)[..., None] * 2
     layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    gd, ld = ImageDraw.Draw(glow), ImageDraw.Draw(layer)
-    base_y = 1380
-    for i in range(9):
-        t = i / 8
-        scale = 1.0 - 0.55 * t  # nearer cards first, from the left
-        w, h = 430 * scale, 573 * scale
-        x = 1880 + 520 * i * (1.0 - 0.32 * t)
-        y = base_y - h + 40 * t
-        alpha = int(255 * (0.92 - 0.6 * t))
-        top, bottom = hex_rgb(hues[i % len(hues)]), hex_rgb(hues[(i + 3) % len(hues)]) * 0.45
-        # The card: a vertical gradient, rounded, with a light edge.
-        card = Image.new("RGBA", (int(w), int(h)))
-        grad = np.linspace(0, 1, int(h), dtype=np.float32)[:, None, None]
-        rgb = top * (1 - grad) + bottom * grad
-        rgb = np.broadcast_to(rgb, (int(h), int(w), 3))
-        a = np.full((int(h), int(w), 1), alpha, dtype=np.float32)
-        card = Image.fromarray(np.concatenate([rgb, a], axis=2).astype(np.uint8), "RGBA")
-        mask = Image.new("L", card.size, 0)
-        ImageDraw.Draw(mask).rounded_rectangle([0, 0, card.size[0] - 1, card.size[1] - 1], radius=int(34 * scale),
-                                               fill=alpha)
-        layer.paste(card, (int(x), int(y)), mask)
-        ld.rounded_rectangle([x, y, x + w, y + h], radius=int(34 * scale), outline=(255, 255, 255, int(alpha * 0.35)),
-                             width=max(2, int(4 * scale)))
-        gd.rounded_rectangle([x - 30, y - 30, x + w + 30, y + h + 30], radius=int(60 * scale),
-                             fill=tuple(int(c) for c in top) + (int(alpha * 0.45),))
-        # The focus ring on the first card, as the app draws it.
-        if i == 0:
-            ld.rounded_rectangle([x - 16, y - 16, x + w + 16, y + h + 16], radius=int(46 * scale),
-                                 outline=(255, 255, 255, 240), width=10)
-        # A reflection fading into the floor.
-        refl = card.transpose(Image.FLIP_TOP_BOTTOM).crop((0, 0, card.size[0], int(h * 0.35)))
-        fade = np.linspace(0.22, 0, refl.size[1], dtype=np.float32)[:, None] * alpha
-        rmask = Image.fromarray(np.broadcast_to(fade, (refl.size[1], refl.size[0])).astype(np.uint8), "L")
-        layer.paste(refl, (int(x), int(y + h + 18)), rmask)
-    glow = glow.filter(ImageFilter.GaussianBlur(70))
-    canvas.alpha_composite(glow)
-    canvas.alpha_composite(layer)
-    # The shelf's far end dissolves into the backdrop.
-    fade = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ramp = np.clip((np.arange(W, dtype=np.float32) - 3000) / 840, 0, 1) ** 1.5
-    alpha = np.broadcast_to((ramp * 200)[None, :], (H, W)).astype(np.uint8)
-    fade.putalpha(Image.fromarray(alpha, "L"))
-    tint = Image.new("RGBA", (W, H), (11, 16, 38, 255))
-    tint.putalpha(Image.fromarray(alpha, "L"))
-    canvas.alpha_composite(tint)
+    draw = ImageDraw.Draw(layer)
+    for _ in range(26):
+        sx, sy, s = rng.integers(0, W), rng.integers(0, H), rng.uniform(10, 34)
+        rgb = tuple(int(c) for c in [hex_rgb(0xffffff), hex_rgb(CYAN), hex_rgb(0xffe6c4)][rng.integers(0, 3)])
+        draw.line([(sx - s, sy), (sx + s, sy)], fill=rgb + (150,), width=2)
+        draw.line([(sx, sy - s), (sx, sy + s)], fill=rgb + (150,), width=2)
+        draw.ellipse([sx - 4, sy - 4, sx + 4, sy + 4], fill=rgb + (255,))
+    glow = layer.filter(ImageFilter.GaussianBlur(5))
+    out = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8), "RGB").convert("RGBA")
+    out.alpha_composite(glow)
+    out.alpha_composite(layer)
+    return out
+
+
+def swirl(rng, canvas):
+    """Faint star trails arcing round the galaxy, as on a long exposure."""
+    cx, cy = 0.68 * W, 0.43 * H
+    layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    for _ in range(420):
+        r = rng.uniform(600, 2600)
+        start = rng.uniform(0, 360)
+        length = rng.uniform(4, 14) * (1100 / r)  # degrees: inner trails sweep further
+        rgb = [hex_rgb(0xffffff), hex_rgb(CYAN), hex_rgb(VIOLET), hex_rgb(0xcfdcff)][rng.integers(0, 4)]
+        alpha = int(rng.uniform(25, 90) * min(1, 900 / r + 0.3))
+        box = [cx - r, cy - r * 0.62, cx + r, cy + r * 0.62]
+        draw.arc(box, start, start + length, fill=tuple(int(c) for c in rgb) + (alpha,), width=2)
+    canvas.alpha_composite(layer.filter(ImageFilter.GaussianBlur(1.2)))
+
+
+def shade(canvas):
+    """Darker towards the lower left, so the wordmark reads."""
+    y, x = np.mgrid[0:H, 0:W].astype(np.float32)
+    d = np.sqrt(((x / W - 0.0) * 1.2) ** 2 + ((y / H - 1.0) * 1.0) ** 2)
+    a = (np.clip(1 - d / 0.75, 0, 1) ** 1.5 * 150).astype(np.uint8)
+    dark = Image.new("RGBA", (W, H), (2, 3, 10, 255))
+    dark.putalpha(Image.fromarray(a, "L"))
+    canvas.alpha_composite(dark)
 
 
 def wordmark(canvas):
-    draw = ImageDraw.Draw(canvas)
-    big = ImageFont.truetype(str(FONT), 300)
-    small = ImageFont.truetype(str(FONT), 76)
-    x, y = 250, 1560
-    # A soft shadow, then the name.
+    """"Romm" in white, "PS" filled cyan to violet, with a glow of its own."""
+    font = ImageFont.truetype(str(FONT), 300)
+    x, y = 250, 1700
+    romm_w = font.getlength("Romm")
     shadow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    ImageDraw.Draw(shadow).text((x, y + 18), "RommPS", font=big, fill=(0, 0, 0, 170), anchor="ls")
+    ImageDraw.Draw(shadow).text((x, y + 18), "RommPS", font=font, fill=(0, 0, 0, 180), anchor="ls")
     canvas.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(26)))
-    draw.text((x, y), "RommPS", font=big, fill=(255, 255, 255, 255), anchor="ls")
-    draw.rounded_rectangle([x + 8, y + 54, x + 8 + 280, y + 66], radius=6, fill=(118, 214, 255, 255))
-    draw.text((x + 8, y + 190), "Your RomM library and save sync", font=small, fill=(255, 255, 255, 190), anchor="ls")
+    ImageDraw.Draw(canvas).text((x, y), "Romm", font=font, fill=(255, 255, 255, 255), anchor="ls")
+
+    # The letters' shape, filled with a diagonal gradient.
+    mask = Image.new("L", (W, H), 0)
+    ImageDraw.Draw(mask).text((x + romm_w, y), "PS", font=font, fill=255, anchor="ls")
+    yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
+    left, width = x + romm_w, font.getlength("PS")
+    t = np.clip(((xx - left) / width) * 0.75 + ((y - yy) / 220) * 0.25, 0, 1)[..., None]
+    fill = hex_rgb(CYAN) * (1 - t) + hex_rgb(VIOLET) * t
+    gradient = Image.fromarray(fill.astype(np.uint8), "RGB").convert("RGBA")
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    glow.paste(gradient, (0, 0), mask.filter(ImageFilter.MaxFilter(9)))
+    canvas.alpha_composite(glow.filter(ImageFilter.GaussianBlur(34)))
+    letters = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    letters.paste(gradient, (0, 0), mask)
+    canvas.alpha_composite(letters)
 
 
 def main():
     out = Path(sys.argv[1])
-    canvas = aurora()
-    cards(canvas)
+    rng = np.random.default_rng(11)
+    img = space(rng)
+    img = galaxy(rng, img)
+    img += rng.normal(0, 1.2, img.shape).astype(np.float32)  # grain, so gradients never band
+    canvas = starfield(rng, img)
+    swirl(rng, canvas)
+    shade(canvas)
     wordmark(canvas)
     canvas.convert("RGB").convert("RGBA").save(out)
     print(f"title art: {out} ({W}x{H})")

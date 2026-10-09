@@ -37,11 +37,14 @@ struct Response {
 Response http_request(const std::string &host, int port, const std::string &method, const std::string &path,
                       const std::string &body = "", int timeout_ms = 15000);
 
+// The port RomM Sync's API is on: web_port in its config.json, 8780 by default.
+int payload_port();
+
 class Api {
   public:
     using Callback = std::function<void(const Response &)>;
 
-    explicit Api(std::string host = "127.0.0.1", int port = 8780);
+    explicit Api(std::string host = "127.0.0.1", int port = payload_port());
     ~Api();
     Api(const Api &) = delete;
     Api &operator=(const Api &) = delete;

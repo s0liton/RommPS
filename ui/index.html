@@ -189,7 +189,7 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
   <div class="card">
     <h2>Server</h2>
     <p id="srvInfo"></p>
-    <div class="row"><button id="tileBtn">Add home screen tile</button><button id="editEmus">Emulators</button><button id="rerunSetup">Run setup again</button><button class="danger" id="forget">Unpair</button></div>
+    <div class="row"><button id="editEmus">Emulators</button><button id="rerunSetup">Run setup again</button><button class="danger" id="forget">Unpair</button></div>
     <h3>PS4 and PS5 packages</h3>
     <p class="muted">Add these feeds to FPKGi. They use your RomM username and password.</p>
     <p><code id="feed4"></code><br><code id="feed5"></code></p>
@@ -340,7 +340,6 @@ each(".tab", function (t) { t.onclick = function () { showTab(t.dataset.tab); };
 // Status
 function renderStatus(s) {
   state.status = s;
-  $("tileBtn").style.display = s.has_tile === false ? "none" : "";
   $("conn").innerHTML = s.paired
     ? '<span class="ok">&#9679;</span> ' + esc(s.username || "") + " at " + esc(s.server_url.replace(/^https?:\/\//, ""))
     : '<span class="warn">&#9679;</span> Not paired';
@@ -415,8 +414,18 @@ function wzGo(n) {
   each("#wzSteps span", function (x) { var k = +x.dataset.s; x.classList.toggle("on", k === n); x.classList.toggle("done", k < n); });
   $("pairErr").textContent = "";
   if (n === 3 && !wz.loaded[3]) loadEmus();
-  if (n === 4) loadPreview();
-  if (n === 5) loadAutostart();
+  if (n === 4) { loadPreview(); wzLoadSettings(); }
+  if (n === 5) { wzLoadSettings(); loadAutostart(); }
+}
+// The wizard's choices start from the current settings, not fixed defaults:
+// running it again (or after RommPS's setup) keeps what was chosen.
+function wzLoadSettings() {
+  if (wz.loaded.settings) return;
+  wz.loaded.settings = true;
+  api("GET", "/api/config").then(function (c) {
+    $("wzPolicy").value = c.conflict_policy; $("wzChange").checked = c.sync_on_change; $("wzExit").checked = c.sync_on_game_exit;
+    $("wzStart").checked = c.sync_on_game_start; $("wzNotify").checked = c.notify; $("wzInterval").value = c.sync_interval_min;
+  }).catch(function () {});
 }
 function renderQr(url) {
   if (wz.qrFor === url) return;
@@ -720,7 +729,8 @@ function loadAutostart() {
     else if (a.enabled && a.hint) h = '<p class="ok">Copied to <code>' + esc(a.path) + "</code>.</p><p>" + esc(a.hint) + '</p><button id="asOff">Remove it</button>';
     else if (a.enabled) h = '<p class="ok">Starts with ' + ld + '.</p><button id="asOff">Turn off</button>';
     else if (a.installed) h = '<p class="muted">Installed at <code>' + esc(a.path) + '</code></p><button class="primary" id="asOn">Start with the console</button>';
-    else h = '<p class="muted">' + ld + " needs a copy of " + pl + '. Pick the file from a computer, or run <code>make install</code>.</p><div class="row"><input type="file" id="asFile" accept=".elf"><button class="primary" id="asUpload">Upload</button></div>';
+    else h = '<p class="muted">' + ld + " needs a copy of " + pl + "." + (state.status && state.status.platform === "ps5" ? " Open RommPS on the console and it sets this up, or pick the file from a computer." : " Pick the file from a computer.") +
+      '</p><div class="row"><input type="file" id="asFile" accept=".elf"><button class="primary" id="asUpload">Upload</button></div>';
     $("autostart").innerHTML = h;
     if ($("asOn")) $("asOn").onclick = function () { api("POST", "/api/autostart", { enable: true }).then(loadAutostart).catch(function (e) { toast(e.message, 1); }); };
     if ($("asOff")) $("asOff").onclick = function () { api("POST", "/api/autostart", { enable: false }).then(loadAutostart); };
@@ -982,6 +992,7 @@ function loadSettings() {
     $("policy").value = c.conflict_policy; $("slot").value = c.slot; $("concurrency").value = c.download_concurrency; $("backups").value = c.keep_backups;
     $("profiles").value = JSON.stringify(c.profiles, null, 2);
     $("updAuto").checked = c.update_check;
+    state.cfg = c;
     $("themeSel").innerHTML = THEMES.map(function (t) { return '<option value="' + t.id + '"' + (t.id === c.ui_theme ? " selected" : "") + ">" + esc(t.name) + "</option>"; }).join("");
   });
   loadUpdate();
@@ -1050,12 +1061,17 @@ $("ps2Status").onclick = function (ev) {
   api("POST", "/api/memcards/restore", { slot: +b.dataset.restore }).then(function () { toast("Memory card restored"); loadSettings(); }).catch(function (e) { b.disabled = false; toast(e.message, 1); });
 };
 $("saveCfg").onclick = function () {
-  api("POST", "/api/config", {
+  var form = {
     device_name: $("devname").value, sync_interval_min: +$("interval").value, sync_on_change: $("onchange").checked,
     sync_on_game_exit: $("onexit").checked, sync_on_game_start: $("onstart").checked, states: $("states").value, server_versions: +$("serverVersions").value,
     notify: $("notify").checked, tls_verify: $("tls").checked, conflict_policy: $("policy").value, slot: $("slot").value,
     keep_backups: +$("backups").value, download_concurrency: +$("concurrency").value
-  }).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, 1); });
+  };
+  // Only what was changed here: RommPS may have changed the rest since this page loaded.
+  var changed = {}, any = false, was = state.cfg || {};
+  Object.keys(form).forEach(function (k) { if (form[k] !== was[k]) { changed[k] = form[k]; any = true; } });
+  if (!any) { toast("Nothing changed"); return; }
+  api("POST", "/api/config", changed).then(function () { toast("Saved"); loadSettings(); }).catch(function (e) { toast(e.message, 1); });
 };
 $("saveProfiles").onclick = function () {
   var p; try { p = JSON.parse($("profiles").value); } catch (e) { toast("Invalid JSON: " + e.message, 1); return; }
@@ -1078,6 +1094,8 @@ function renderUpdate(u) {
     var pct = u.total ? Math.round(u.done * 100 / u.total) : 0;
     h += "<p>" + esc(u.message || u.state) + (u.state === "downloading" && u.total ? " (" + pct + "%)" : "") + "</p>";
     if (u.state === "downloading") h += '<div class="bar"><i style="width:' + pct + '%"></i></div>';
+  } else if (u.available && u.self_update === false) {
+    h += '<p class="ok">RommPS ' + esc(u.latest) + " is available. Update it in ProsperoStore, and RomM Sync comes with it.</p>";
   } else if (u.available) {
     h += '<p class="ok">Version ' + esc(u.latest) + " is available.</p>";
     if (!u.autostart) h += '<p class="warn">' + (u.autostart_supported ? "Autostart isn't set up, so the" : "The") + " update only lasts until the console restarts.</p>";
@@ -1090,7 +1108,7 @@ function renderUpdate(u) {
   $("updBody").innerHTML = h;
   if ($("updInstall")) $("updInstall").onclick = installUpdate;
   $("updNotice").style.display = u.available && !busy ? "" : "none";
-  $("updNotice").innerHTML = "<b>RomM Sync " + esc(u.latest) + ' is available.</b> <button class="small" id="updGo">See what\'s new</button>';
+  $("updNotice").innerHTML = "<b>" + (u.self_update === false ? "RommPS " : "RomM Sync ") + esc(u.latest) + ' is available.</b> <button class="small" id="updGo">See what\'s new</button>';
   $("updGo").onclick = function () { showTab("settings"); };
 }
 function loadUpdate() { return api("GET", "/api/update").then(renderUpdate).catch(function () {}); }
@@ -1112,7 +1130,6 @@ function installUpdate() {
 $("updCheck").onclick = function () { api("POST", "/api/update/check").then(function (u) { renderUpdate(u); watchUpdate(); }).catch(function (e) { toast(e.message, 1); }); };
 $("updAuto").onchange = function () { api("POST", "/api/config", { update_check: this.checked }).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, 1); }); };
 
-$("tileBtn").onclick = function () { api("POST", "/api/tile").then(function () { toast("Tile added"); }).catch(function (e) { toast(e.message, 1); }); };
 $("forget").onclick = function () { if (confirm("Unpair from this RomM server? Files on the console are kept.")) api("POST", "/api/pair/forget").then(function () { poll(); showTab("pair"); }); };
 
 // Collapsible settings cards, collapsed until opened. The choice sticks per browser.

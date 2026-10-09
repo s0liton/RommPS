@@ -229,6 +229,36 @@ int copy_file(const char *src, const char *dst) {
     return rc;
 }
 
+static void parse_version(const char *s, int v[3]) {
+    v[0] = v[1] = v[2] = 0;
+    if (!s) return;
+    if (*s == 'v') s++;
+    sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]);
+}
+
+int version_cmp(const char *a, const char *b) {
+    int x[3], y[3];
+    parse_version(a, x);
+    parse_version(b, y);
+    for (int i = 0; i < 3; i++)
+        if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+}
+
+void payload_version(const void *elf, size_t len, char *out, size_t n) {
+    static const char tag[] = "ROMM_SYNC_VERSION=";
+    const size_t tl = sizeof tag - 1;
+    const char *p = elf;
+    out[0] = 0;
+    for (size_t i = 0; len >= tl && i <= len - tl; i++) {
+        if (p[i] != 'R' || memcmp(p + i, tag, tl) != 0) continue;
+        size_t j = i + tl, k = 0;
+        while (j < len && p[j] != '\n' && p[j] && k + 1 < n) out[k++] = p[j++];
+        out[k] = 0;
+        return;
+    }
+}
+
 int move_file(const char *src, const char *dst) {
     mkdir_parent(dst);
     if (rename(src, dst) == 0) return 0;

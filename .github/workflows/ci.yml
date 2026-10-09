@@ -14,3 +14,4 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev zlib1g-dev
       - run: make host tools
       - run: tests/e2e.sh
+      - run: tests/autostart.sh

@@ -20,7 +20,7 @@ static char g_data[PATH_MAX_LEN];
 static const char *const HOMEBREW_DIRS[] = {NULL}; /* ROMM_SYNC_HOMEBREW */
 static const char *const EMULATOR_DIRS[] = {NULL};
 
-static const plat_info_t INFO = {
+static plat_info_t INFO = {
     .name = "host",
     .console = "PlayStation 5",
     .client = "romm-sync-ps5",
@@ -35,12 +35,15 @@ static const plat_info_t INFO = {
     .retroarch_root = "/data/homebrew/PPSA99169",
     .mednafen_root = "/data/homebrew/Mednafen",
     .can_relaunch = 1,
+    .self_update = 1, /* ROMM_SYNC_SELF_UPDATE=0 tests the PS5's way */
 };
 
 const plat_info_t *plat_info(void) { return &INFO; }
 
 int plat_init(void) {
     signal(SIGPIPE, SIG_IGN);
+    const char *su = getenv("ROMM_SYNC_SELF_UPDATE");
+    if (su && *su) INFO.self_update = atoi(su);
     const char *d = getenv("ROMM_SYNC_DATA");
     str_copy(g_data, sizeof g_data, d && *d ? d : "./host-data");
     mkdir_p(g_data);
@@ -74,9 +77,16 @@ const char *plat_ca_bundle(void) {
     return c && *c ? c : NULL;
 }
 
-int plat_install_tile(int port) {
-    (void)port;
-    return -1;
+void plat_remove_old_tile(void) {}
+
+int plat_app_installed(void) {
+    const char *e = getenv("ROMM_SYNC_APP_INSTALLED");
+    return e && *e == '1';
+}
+
+void plat_app_version(char *out, size_t n) {
+    const char *e = getenv("ROMM_SYNC_APP_VERSION");
+    str_copy(out, n, e ? e : "");
 }
 
 int plat_launch_elf(const void *elf, size_t len) {

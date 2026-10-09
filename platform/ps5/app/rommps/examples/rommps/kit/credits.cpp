@@ -6,6 +6,7 @@
 #include "avatar_png.h"
 #include "core/tween.hpp"
 #include "qrcodegen.h"
+#include "rommps_api.hpp"
 #include "stb_image.h" // implemented by base/VulkanglTFModel.cpp
 
 #include <algorithm>
@@ -238,7 +239,7 @@ void CodecCall::go(int step, hui::ui::Feedback &feedback)
     {
         // The payload's page hosting YouTube's player, filling the browser
         // (an embed opened on its own fails with YouTube's error 153).
-        const std::string page = std::string("http://127.0.0.1:8780/video?v=") + s.video;
+        const std::string page = "http://127.0.0.1:" + std::to_string(payload_port()) + "/video?v=" + s.video;
         opened_ = open_in_browser(page.c_str());
         feedback.play(Cue::launch);
     }

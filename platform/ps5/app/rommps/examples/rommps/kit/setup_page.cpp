@@ -940,11 +940,19 @@ void SetupPage::update_preview(App &app, const hui::InputFrame &input, float dt,
 
 void SetupPage::load_autostart(App &app)
 {
-    app.get("/api/autostart", [this](const Response &r) {
+    app.get("/api/autostart", [this, &app](const Response &r) {
         Json j(r.json(), cJSON_Delete);
         autostart_supported_ = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j.get(), "supported"));
         autostart_installed_ = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j.get(), "installed"));
         autostart_on_ = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j.get(), "enabled"));
+        // On by default the first time: RomM Sync then starts with the
+        // console and nobody has to load it. Setting up again keeps the choice.
+        if (autostart_supported_ && !autostart_on_ && !autostart_defaulted_ && !app.status().setup_complete)
+        {
+            autostart_defaulted_ = true;
+            autostart_on_ = true;
+            app.install_autostart([this, &app](const Response &) { load_autostart(app); });
+        }
     });
 }
 
@@ -1011,13 +1019,14 @@ void SetupPage::update_finish(App &app, const hui::InputFrame &input, float dt, 
         if (autostart_row)
         {
             autostart_on_ = !autostart_on_;
-            // Turned on with no payload in the HEN's folder yet: the one RommPS carries goes there.
-            if (autostart_on_ && !autostart_installed_)
+            // On: the payload RommPS carries goes to every HEN's folder that
+            // lacks it or has an older one, and autostart is turned on there.
+            if (autostart_on_)
             {
                 app.install_autostart([this, &app](const Response &) { load_autostart(app); });
                 break;
             }
-            app.post("/api/autostart", autostart_on_ ? "{\"enable\":true}" : "{\"enable\":false}",
+            app.post("/api/autostart", "{\"enable\":false}",
                      [this, &app](const Response &r) {
                          if (!r.ok())
                              app.say("Couldn't change the autostart: " + r.message());

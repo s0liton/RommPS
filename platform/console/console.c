@@ -7,6 +7,7 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -15,8 +16,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
+#include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/sysctl.h>
@@ -94,18 +97,130 @@ static pid_t find_pid(const char *name) {
     return c.found;
 }
 
-void console_single_instance(void) {
+/* Kills every other process called CONSOLE_PROC_NAME, giving up after 10 s. */
+static void kill_by_name(void) {
     pid_t pid;
     int tries = 0;
-
-    /* Name the main thread so find_pid() of the next instance sees us. */
-    syscall(SYS_thr_set_name, -1, CONSOLE_PROC_NAME);
-
     while ((pid = find_pid(CONSOLE_PROC_NAME)) > 0) {
         if (kill(pid, SIGKILL) && errno != ESRCH) break;
         sleep(1);
         if (++tries >= 10) break;
     }
+}
+
+struct pid_ctx { pid_t pid; };
+
+static int has_pid_cb(pid_t pid, const char *tdname, void *vctx) {
+    struct pid_ctx *c = vctx;
+    return pid == c->pid && !strcmp(tdname, CONSOLE_PROC_NAME);
+}
+
+/* "1.2.3" into numbers; anything after the patch is ignored. */
+static int parse_version(const char *s, int v[3]) {
+    v[0] = v[1] = v[2] = 0;
+    if (*s == 'v') s++;
+    return sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]) >= 2 ? 0 : -1;
+}
+
+/* Whether this copy should take over from one running `have`. A version that
+ * doesn't parse (a hand-made build) is sent on purpose, so it takes over. */
+static int takes_over(const char *mine, const char *have) {
+    int x[3], y[3];
+    if (parse_version(mine, x) || parse_version(have, y)) return 1;
+    for (int i = 0; i < 3; i++)
+        if (x[i] != y[i]) return x[i] > y[i];
+    return 0;
+}
+
+/* Held for as long as this copy runs; the kernel lets go when the process
+ * ends, however it ends. The file says which version holds it and its pid. */
+static int g_lock_fd = -1;
+
+/* One line in the log, written before the log is set up: a copy that quits
+ * here would otherwise leave no trace. */
+static void note(const char *fmt, ...) {
+    char line[256], when[32];
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S", &tm);
+    int n = snprintf(line, sizeof line, "%s [INFO] ", when);
+    va_list ap;
+    va_start(ap, fmt);
+    n += vsnprintf(line + n, sizeof line - (size_t)n - 1, fmt, ap);
+    va_end(ap);
+    if (n > (int)sizeof line - 2) n = (int)sizeof line - 2;
+    line[n++] = '\n';
+    int fd = open(CONSOLE_DATA_DIR "/romm-sync.log", O_WRONLY | O_APPEND | O_CREAT, 0666);
+    if (fd < 0) return;
+    write(fd, line, (size_t)n);
+    close(fd);
+}
+
+static int lock_wait(int fd, int seconds) {
+    for (int i = 0; i <= seconds * 4; i++) {
+        if (!flock(fd, LOCK_EX | LOCK_NB)) return 0;
+        usleep(250 * 1000);
+    }
+    return -1;
+}
+
+int console_single_instance(const char *version) {
+    console_mkdir_p(CONSOLE_DATA_DIR);
+    int fd = open(CONSOLE_LOCK_FILE, O_RDWR | O_CREAT, 0644);
+    if (fd < 0) {
+        /* No lock to be had: run, as versions before the lock did. */
+        kill_by_name();
+        syscall(SYS_thr_set_name, -1, CONSOLE_PROC_NAME);
+        return 0;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB)) {
+        char have[32] = "";
+        pid_t holder = 0;
+        int alive = 0;
+        /* A copy that took the lock a moment ago may not have said who it is
+         * yet; until it does, the file still names the copy before it. */
+        for (int tries = 0; tries < 8 && !alive; tries++) {
+            char buf[64] = "";
+            ssize_t n = pread(fd, buf, sizeof buf - 1, 0);
+            if (n > 0) buf[n] = 0;
+            have[0] = 0;
+            holder = 0;
+            sscanf(buf, "%31s %d", have, &holder);
+            struct pid_ctx c = {holder};
+            alive = holder > 0 && console_for_each_proc(has_pid_cb, &c) == 1;
+            if (!alive) usleep(250 * 1000);
+        }
+        /* Held, but by no copy of ours: RommPS checking whether one runs.
+         * It lets go at once. */
+        if (!alive && !lock_wait(fd, 3)) goto locked;
+        if (!takes_over(version, have)) {
+            note("romm-sync %s not started: %s is already running (pid %d)", version, have, (int)holder);
+            close(fd);
+            return 1;
+        }
+        /* Older: stop it, but only if that pid is still RomM Sync. */
+        note("romm-sync %s replacing %s (pid %d)", version, have, (int)holder);
+        struct pid_ctx c = {holder};
+        if (holder > 0 && console_for_each_proc(has_pid_cb, &c) == 1) kill(holder, SIGKILL);
+        if (lock_wait(fd, 10)) {
+            note("romm-sync %s not started: %s didn't stop", version, have);
+            close(fd);
+            return 1;
+        }
+    }
+locked:;
+    /* Say who holds the lock first, for any copy starting right now. */
+    char line[64];
+    int len = snprintf(line, sizeof line, "%s %d\n", version, (int)getpid());
+    if (!ftruncate(fd, 0) && len > 0) pwrite(fd, line, (size_t)len, 0);
+    fchmod(fd, 0644);
+    g_lock_fd = fd;
+    syscall(SYS_thr_set_name, -1, CONSOLE_PROC_NAME);
+    /* Copies from before the lock don't hold it: find them by name. A copy
+     * still deciding hasn't named itself yet, so it's safe from this. */
+    kill_by_name();
+    return 0;
 }
 
 int console_send_elf(int port, const void *elf, size_t len) {

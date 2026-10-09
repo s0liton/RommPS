@@ -90,6 +90,7 @@ void config_apply_json(const cJSON *j) {
     get_int(j, "notify", &g_cfg.notify);
     get_int(j, "update_check", &g_cfg.update_check);
     get_int(j, "cover_cache", &g_cfg.cover_cache);
+    get_int(j, "autostart_chosen", &g_cfg.autostart_chosen);
     get_int(j, "keep_backups", &g_cfg.keep_backups);
     get_int(j, "server_versions", &g_cfg.server_versions);
     if (g_cfg.server_versions < 0) g_cfg.server_versions = 0;
@@ -177,6 +178,7 @@ cJSON *config_to_json(int include_secrets) {
     cJSON_AddBoolToObject(j, "notify", g_cfg.notify);
     cJSON_AddBoolToObject(j, "update_check", g_cfg.update_check);
     cJSON_AddBoolToObject(j, "cover_cache", g_cfg.cover_cache);
+    cJSON_AddBoolToObject(j, "autostart_chosen", g_cfg.autostart_chosen);
     cJSON_AddNumberToObject(j, "keep_backups", g_cfg.keep_backups);
     cJSON_AddNumberToObject(j, "server_versions", g_cfg.server_versions);
     cJSON_AddNumberToObject(j, "download_concurrency", g_cfg.download_concurrency);

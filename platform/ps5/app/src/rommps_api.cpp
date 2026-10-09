@@ -11,6 +11,7 @@
 
 #include <cerrno>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "cJSON.h"
@@ -93,6 +94,29 @@ Response http_request(const std::string &host, int port, const std::string &meth
     r.status = status;
     r.body = in.substr(split + 4);
     return r;
+}
+
+int payload_port()
+{
+    static const int port = [] {
+        int p = 8780;
+        if (FILE *f = std::fopen("/data/romm-sync/config.json", "rb"))
+        {
+            char buf[8192];
+            const size_t n = std::fread(buf, 1, sizeof buf - 1, f);
+            std::fclose(f);
+            buf[n] = 0;
+            if (const char *k = std::strstr(buf, "\"web_port\""))
+                if (const char *colon = std::strchr(k, ':'))
+                {
+                    const long v = std::strtol(colon + 1, nullptr, 10);
+                    if (v > 0 && v < 65536)
+                        p = static_cast<int>(v);
+                }
+        }
+        return p;
+    }();
+    return port;
 }
 
 Api::Api(std::string host, int port) : host_(std::move(host)), port_(port), thread_(&Api::worker, this) {}

@@ -9,11 +9,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "autostart.h"
 #include "config.h"
 #include "covers.h"
 #include "detect.h"
 #include "http.h"
-#include "icon_png.h" /* generated from assets/icon0.png */
 #include "library.h"
 #include "platform.h"
 #include "romm.h"
@@ -40,16 +40,15 @@ static int is_game_title(const char *t) {
     if (!strncmp(t, "NPXS", 4)) return 0;
     /* RomM Sync's own apps (RommPS on the PS5, the launcher on the PS4) aren't
      * games: while one is open, syncs, downloads and covers carry on. */
-    if (!strcmp(t, "PPSA76677") || !strcmp(t, "ROOM00002")) return 0;
+    if (!strcmp(t, "PPSA76677") || !strcmp(t, "ROMM00002")) return 0;
     if (!strncmp(t, "ROMM0", 5)) return 0;
     return 1;
 }
 
+/* AppInstUtil can take a while, so this gets its own thread. */
 static void *tile_thread(void *arg) {
-    if (plat_install_tile((int)(long)arg) == 0)
-        LOGI("home screen tile ready");
-    else
-        LOGW("home screen tile not installed (unsupported or failed)");
+    (void)arg;
+    plat_remove_old_tile();
     return NULL;
 }
 
@@ -97,7 +96,8 @@ static void *app_main(void *arg) {
     (void)arg;
     int init = plat_init();
     if (init > 0) {
-        plat_notify("RomM Sync is already running");
+        /* RommPS and the HEN can both start a copy at boot; that's no news. */
+        if (!plat_app_installed()) plat_notify("RomM Sync is already running");
         return NULL;
     }
     if (init != 0) fprintf(stderr, "platform init reported a problem\n");
@@ -126,6 +126,8 @@ static void *app_main(void *arg) {
     config_load();
     if (g_cfg.profiles_custom && detect_refresh_profiles(g_cfg.profiles) > 0) config_save();
     state_load();
+    /* Copies of older versions left on the console are brought up to date. */
+    autostart_repair();
     http_global_init(plat_ca_bundle(), g_cfg.tls_verify);
 
     sync_init();
@@ -135,15 +137,27 @@ static void *app_main(void *arg) {
     int port = g_cfg.web_port;
     if (web_start(port) != 0) LOGE("web UI unavailable");
 
-    /* Installing the tile takes about 25 s on the console, so it gets its own thread. */
+    /* The old tile's icon, from versions before 1.1.1. */
     path_join(path, sizeof path, plat_data_dir(), "icon0.png");
-    if (!file_exists(path)) write_file_atomic(path, ICON_PNG, sizeof ICON_PNG - 1);
-    thread_start(tile_thread, (void *)(long)port);
+    if (file_exists(path)) unlink(path);
+    thread_start(tile_thread, NULL);
 
     char ip[64] = "";
     plat_local_ip(ip, sizeof ip);
     LOGI("web UI on http://%s:%d", ip[0] ? ip : "127.0.0.1", port);
-    if (config_is_paired()) {
+    /* With RommPS installed, it's where the user sees all this. An older
+     * RommPS, though, starts its own older copy now and then (1.1.0 does when
+     * this one is slow to answer), so it's worth updating. */
+    int quiet = plat_app_installed();
+    char app_version[32];
+    plat_app_version(app_version, sizeof app_version);
+    if (quiet && app_version[0] && version_cmp(app_version, APP_VERSION) < 0) {
+        LOGI("RommPS %s is older than RomM Sync %s", app_version, APP_VERSION);
+        plat_notify("RommPS %s is out of date. Update it from ProsperoStore.", app_version);
+    } else if (quiet) {
+    } else if (!plat_info()->self_update) {
+        plat_notify("RomM Sync is running. Install RommPS from ProsperoStore to use it on the console.");
+    } else if (config_is_paired()) {
         plat_notify("RomM Sync running - http://%s:%d", ip[0] ? ip : "127.0.0.1", port);
     } else {
         plat_notify("RomM Sync: open http://%s:%d to pair with RomM", ip[0] ? ip : "127.0.0.1", port);
@@ -166,7 +180,7 @@ static void *app_main(void *arg) {
 
     char current[32] = "";
     time_t game_start = 0, exit_at = 0, now, last_tick = time(NULL), resume_notified = 0;
-    int title_failures = 0, resume_ticks = 0;
+    int title_failures = 0, resume_ticks = 0, rommps_seen = 0;
     for (;;) {
         sleep(MONITOR_INTERVAL_SEC);
         now = time(NULL);
@@ -184,7 +198,7 @@ static void *app_main(void *arg) {
             if (ip[0] || --resume_ticks == 0) {
                 resume_ticks = 0;
                 resume_notified = now;
-                plat_notify("RomM Sync resumed - http://%s:%d", ip[0] ? ip : "127.0.0.1", port);
+                if (!quiet) plat_notify("RomM Sync resumed - http://%s:%d", ip[0] ? ip : "127.0.0.1", port);
             }
         }
 
@@ -196,6 +210,12 @@ static void *app_main(void *arg) {
             title_failures = 0;
         } else if (title_failures < MAX_TITLE_FAILURES && ++title_failures == MAX_TITLE_FAILURES) {
             LOGW("can't tell which game is running (%d failed reads); relying on periodic sync", title_failures);
+        }
+        /* RommPS installed while this copy runs (someone coming from 1.0.2):
+         * the old tile goes the first time it's opened, not at the next boot. */
+        if (fg > 0 && !strcmp(title, "PPSA76677") && !rommps_seen) {
+            rommps_seen = 1;
+            thread_start(tile_thread, NULL);
         }
         if (fg <= 0 || !is_game_title(title)) title[0] = 0;
         web_set_foreground(title);

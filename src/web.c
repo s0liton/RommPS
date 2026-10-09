@@ -51,6 +51,8 @@ typedef struct {
     char query[2048];
     char *body;
     size_t body_len;
+    /* For telling our own pages from other sites' (cross_site). */
+    char host[256], origin[256], fetch_site[32];
 } request;
 
 
@@ -158,6 +160,35 @@ static int qint(const request *r, const char *key, int def) {
     return qparam(r, key, b, sizeof b) && b[0] ? atoi(b) : def;
 }
 
+static void autostart_chosen(void) {
+    config_lock();
+    if (!g_cfg.autostart_chosen) {
+        g_cfg.autostart_chosen = 1;
+        config_save();
+    }
+    config_unlock();
+}
+
+/* A header's value, from just after "Name:" to the end of its line. */
+static void header_value(const char *v, char *out, size_t n) {
+    while (*v == ' ' || *v == '\t') v++;
+    size_t len = strcspn(v, "\r\n");
+    while (len && (v[len - 1] == ' ' || v[len - 1] == '\t')) len--;
+    if (len >= n) len = n - 1;
+    memcpy(out, v, len);
+    out[len] = 0;
+}
+
+/* Whether another site's page made the browser send this. Browsers say where
+ * a request comes from (Origin, Sec-Fetch-Site); apps such as RommPS and curl
+ * send neither, and our own pages come from this very address. */
+static int cross_site(const request *r) {
+    if (!strcasecmp(r->fetch_site, "cross-site") || !strcasecmp(r->fetch_site, "same-site")) return 1;
+    if (!r->origin[0]) return 0;
+    const char *o = strstr(r->origin, "://");
+    return !o || strcasecmp(o + 3, r->host) != 0; /* "null" included */
+}
+
 static int read_request(int fd, request *r) {
     char *buf = malloc(MAX_HEADER + 1);
     if (!buf) return -1;
@@ -193,8 +224,11 @@ static int read_request(int fd, request *r) {
     size_t clen = 0;
     for (char *h = strstr(buf, "\r\n"); h && h < hdr_end; h = strstr(h + 2, "\r\n")) {
         if (!strncasecmp(h + 2, "Content-Length:", 15)) clen = (size_t)strtoul(h + 17, NULL, 10);
+        else if (!strncasecmp(h + 2, "Host:", 5)) header_value(h + 7, r->host, sizeof r->host);
+        else if (!strncasecmp(h + 2, "Origin:", 7)) header_value(h + 9, r->origin, sizeof r->origin);
+        else if (!strncasecmp(h + 2, "Sec-Fetch-Site:", 15)) header_value(h + 17, r->fetch_site, sizeof r->fetch_site);
     }
-    if (clen > (strcmp(r->path, "/api/autostart/upload") == 0 ? MAX_UPLOAD : MAX_BODY)) {
+    if (clen > (!strcmp(r->path, "/api/autostart/upload") || !strcmp(r->path, "/api/autostart/install") ? MAX_UPLOAD : MAX_BODY)) {
         free(buf);
         return -1;
     }
@@ -225,7 +259,6 @@ static cJSON *status_json(void) {
     cJSON_AddStringToObject(j, "platform", plat_name());
     cJSON_AddStringToObject(j, "console", plat_info()->console);
     cJSON_AddStringToObject(j, "loader", plat_info()->loader);
-    cJSON_AddBoolToObject(j, "has_tile", plat_info()->has_tile);
     cJSON_AddStringToObject(j, "ip", ip);
     cJSON_AddNumberToObject(j, "uptime", (double)(time(NULL) - g_started));
     config_lock();
@@ -483,6 +516,13 @@ static cJSON *fs_folders(const char *path, char *err, int en) {
 static void route(request *r) {
     int fd = r->fd;
     int is_get = !strcmp(r->method, "GET"), is_post = !strcmp(r->method, "POST");
+    /* Only our own pages and apps change anything: a page on another site
+     * could otherwise post here from any browser on the network. */
+    if (!is_get && strcmp(r->method, "HEAD") && cross_site(r)) {
+        LOGW("refused %s %s from %s", r->method, r->path, r->origin[0] ? r->origin : "another site");
+        send_error(fd, 403, "requests from other websites aren't accepted");
+        return;
+    }
     char err[256] = "";
 
     if (is_get && (!strcmp(r->path, "/") || !strcmp(r->path, "/index.html"))) {
@@ -586,6 +626,47 @@ static void route(request *r) {
     if (is_post && !strcmp(r->path, "/api/update/install")) {
         if (update_install(err, sizeof err) != 0) send_error(fd, 409, err);
         else send_json(fd, 200, update_status());
+        return;
+    }
+    /* Autostart works before pairing too: RommPS sets it up and keeps it
+     * current whether or not RomM Sync is paired yet. */
+    if (is_get && !strcmp(r->path, "/api/autostart")) {
+        cJSON *a = autostart_status();
+        config_lock();
+        cJSON_AddBoolToObject(a, "chosen", g_cfg.autostart_chosen);
+        config_unlock();
+        send_json(fd, 200, a);
+        return;
+    }
+    /* Turning it on or off is remembered, so RommPS's one-time switch-on
+     * for versions that left it off never overrides someone's choice. */
+    if (is_post && !strcmp(r->path, "/api/autostart")) {
+        cJSON *j = body_json(r);
+        int rc = autostart_set(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j, "enable")), NULL, 0, err, sizeof err);
+        cJSON_Delete(j);
+        if (rc) send_error(fd, 400, err);
+        else {
+            autostart_chosen();
+            send_json(fd, 200, autostart_status());
+        }
+        return;
+    }
+    /* Installs the payload and turns autostart on (RommPS's setup and the
+     * web UI's upload). */
+    if (is_post && !strcmp(r->path, "/api/autostart/upload")) {
+        int rc = autostart_set(1, r->body, r->body_len, err, sizeof err);
+        if (rc) send_error(fd, 400, err);
+        else {
+            autostart_chosen();
+            send_json(fd, 200, autostart_status());
+        }
+        return;
+    }
+    /* Installs the payload, leaving autostart on or off as it is. */
+    if (is_post && !strcmp(r->path, "/api/autostart/install")) {
+        int rc = autostart_install(r->body, r->body_len, err, sizeof err);
+        if (rc) send_error(fd, 400, err);
+        else send_json(fd, 200, autostart_status());
         return;
     }
     if (!config_is_paired() && !strncmp(r->path, "/api/", 5)) {
@@ -739,24 +820,6 @@ static void route(request *r) {
         else send_ok(fd);
         return;
     }
-    if (is_get && !strcmp(r->path, "/api/autostart")) {
-        send_json(fd, 200, autostart_status());
-        return;
-    }
-    if (is_post && !strcmp(r->path, "/api/autostart")) {
-        cJSON *j = body_json(r);
-        int rc = autostart_set(cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(j, "enable")), NULL, 0, err, sizeof err);
-        cJSON_Delete(j);
-        if (rc) send_error(fd, 400, err);
-        else send_json(fd, 200, autostart_status());
-        return;
-    }
-    if (is_post && !strcmp(r->path, "/api/autostart/upload")) {
-        int rc = autostart_set(1, r->body, r->body_len, err, sizeof err);
-        if (rc) send_error(fd, 400, err);
-        else send_json(fd, 200, autostart_status());
-        return;
-    }
     if (is_post && !strcmp(r->path, "/api/sync")) {
         sync_request("manual");
         send_ok(fd);
@@ -906,15 +969,6 @@ static void route(request *r) {
         state_unlock();
         sync_request("rescan");
         send_ok(fd);
-        return;
-    }
-    if (is_post && !strcmp(r->path, "/api/tile")) {
-        int port;
-        config_lock();
-        port = g_cfg.web_port;
-        config_unlock();
-        if (plat_install_tile(port) == 0) send_ok(fd);
-        else send_error(fd, 500, plat_info()->has_tile ? "tile install failed" : "home screen tiles aren't supported on this console");
         return;
     }
     if (is_get && !strcmp(r->path, "/video")) {

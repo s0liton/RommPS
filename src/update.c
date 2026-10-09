@@ -1,6 +1,9 @@
 /* Updates from GitHub releases. Nothing installs by itself: the UI checks,
  * shows the release notes and installs when the user asks.
  *
+ * On the PS5 (plat_info()->self_update off) the payload doesn't install
+ * itself: RommPS carries it, so the check only says a new RommPS is out.
+ *
  * A release carries a payload, manifest and signature for each console, named in
  * plat_info(): romm-sync.elf, manifest.json and manifest.sig for the PS5,
  * romm-sync-ps4.elf, manifest-ps4.json and manifest-ps4.sig for the PS4. The
@@ -137,7 +140,8 @@ static void *check_thread(void *arg) {
         LOGI("update check: latest release %s, running %s", g_latest, APP_VERSION);
         if (notify && available && strcmp(g_notified, g_latest) != 0) {
             str_copy(g_notified, sizeof g_notified, g_latest);
-            plat_notify("RomM Sync %s is available. Update it from Settings.", g_latest);
+            if (plat_info()->self_update) plat_notify("RomM Sync %s is available. Update it from Settings.", g_latest);
+            else plat_notify("RommPS %s is available. Update it from ProsperoStore.", g_latest);
         }
     }
     pthread_mutex_unlock(&g_lock);
@@ -310,7 +314,8 @@ fail:
 int update_install(char *err, int en) {
     pthread_mutex_lock(&g_lock);
     int rc = -1;
-    if (busy(g_state)) snprintf(err, (size_t)en, "an update check or install is already running");
+    if (!plat_info()->self_update) snprintf(err, (size_t)en, "update RommPS from ProsperoStore: it brings the new RomM Sync with it");
+    else if (busy(g_state)) snprintf(err, (size_t)en, "an update check or install is already running");
     else if (!g_latest[0] || !newer_than(g_latest, APP_VERSION)) snprintf(err, (size_t)en, "no newer version found, check again first");
     else if (!strcmp(g_pending, g_latest)) snprintf(err, (size_t)en, "%s is already installed and starts with the next jailbreak", g_latest);
     else if (!g_elf_url[0] || !g_manifest_url[0] || !g_sig_url[0])
@@ -337,6 +342,8 @@ cJSON *update_status(void) {
     cJSON *j = cJSON_CreateObject();
     cJSON *as = autostart_status();
     cJSON_AddStringToObject(j, "current", APP_VERSION);
+    /* false: updates come with RommPS, not from here. */
+    cJSON_AddBoolToObject(j, "self_update", plat_info()->self_update);
     pthread_mutex_lock(&g_lock);
     cJSON_AddStringToObject(j, "state", STATE_NAMES[g_state]);
     cJSON_AddStringToObject(j, "message", g_message);
@@ -352,7 +359,8 @@ cJSON *update_status(void) {
     cJSON_AddNumberToObject(j, "done", (double)g_done);
     cJSON_AddNumberToObject(j, "total", (double)g_total);
     pthread_mutex_unlock(&g_lock);
-    cJSON_AddBoolToObject(j, "autostart", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(as, "installed")));
+    /* On, not just installed: what "starts with the console" means. */
+    cJSON_AddBoolToObject(j, "autostart", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(as, "enabled")));
     cJSON_AddBoolToObject(j, "autostart_supported", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(as, "supported")));
     cJSON_Delete(as);
     return j;
