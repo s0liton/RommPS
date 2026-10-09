@@ -30,6 +30,15 @@ for art in pic0 pic1; do # the home screen art, made by platform/ps5/app/tools/t
     [[ -s "$APP/ps5/sce_sys/$art.dds" ]] || die "$art.dds is missing: run platform/ps5/app/tools/title-art.sh"
 done
 
+# RommPS carries the payload and starts it when it isn't running: the
+# release's own romm-sync.elf, the same file the in-app updater installs.
+grep -q "kMinPayload = \"${TAG#v}\"" "$APP/examples/rommps/kit/rommps_app.hpp" ||
+    die "kMinPayload in rommps_app.hpp isn't ${TAG#v}"
+mkdir -p build/ps5
+gh release download "$TAG" -p romm-sync.elf -O build/ps5/romm-sync.elf --clobber
+(cd build/ps5 && gh release download "$TAG" -p SHA256SUMS -O - | grep " romm-sync.elf$" | shasum -a 256 -c -) ||
+    die "build/ps5/romm-sync.elf isn't $TAG's"
+
 tools/ps5-app-build.sh bash -c 'cd /repo/platform/ps5/app/rommps && bash ps5/tools/build.sh rommps'
 # The notices name the commit of every part; one built with uncommitted changes
 # wouldn't be the source they point to.

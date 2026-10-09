@@ -960,7 +960,7 @@ std::vector<Row> SetupPage::finish_rows() const
                     c.sync_on_game_start});
     rows.push_back({RowKind::toggle, "Notifications", "", "On the console when a sync ends or fails", c.notify});
     rows.push_back({RowKind::choice, "Sync every", interval_label(c.sync_interval_min), "Besides the syncs above"});
-    if (autostart_supported_ && autostart_installed_)
+    if (autostart_supported_)
         rows.push_back({RowKind::toggle, "Start RomM Sync with the console", "", "With your HEN's payload autostart",
                         autostart_on_});
     Row done{RowKind::action, "Finish and sync", "", ""};
@@ -986,7 +986,7 @@ void SetupPage::update_finish(App &app, const hui::InputFrame &input, float dt, 
         go(kPreview);
         return;
     }
-    const bool autostart_row = autostart_supported_ && autostart_installed_;
+    const bool autostart_row = autostart_supported_;
     switch (e.row)
     {
     case 0:
@@ -1011,6 +1011,12 @@ void SetupPage::update_finish(App &app, const hui::InputFrame &input, float dt, 
         if (autostart_row)
         {
             autostart_on_ = !autostart_on_;
+            // Turned on with no payload in the HEN's folder yet: the one RommPS carries goes there.
+            if (autostart_on_ && !autostart_installed_)
+            {
+                app.install_autostart([this, &app](const Response &) { load_autostart(app); });
+                break;
+            }
             app.post("/api/autostart", autostart_on_ ? "{\"enable\":true}" : "{\"enable\":false}",
                      [this, &app](const Response &r) {
                          if (!r.ok())

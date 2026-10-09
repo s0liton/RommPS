@@ -7,7 +7,17 @@
 #include "cJSON.h"
 #include "stb_image.h" // implemented by base/VulkanglTFModel.cpp
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
+#include <fstream>
+#include <iterator>
+#include <thread>
 #include <cctype>
 #include <cstdio>
 #include <memory>
@@ -214,6 +224,17 @@ void App::tick(float dt, hui::gfx::Renderer *renderer)
 
     if (renderer)
         evict_covers(renderer);
+    // The payload sent: its API answers within a few seconds.
+    if (start_state_ == 2)
+    {
+        start_state_ = 0;
+        status_timer_ = kStatusEvery;
+    }
+    else if (start_state_ == 3)
+    {
+        start_state_ = 0;
+        say("Couldn't start RomM Sync: " + start_error_);
+    }
 
     // A few covers a frame become textures; the rest wait their turn, so a
     // shelf full of new covers never costs a frame.
@@ -260,6 +281,66 @@ void App::evict_covers(hui::gfx::Renderer *renderer)
     }
 }
 
+const std::string &App::bundled_payload()
+{
+    if (!bundled_read_)
+    {
+        bundled_read_ = true;
+        std::ifstream f("/app0/assets/rommps/romm-sync.elf", std::ios::binary);
+        bundled_.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    return bundled_;
+}
+
+// Both HENs load ELF payloads sent to port 9021; RommPS reaches it on the
+// console itself, the way it reaches the payload's API.
+void App::start_payload()
+{
+    if (start_state_ == 1)
+        return;
+    const std::string &elf = bundled_payload();
+    if (elf.size() < 4 || elf.compare(0, 4, "\x7f" "ELF") != 0)
+    {
+        start_error_ = "this RommPS doesn't carry the RomM Sync payload";
+        start_state_ = 3;
+        return;
+    }
+    start_error_.clear();
+    start_state_ = 1;
+    std::thread([this, elf] {
+        std::string err;
+        const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        sockaddr_in sa{};
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons(9021);
+        ::inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
+        if (fd < 0 || ::connect(fd, reinterpret_cast<sockaddr *>(&sa), sizeof sa) != 0)
+            err = std::string("the HEN's payload loader (port 9021) didn't answer: ") + std::strerror(errno);
+        for (std::size_t sent = 0; err.empty() && sent < elf.size();)
+        {
+            const ssize_t n = ::send(fd, elf.data() + sent, elf.size() - sent, 0);
+            if (n <= 0)
+                err = std::string("sending the payload failed: ") + std::strerror(errno);
+            else
+                sent += static_cast<std::size_t>(n);
+        }
+        if (fd >= 0)
+            ::close(fd);
+        start_error_ = err;
+        start_state_ = err.empty() ? 2 : 3;
+    }).detach();
+}
+
+void App::install_autostart(Api::Callback done)
+{
+    api_.post("/api/autostart/upload", bundled_payload(), [this, done](const Response &r) {
+        if (!r.ok())
+            say("Couldn't set up the autostart: " + r.message());
+        if (done)
+            done(r);
+    });
+}
+
 // "1.0.2" < "1.1.0", number by number. A build without a version ("dev")
 // counts as new enough.
 bool App::payload_too_old() const
@@ -284,6 +365,13 @@ void App::refresh_status()
         status_busy_ = false;
         status_.known = true;
         status_.reachable = r.status != 0;
+        // Not running: RommPS starts the payload it carries, once by itself
+        // (Cross on the screen tries again).
+        if (!status_.reachable && !tried_start_)
+        {
+            tried_start_ = true;
+            start_payload();
+        }
         if (!r.ok())
         {
             status_.error = r.message();
@@ -294,10 +382,20 @@ void App::refresh_status()
             return;
         status_.error.clear();
         status_.version = str(j.get(), "version");
-        if (payload_too_old() && !warned_old_payload_)
+        // An older payload is replaced by the one RommPS carries, once it's
+        // idle: its autostart copy first, if it has one, then the running one.
+        if (payload_too_old() && !updated_payload_ && !flag(cJSON_GetObjectItemCaseSensitive(j.get(), "sync"), "running") &&
+            active_downloads_ == 0)
         {
-            warned_old_payload_ = true;
-            say("RommPS needs RomM Sync " + std::string(kMinPayload) + " or newer. Update it in Settings.");
+            updated_payload_ = true;
+            say("Updating RomM Sync to " + std::string(kMinPayload));
+            api_.get("/api/autostart", [this](const Response &a) {
+                std::unique_ptr<cJSON, void (*)(cJSON *)> as(a.json(), cJSON_Delete);
+                if (a.ok() && flag(as.get(), "installed"))
+                    install_autostart([this](const Response &) { start_payload(); });
+                else
+                    start_payload();
+            });
         }
         status_.ip = str(j.get(), "ip");
         status_.port = static_cast<int>(num(j.get(), "web_port", 8780));

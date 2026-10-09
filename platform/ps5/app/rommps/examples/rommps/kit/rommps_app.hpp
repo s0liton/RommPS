@@ -13,6 +13,7 @@
 #include "gfx/renderer.hpp"
 #include "rommps_api.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -201,10 +202,16 @@ class App
     void tick(float dt, hui::gfx::Renderer *renderer);
 
     const Status &status() const { return status_; }
-    // RommPS updates from the store and the payload updates itself, so the two
-    // can drift apart: this RommPS needs at least kMinPayload's API.
+    // RommPS carries the RomM Sync payload of its own release
+    // (assets/rommps/romm-sync.elf, version kMinPayload): it starts it when
+    // it isn't running, and puts it in place of an older one.
     static constexpr const char *kMinPayload = "1.1.0";
     bool payload_too_old() const;
+    void start_payload(); // sends the payload to the HEN's loader
+    bool payload_starting() const { return start_state_ == 1; }
+    const std::string &payload_error() const { return start_error_; }
+    // The payload into the HEN's autostart folder, so it starts with the console.
+    void install_autostart(Api::Callback done);
     const std::vector<Platform> &platforms() const { return platforms_; }
     const std::vector<Download> &downloads() const { return downloads_; }
     const Download *download_for(int rom_id) const;
@@ -306,7 +313,12 @@ class App
     float status_timer_ = 0, downloads_timer_ = 0;
     bool status_busy_ = false, downloads_busy_ = false, platforms_busy_ = false;
     bool was_paired_ = false;
-    bool warned_old_payload_ = false;
+    const std::string &bundled_payload();
+    std::string bundled_;
+    bool bundled_read_ = false;
+    std::atomic<int> start_state_{0}; // 0 idle, 1 sending, 2 sent, 3 failed
+    std::string start_error_;         // written before start_state_ becomes 3
+    bool tried_start_ = false, updated_payload_ = false;
     int active_downloads_ = 0;
     std::string toast_;
     float toast_age_ = 0;

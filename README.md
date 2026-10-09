@@ -61,12 +61,18 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
 
 ## Install
 
+Install **RommPS** from ProsperoStore and open it. That's it: RommPS carries the RomM Sync payload and starts it for you, then walks you through setup. Its last step makes RomM Sync start with every jailbreak, so you don't have to open the app for syncing to work.
+
+Not using the store? Download `PPSA76677.zip` from the releases page, unzip it and copy the `PPSA76677` folder to `/data/homebrew/` on the console.
+
+If you'd rather run just the payload, without the app:
+
 1. Download the latest `romm-sync.elf` from the releases page.
 2. Send it to the console (or use whichever favorite tool you wish):
    ```sh
    nc -w 1 <ps5-ip> 9021 < romm-sync.elf
    ```
-3. A RomM Sync tile appears on the home screen after about 30 seconds. Open it, or go to `http://<ps5-ip>:8780` from another device.
+3. Set it up at `http://<ps5-ip>:8780` from another device.
 
 To start RomM Sync with the console, let your HEN start it: the last setup step does this for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, in `/data/etaHEN/payloads` or `/data/OnionHEN/payloads` (onionHEN's Toolbox has a toggle for it under Payloads). RomM Sync works out which HEN is running. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it there over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
 

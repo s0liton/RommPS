@@ -236,6 +236,21 @@
    "licence_file": "SOUNDS-LICENCE.txt",
    "optional": true,
    "comment": "Kept out of the public repository: present only in builds made where the files are (release builds). Without them RommPS uses the UI kit's sounds."
+  },
+  {
+   "path": "rommps/romm-sync.elf",
+   "from": "file",
+   "source": "../../../../build/ps5/romm-sync.elf",
+   "used_by": [
+    "*"
+   ],
+   "title": "RomM Sync payload",
+   "author": "s0liton",
+   "licence": "GPL-3.0",
+   "url": "https://github.com/s0liton/RommPS",
+   "changes": "none: RomM Sync's payload from the same release, which RommPS starts when it isn't running",
+   "licence_file": "licenses/GPL-3.0.txt",
+   "comment": "Built by tools/ps5-build.sh; tools/release-app.sh puts the release's own romm-sync.elf here first."
   }
  ]
 }
