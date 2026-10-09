@@ -370,8 +370,8 @@ post /api/sync >/dev/null; wait_sync 17
 # A download goes to the main emulator and is linked into the extra.
 post /api/download '{"rom_id":61}' >/dev/null; sleep 2
 [[ -f "$T/n64emu/games/Other Racer (U).z64" && -f "$T/n64b/roms/Other Racer (U).z64" ]] || fail "the download didn't reach the extra emulator"
-[[ "$(stat -f %i "$T/n64emu/games/Other Racer (U).z64" 2>/dev/null || stat -c %i "$T/n64emu/games/Other Racer (U).z64")" == \
-   "$(stat -f %i "$T/n64b/roms/Other Racer (U).z64" 2>/dev/null || stat -c %i "$T/n64b/roms/Other Racer (U).z64")" ]] || fail "the extra copy should be a hard link"
+python3 -c 'import os,sys; sys.exit(not os.path.samefile(sys.argv[1], sys.argv[2]))' \
+  "$T/n64emu/games/Other Racer (U).z64" "$T/n64b/roms/Other Racer (U).z64" || fail "the extra copy should be a hard link"
 
 echo "17. paired with another server, the old server's game and save ids are forgotten"
 hist() { curl -sf "$API/api/status" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['sync']['history']))"; }
