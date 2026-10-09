@@ -151,7 +151,15 @@ class RommPS final : public app::Concept
         else if (setting_up)
             setup_.update(app_, input, dt, feedback);
         else if (!ready)
-            ;
+        {
+            // RomM Sync not running and RommPS couldn't start it: Cross tries again.
+            if (app_.status().known && !app_.status().reachable && !app_.payload_starting() &&
+                input.is_pressed(Action::confirm))
+            {
+                app_.start_payload();
+                feedback.play(audio::Cue::focus);
+            }
+        }
         else if (tab_ == kHome)
             update_home(input, feedback);
         else if (tab_ == kLibrary)
@@ -524,12 +532,19 @@ class RommPS final : public app::Concept
         const Rect panel{360, 300, 1200, 440};
         draw_panel(list, panel, 36);
         const float x = panel.x + 72;
-        ui::text(list, fonts.display, s.known ? "RomM Sync isn't running" : "Connecting to RomM Sync", x, panel.y + 120, 56,
-                 L.panel_text);
+        const bool starting = app_.payload_starting() || (s.known && !s.reachable && app_.payload_error().empty());
+        ui::text(list, fonts.display,
+                 !s.known ? "Connecting to RomM Sync" : starting ? "Starting RomM Sync" : "RomM Sync isn't running", x,
+                 panel.y + 120, 56, L.panel_text);
         ui::paragraph(list, fonts.regular,
-                      "RommPS shows what the RomM Sync payload is doing. Load romm-sync.elf with your HEN's "
-                      "payload loader, or turn on its autostart, and this screen fills in by itself.",
+                      starting ? "RomM Sync does the syncing in the background, and RommPS starts it for you. "
+                                 "This takes a few seconds."
+                               : "RommPS couldn't start RomM Sync. Press Cross to try again, or load romm-sync.elf "
+                                 "with your HEN's payload loader.",
                       x, panel.y + 190, 28, 1060, 42, L.panel_muted, 4);
+        if (!starting && !app_.payload_error().empty())
+            ui::text(list, fonts.regular, fonts.regular.font->fit(app_.payload_error(), 22, 1060), x, panel.y + 340, 22,
+                     L.panel_muted.with_alpha(0.8f));
         if (s.known && !s.error.empty())
             ui::text(list, fonts.regular, fonts.regular.font->fit(s.error, 22, 1060), x, panel.y + 380, 22,
                      L.panel_muted.with_alpha(0.6f));
