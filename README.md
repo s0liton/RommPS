@@ -4,42 +4,47 @@
 
 A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN or onionHEN, with kstuff) and PS4 consoles (GoldHEN). Through my insatiable need to mod everything electronic I encounter, I had my 12.70 PS5 jailbroken the minute that P2JB was out. I maintain a RomM server to centralize all my _legal_ ROMs, saves, and savestates, which all my devices sync with, and the PS5 needs similar treatment.
 
-- **Background save sync**
-  - Monitors save file changes in the background, and uploads them as soon as they've changed. Periodic syncs also ensure that your PS5 always has the latest saves and savestates.
+- **Save and sate sync**
+  - Monitors save file changes in the background, and uploads them as soon as they've changed. Periodic syncs also ensure that your PS4/5 always has the latest saves and save states.
 - **Interactive library**
-  - Browse your RomM library from RommPS, the native app (or some other device), download games and BIOS files into the right emulator folders, and resolve save conflicts.
+  - Browse your RomM library from the RommPS app (or some other device via the Web UI), download games and BIOS files into the right emulator folders, and resolve save conflicts.
 - **Pluggable emulator profiles and multiple emulators per platform**
   - Fully customizable sync destinations, but includes frequently updated preset profiles for existing homebrew emulators. 
   - Can sync games and saves and states for multiple emulators per platform (PS2 on RetroArch and PS5SX2 as an example) using hardlinks.
 - **Beautiful and Responsive UI**
   - Based on mihawk-99's Vulkan homebrew apps and BlackBearReloaded's UI kit, we get a nice, responsive feel. So worth it, it looks 1000x better. 15+ different themes to pick from.
-- **Easter Egg**
-  - Check in the Settings, scroll the settings list, see if you find the X.
+- **Background Service**
+  - All operations are handled by a backend payload, which means syncing, downloading, and updating keep working in the background, so you can keep **gaming**.
+- **RomM API Compliant**
+  - RommPS is meant to strictly stick to RomM's API and method of syncing saves and states, ensuring we don't break anything and support RomM's latest features.
+- **Secure and Human-Coded**
+  - Each release is signed and verified by a previous release during in-app or ProsperoStore updates. This app was primarily coded by a **human**, and will be frequently updated and maintained. AI was primarily used for explaining concepts, creating documentation, and converting data. Ya know, the tedious stuff.
+- **Easter Eggs**
+  - Check in the Settings, scroll the settings list, see if you find the X. This **hint** won't be here forever.
 
 ## Supported Emulators and Games
 
-Technically, this RomM client will work with all emulators, but I have included profiles for the emulators that exist for the console as of Oct 2026.
+Technically, RommPS on both PS4 and PS5 will support **any** emulator as long as you map the game, save, and save state folders correctly during emulator setup. Most should just work, but some emulators/consoles may have weird formats, or Romm may not fully support all features. 
 
-### Supported out of the box
+As a general rule, Game library syncing will pretty much work with anything. Saves/States are the more complex side of things.
 
-Setup finds these on its own. Anything else can still sync by picking its folders during setup.
+### PS5 ###
 
-**PS5**
+| Emulator | Systems | Game Downloads | Saves | Comments |
+| --- | --- | --- | --- | --- |
+| [RetroArch](https://github.com/mihawk-99/PS5_RetroArch) | NES, Famicom Disk System, SNES, Game Boy, Game Boy Color, Game Boy Advance, Genesis/Mega Drive, Master System, Game Gear, Sega CD, SG-1000, arcade (FinalBurn Neo), PS2 (LRPS2), PSP (PPSSPP), GameCube and Wii (Dolphin) | Full Support | Full Support | - |
+| [PSXS5](https://github.com/SynoPiia/PSXS5) | PS1 | Full Support | One memory card per game, and states | - |
+| [SwanStationPS5](https://github.com/darkxex/SwanStationPS5) | PS1 | Full Support | One memory card per game, and states | - |
+| [PS5SX2](https://github.com/Swordpdf/PS5SX2) | PS2 | Full Support | Its two shared memory cards, backed up to RomM (5.3 or newer) | - |
+| [PS5N64](https://github.com/Globaleliteee/PS5N64) | N64 | Full Support | Full Support | - |
+| [PS5NES](https://github.com/Globaleliteee/PS5NES) | NES | Broken | Broken | Broken, tried to report issue, but GH page gone |
+| [Porpoise](https://github.com/elripalda/Porpoise-Dolphin-Emulator-for-PS5) | Wii/GameCube | N/A | N/A | Couldn't exit sandbox w/o crash. [Issue](https://github.com/elripalda/Porpoise-Dolphin-Emulator-for-PS5/issues/18) reported |
+| [ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden) | Switch | Manual Support | Researching | - |
+| [PS5X360](https://github.com/BrinooTk/PS5X360) | Xbox 360 | Manual Support | Researching | - |
 
-| Emulator | Systems | Saves |
-| --- | --- | --- |
-| RetroArch (mihawk-99's port) | NES, Famicom Disk System, SNES, Game Boy, Game Boy Color, Game Boy Advance, Genesis/Mega Drive, Master System, Game Gear, Sega CD, SG-1000, arcade (FinalBurn Neo), PS2 (LRPS2), PSP (PPSSPP), GameCube and Wii (Dolphin) | Saves and states |
-| PSXS5 / SwanStationPS5 | PS1 | One memory card per game, and states |
-| PS5SX2 | PS2 | Its two shared memory cards, backed up to RomM (5.3 or newer) |
-| PS5N64 | N64 | Saves and states |
+To give some meaning to the table above. **Full support** means RommPS can detect and properly set game/save directories for that emulator. **Manual Support** means you can use it to sync games and/or saves, but you'll need to point it to the directories yourself. This typically means that full support is coming shortly. Broken or N/A means there was a problem keeping us from sync games and saves, or the emulator just fall out doesn't work or crashes. **Researching** means I am seeing what is possible when it comes to that sync type for the given emulator or game system.
 
-PS5NES and Porpoise don't have presets yet, because neither works properly on my console right now:
-
-- **PS5NES** v7 looks for its games in PS5SX2's folder instead of its own.
-- **Porpoise** crashes the moment it leaves the app sandbox, with both OnionHEN and Lapy freeing it, so it fails to launch. Issue reported to the dev. In the meantime, you can sync files into the sandbox, but you won't have access to /data.
-
-
-**PS4** (experimental)
+### PS4 (experimental) ###
 
 | Emulator | Systems |
 | --- | --- |
