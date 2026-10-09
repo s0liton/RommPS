@@ -1,0 +1,9 @@
+build/
+dist/
+klog/
+.deps/
+imgui.ini
+
+# Dashboard backgrounds, made by platform/ps5/app/tools/title-art.sh
+ps5/sce_sys/pic0.dds
+ps5/sce_sys/pic1.dds

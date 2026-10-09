@@ -20,6 +20,9 @@ typedef struct {
      * NULL if the loader can't. ROMM_SYNC_AUTOSTART overrides it, for tests. */
     const char *autostart_dir;
     const char *autostart_flag;
+    /* Other loaders' payload folders (NULL-terminated, may be NULL): an update
+     * replaces a copy of the payload there as well. */
+    const char *const *autostart_also;
     const char *autostart_hint; /* what the user does in the loader's menu, or NULL */
     const char *loader_dir;     /* present when the loader is installed; NULL: autostart_dir's parent */
     /* Folders to look in for emulators. homebrew_dirs hold one app per subfolder;

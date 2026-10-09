@@ -416,6 +416,50 @@ int md5_file_hex(const char *path, char out[33]) {
     return 0;
 }
 
+/* A hard link to src at dst (a copy across drives); folders file by file. */
+int link_or_copy(const char *src, const char *dst) {
+    if (dir_exists(src)) {
+        if (mkdir_p(dst) != 0) return -1;
+        DIR *d = opendir(src);
+        if (!d) return -1;
+        struct dirent *de;
+        int rc = 0;
+        while ((de = readdir(d))) {
+            if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+            char a[PATH_MAX_LEN], b[PATH_MAX_LEN];
+            path_join(a, sizeof a, src, de->d_name);
+            path_join(b, sizeof b, dst, de->d_name);
+            if (link_or_copy(a, b) != 0) rc = -1;
+        }
+        closedir(d);
+        return rc;
+    }
+    if (file_exists(dst)) {
+        if (file_size(dst) == file_size(src)) return 0;
+        unlink(dst);
+    }
+    if (link(src, dst) == 0) return 0;
+    return copy_file(src, dst);
+}
+
+int fnv1a64_file_hex(const char *path, char out[17]) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    unsigned char *buf = malloc(64 * 1024);
+    if (!buf) {
+        fclose(f);
+        return -1;
+    }
+    uint64_t h = 0xcbf29ce484222325ULL;
+    size_t n;
+    while ((n = fread(buf, 1, 64 * 1024, f)) > 0)
+        for (size_t i = 0; i < n; i++) h = (h ^ buf[i]) * 0x100000001b3ULL;
+    free(buf);
+    fclose(f);
+    snprintf(out, 17, "%016llx", (unsigned long long)h);
+    return 0;
+}
+
 void md5_hex(const void *data, size_t len, char out[33]) {
     romm_md5_CTX ctx;
     unsigned char d[16];

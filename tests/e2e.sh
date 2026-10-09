@@ -58,7 +58,7 @@ EOF
 # An installed payload in a stand-in etaHEN folder, for the update test.
 mkdir -p "$T/etaHEN/payloads"; echo "old-payload" > "$T/etaHEN/payloads/romm-sync.elf"
 ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" \
-  ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" \
+  ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" \
   ROMM_SYNC_UPDATE_URL="http://127.0.0.1:$MOCK_PORT/_github/release" "$ROOT/build/host/romm-sync" >"$T/daemon.log" 2>&1 &
 sleep 6   # let the (unpaired, skipped) startup sync pass
 
@@ -95,6 +95,10 @@ post /api/sync >/dev/null; wait_sync 2
 
 ci=$(curl -sf "$API/api/roms?platform_id=1" | python3 -c "import json,sys; print(sorted(json.load(sys.stdin)['char_index'].items()))")
 [[ "$ci" == "[('c', 0), ('e', 1), ('s', 2)]" ]] || fail "library char_index for the A-Z ribbon: $ci"
+inst=$(curl -sf "$API/api/installed" | python3 -c "import json,sys; print([(g['id'], g['name'], g['platform_id'] > 0) for g in json.load(sys.stdin)])")
+[[ "$inst" == "[(11, 'Super Metroid', True), (10, 'Chrono Trigger', True)]" ]] || fail "the games on this console, for the app: $inst"
+all=$(curl -sf "$API/api/roms?platform_id=0&search=metroid" | python3 -c "import json,sys; print([(g['name'], g['platform_id']) for g in json.load(sys.stdin)['items']])")
+[[ "$all" == "[('Super Metroid', 1)]" ]] || fail "a search across every platform: $all"
 
 echo "3. nothing changed, nothing transferred"
 post /api/sync >/dev/null; wait_sync 3
@@ -290,5 +294,106 @@ post /api/systems '{"system":"snes","profile":"retroarch-PPSA12345"}' >/dev/null
 [[ "$(snes_dirs)" == "['$HB/content/snes']" ]] || fail "SNES should be back with RetroArch: $(snes_dirs)"
 curl -s -X POST "$API/api/systems" -d '{"system":"snes","profile":"nope"}' | grep -q error || fail "an unknown emulator must be refused"
 [[ "$(snes_dirs)" == "['$HB/content/snes']" ]] || fail "a refused choice changed something: $(snes_dirs)"
+
+echo "16. standalone emulators: saves by serial and hash, one save for two emulators, extras, shared cards"
+# Like PSXS5 (cards named by disc serial), PS5N64 (saves by the game file's
+# FNV-1a hash), a second N64 emulator keeping the same format (RetroArch-like
+# names), PS5SX2 (two shared cards) and one found but not supported yet.
+mkdir -p "$T/psxemu/games" "$T/psxemu/saves" "$T/psxemu/states" "$T/n64emu/games" "$T/n64emu/saves" \
+         "$T/n64b/roms" "$T/n64b/saves" "$T/ps2emu/games" "$T/nope"
+cat > "$T/catalog.json" <<EOF
+[{"id": "testsnes", "name": "Test SNES", "title_ids": ["TEST00001"],
+  "profile": {"root": "$T/snesemu", "rom_dir": "{root}/roms", "save_dir": "{root}/saves", "state_dir": "{root}/states",
+              "save_exts": ".srm", "platforms": [{"romm": ["snes", "sfam"], "dir": "snes"}]}},
+ {"id": "psxlike", "name": "PSX-like", "detect": ["$T/psxemu"],
+  "profile": {"root": "$T/psxemu", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/states",
+              "save_exts": ".mcd", "save_name": "{serial}_1{ext}", "save_stems": "{serial}_1",
+              "state_exts": ".state*", "state_stems": "{rom_stem_safe}", "state_name": "{rom_stem_safe}{ext}",
+              "platforms": [{"romm": ["psx", "ps1"], "dir": "psx", "save_format": "psx-card"}]}},
+ {"id": "n64like", "name": "N64-like", "detect": ["$T/n64emu"],
+  "profile": {"root": "$T/n64emu", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/saves",
+              "save_exts": ".sav", "save_name": "{rom_fnv64}{ext}", "save_stems": "{rom_fnv64}",
+              "platforms": [{"romm": ["n64"], "dir": "n64", "save_format": "n64-srm"}]}},
+ {"id": "n64b", "name": "Second N64", "detect": ["$T/n64b"],
+  "profile": {"root": "$T/n64b", "rom_dir": "{root}/roms", "save_dir": "{root}/saves", "save_exts": ".srm",
+              "platforms": [{"romm": ["n64"], "dir": "n64", "save_format": "n64-srm"}]}},
+ {"id": "ps2like", "name": "PS2-like", "detect": ["$T/ps2emu"],
+  "profile": {"root": "$T/ps2emu", "rom_dir": "{root}/games", "sync_saves": false, "memcards": "{root}/Mcd001.ps2,{root}/Mcd002.ps2",
+              "platforms": [{"romm": ["ps2"], "dir": "ps2"}]}},
+ {"id": "nope", "name": "Not yet", "detect": ["$T/nope"], "ready": false, "note": "not supported yet",
+  "profile": {"root": "$T/nope", "rom_dir": "{root}/games", "platforms": [{"romm": ["n64"], "dir": "n64"}]}}]
+EOF
+python3 "$ROOT/tests/make_disc.py" psxbin "$T/psxemu/games/Test Quest (USA).bin" SLUS_123.45
+printf 'card-from-psx' > "$T/psxemu/saves/SLUS-12345_1.mcd"
+printf 'state-from-psx' > "$T/psxemu/states/Test_Quest__USA_.state0"
+printf 'ROM:Test Racer (U).z64' > "$T/n64emu/games/Test Racer (U).z64"
+cp "$T/n64emu/games/Test Racer (U).z64" "$T/n64b/roms/Test Racer (U).z64"
+fnv=$(python3 -c "
+h=0xcbf29ce484222325
+for b in open('$T/n64emu/games/Test Racer (U).z64','rb').read(): h=((h^b)*0x100000001b3)&0xFFFFFFFFFFFFFFFF
+print(f'{h:016x}')")
+printf 'n64-save' > "$T/n64emu/saves/$fnv.sav"
+printf 'card-ps2' > "$T/ps2emu/Mcd001.ps2"
+det=$(curl -sf "$API/api/setup/detect" | python3 -c "import json,sys; print(sorted((c['name'], c.get('ready', True)) for c in json.load(sys.stdin) if c['kind'] == 'standalone'))")
+[[ "$det" == *"('Not yet', False)"* && "$det" == *"('PSX-like', True)"* ]] || fail "detection of the new kinds: $det"
+post /api/setup/emulators "{\"roots\":[\"$HB\",\"$T/psxemu\",\"$T/n64emu\",\"$T/n64b\",\"$T/ps2emu\",\"$T/nope\"],
+  \"choices\":{\"psx\":\"$T/psxemu\",\"n64\":\"$T/n64emu\",\"ps2\":\"$T/ps2emu\"},\"also\":{\"n64\":[\"$T/n64b\"]}}" >/dev/null \
+  || fail "setup with extras refused"
+dirs=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print(sorted(m['rom_dir'] for m in json.load(sys.stdin)))")
+[[ "$dirs" != *"$T/nope"* ]] || fail "an emulator not supported yet got a profile: $dirs"
+post /api/config '{"states":"upload"}' >/dev/null
+post /api/sync >/dev/null; wait_sync 16
+dump() { curl -sf "http://127.0.0.1:$MOCK_PORT/_admin/dump"; }
+saves=$(dump | python3 -c "import json,sys; d=json.load(sys.stdin); print(sorted((s['rom_id'], s['file_name'], s['slot']) for s in (d['saves'].values() if isinstance(d['saves'], dict) else d['saves']) if s['rom_id'] in (50, 60)))")
+# (RomM puts the upload's time in the name: "SLUS-12345_1 [2026-...].mcd".)
+[[ "$saves" == *"(50, 'SLUS-12345_1 ["*"].mcd', 'autosave')"* ]] || fail "the card named by serial didn't sync: $saves"
+[[ "$saves" == *"(60, '$fnv ["*"].sav', 'autosave')"* ]] || fail "the save named by hash didn't sync: $saves"
+[[ $(grep -o "(60," <<<"$saves" | wc -l) -eq 1 ]] || fail "two emulators sharing a save must upload one: $saves"
+[[ "$(cat "$T/n64b/saves/Test Racer (U).srm" 2>/dev/null)" == "n64-save" ]] || fail "the shared save didn't reach the second emulator"
+states=$(dump | python3 -c "import json,sys; d=json.load(sys.stdin); print(sorted(s['file_name'] for s in (d['states'].values() if isinstance(d['states'], dict) else d['states']) if s['rom_id'] == 50))")
+[[ "$states" == "['Test_Quest__USA_"*".state0']" ]] || fail "the state named by the safe name didn't sync: $states"
+c2=$(dump | python3 -c "import json,sys; print([c['versions'] for c in json.load(sys.stdin)['cards'] if c['emulator'] == 'ps2like' and c['name'].endswith('PS2-like slot 1')])")
+[[ "$c2" == "[1]" ]] || fail "the shared PS2 card wasn't backed up: $c2"
+# A save from another device reaches both N64 emulators.
+curl -sf -X POST "http://127.0.0.1:$MOCK_PORT/_admin/save" -d '{"rom_id":60,"slot":"autosave","file_name":"Test Racer (U).srm","content":"n64-from-elsewhere","emulator":"other"}' >/dev/null
+post /api/sync >/dev/null; wait_sync 17
+[[ "$(cat "$T/n64emu/saves/$fnv.sav")" == "n64-from-elsewhere" && "$(cat "$T/n64b/saves/Test Racer (U).srm")" == "n64-from-elsewhere" ]] \
+  || fail "a downloaded save must reach every emulator that shares it"
+# A download goes to the main emulator and is linked into the extra.
+post /api/download '{"rom_id":61}' >/dev/null; sleep 2
+[[ -f "$T/n64emu/games/Other Racer (U).z64" && -f "$T/n64b/roms/Other Racer (U).z64" ]] || fail "the download didn't reach the extra emulator"
+[[ "$(stat -f %i "$T/n64emu/games/Other Racer (U).z64" 2>/dev/null || stat -c %i "$T/n64emu/games/Other Racer (U).z64")" == \
+   "$(stat -f %i "$T/n64b/roms/Other Racer (U).z64" 2>/dev/null || stat -c %i "$T/n64b/roms/Other Racer (U).z64")" ]] || fail "the extra copy should be a hard link"
+
+echo "17. paired with another server, the old server's game and save ids are forgotten"
+hist() { curl -sf "$API/api/status" | python3 -c "import json,sys; print(len(json.load(sys.stdin)['sync']['history']))"; }
+n=$(hist)
+post /api/pair/forget >/dev/null
+post /api/config '{"tls_verify":false}' >/dev/null
+post /api/pair/start "{\"server_url\":\"https://127.0.0.1:$TLS_PORT\"}" >/dev/null
+for _ in $(seq 1 20); do [[ "$(curl -sf "$API/api/status" | python3 -c "import json,sys; print(json.load(sys.stdin)['paired'])")" == True ]] && break; sleep 0.5; done
+grep -q "new pairing: the games are matched again" "$T/daemon.log" || fail "pairing again didn't forget the old server's records"
+# Pairing syncs by itself: everything goes up to the new server, nothing fails.
+wait_sync $((n + 1))
+[[ "$(last reason)" == "paired" ]] || fail "expected the pairing's own sync: $(last reason)"
+[[ "$(last failed)" == 0 ]] || fail "after pairing with another server nothing may fail: $(last failed) failed"
+[[ "$(last uploaded)" -ge 1 ]] || fail "the saves must go up to the new server: $(last uploaded)"
+
+echo "18. a game's details, the folder picker, and folders picked for a system no emulator plays"
+det=$(curl -sf "$API/api/roms/11/details" | python3 -c "
+import json,sys; d=json.load(sys.stdin)
+print(d.get('year'), d.get('publishers'), d.get('genres'), d.get('rating'), int(d.get('main_story_s',0)/3600), d.get('status'), d.get('play_ms'), d.get('sessions'))")
+[[ "$det" == "1994 Nintendo Platform, Adventure 92.5 8 finished 5400000 2" ]] || fail "game details: $det"
+root=$(curl -sf "$API/api/fs" | python3 -c "import json,sys; print(json.load(sys.stdin)['folders'])")
+[[ "$root" == "['$T']" ]] || fail "the picker's roots: $root"
+mkdir -p "$T/mine/games" "$T/mine/saves"
+sub=$(curl -sf "$API/api/fs?path=$T/mine" | python3 -c "import json,sys; j=json.load(sys.stdin); print(j['folders'], j['parent'] == '$T')")
+[[ "$sub" == "['games', 'saves'] True" ]] || fail "listing a folder: $sub"
+curl -s "$API/api/fs?path=/etc" | grep -q error || fail "the picker must stay inside its roots"
+curl -s "$API/api/fs?path=$T/../.." | grep -q error || fail "the picker must refuse .."
+post /api/setup/emulators "{\"roots\":[\"$HB\"],\"custom\":[{\"slugs\":[\"psp\"],\"name\":\"PSP\",\"rom_dir\":\"$T/mine/games\",\"save_dir\":\"$T/mine/saves\"}]}" >/dev/null \
+  || fail "setup with picked folders refused"
+mine=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print([(m['rom_dir'], m['save_dir']) for m in json.load(sys.stdin) if m['rom_dir'].startswith('$T/mine')])")
+[[ "$mine" == "[('$T/mine/games', '$T/mine/saves')]" ]] || fail "the picked folders weren't used: $mine"
 
 echo "PASS"

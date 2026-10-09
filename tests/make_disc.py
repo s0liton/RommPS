@@ -5,6 +5,8 @@
     make_disc.py sfo <out.sfo> KEY=VALUE ...
     make_disc.py cso <out.cso> <DISC_ID>
     make_disc.py gc <out.iso> <GAMEID>
+    make_disc.py psx <out.iso> <BOOT EXE>     a PS1 ISO whose SYSTEM.CNF boots it ("SLUS_123.45")
+    make_disc.py psxbin <out.bin> <BOOT EXE>  the same as raw 2352-byte mode 2 sectors
 """
 import struct
 import sys
@@ -66,6 +68,30 @@ def psp_iso(disc_id):
     return bytes(img)
 
 
+def psx_iso(boot):
+    cnf = f"BOOT = cdrom:\\{boot};1\r\nTCB = 4\r\nEVENT = 10\r\nSTACK = 801FFFF0\r\n".encode()
+    img = bytearray(SECTOR * 20)
+    pvd = bytearray(SECTOR)
+    pvd[0] = 1
+    pvd[1:6] = b"CD001"
+    pvd[6] = 1
+    pvd[156:156 + 34] = record(b"\0", 18, SECTOR, True)
+    img[16 * SECTOR:17 * SECTOR] = pvd
+    img[17 * SECTOR:17 * SECTOR + 7] = b"\xffCD001\x01"
+    root = record(b"\0", 18, SECTOR, True) + record(b"\1", 18, SECTOR, True) + record(b"SYSTEM.CNF;1", 19, len(cnf), False)
+    img[18 * SECTOR:18 * SECTOR + len(root)] = root
+    img[19 * SECTOR:19 * SECTOR + len(cnf)] = cnf
+    return bytes(img)
+
+
+def raw_mode2(iso):
+    """2048-byte sectors as 2352-byte mode 2 form 1 ones (sync, header, subheader, data, no EDC/ECC)."""
+    out = bytearray()
+    for i in range(0, len(iso), SECTOR):
+        out += b"\0" + b"\xff" * 10 + b"\0" + bytes(3) + b"\x02" + bytes(8) + iso[i:i + SECTOR] + bytes(280)
+    return bytes(out)
+
+
 def cso(iso, block=2048):
     import zlib
     blocks = [iso[i:i + block] for i in range(0, len(iso), block)]
@@ -92,6 +118,10 @@ if __name__ == "__main__":
         data = cso(psp_iso(sys.argv[3]))
     elif kind == "sfo":
         data = sfo(dict(a.split("=", 1) for a in sys.argv[3:]))
+    elif kind == "psx":
+        data = psx_iso(sys.argv[3])
+    elif kind == "psxbin":
+        data = raw_mode2(psx_iso(sys.argv[3]))
     elif kind == "gc":
         data = sys.argv[3].encode()[:6] + bytes(0x20) + b"\xc2\x33\x9f\x3d" + bytes(64)
     else:

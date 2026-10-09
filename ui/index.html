@@ -4,115 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>RomM Sync</title>
+<script>
+// The consoles' browsers can't blur fast enough: themes drop the blur there.
+if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className += " low-gpu";
+</script>
 <style>
-:root {
-  --bg: #0f1117; --panel: #181b24; --panel2: #202431; --line: #2d3242; --text: #e8eaf0; --muted: #9aa1b2;
-  --accent: #8b5cf6; --accent2: #a78bfa; --ok: #22c55e; --warn: #f59e0b; --err: #ef4444;
-  --focus: #fbbf24; --radius: 12px;
-}
-* { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--text); font: 18px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-header { display: flex; align-items: center; gap: 16px; padding: 14px 24px; background: var(--panel); position: -webkit-sticky; position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
-header h1 { font-size: 22px; margin: 0 12px 0 0; }
-header h1 span { color: var(--accent2); }
-nav { display: flex; gap: 8px; flex-wrap: wrap; }
-.tab, button, select, input, textarea { font: inherit; color: inherit; }
-.tab { background: var(--panel2); border: 2px solid transparent; border-radius: 999px; padding: 8px 18px; cursor: pointer; }
-.tab.active { background: var(--accent); }
-#conn { margin-left: auto; font-size: 15px; color: var(--muted); }
-main { padding: 20px 24px 60px; max-width: 1400px; margin: 0 auto; }
-section { display: none; } section.active { display: block; }
-.card { background: var(--panel); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 16px; }
-.card h2 { margin: 0 0 12px; font-size: 20px; }
-.card h3 { margin: 20px 0 8px; font-size: 17px; }
-.grid { display: grid; grid-gap: 14px; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
-.stats { display: grid; grid-gap: 12px; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); }
-.stat { background: var(--panel2); border-radius: 10px; padding: 12px 14px; }
-.stat b { display: block; font-size: 24px; } .stat small { color: var(--muted); }
-button { background: var(--panel2); border: 2px solid transparent; border-radius: 10px; padding: 10px 18px; cursor: pointer; }
-button.primary { background: var(--accent); } button.danger { background: #3a1d24; color: #fca5a5; }
-button.small { padding: 6px 12px; font-size: 15px; }
-button:disabled { opacity: .5; cursor: default; }
-:focus { outline: none; } :focus-visible { border-color: var(--focus) !important; box-shadow: 0 0 0 3px rgba(251,191,36,.35); }
-/* Older WebKit (the PS4's browser) has no :focus-visible or flex gap; the script
- * at the end sets no-fv and no-flexgap on <html> there. */
-.no-fv :focus { border-color: var(--focus) !important; box-shadow: 0 0 0 3px rgba(251,191,36,.35); }
-.no-flexgap header > *, .no-flexgap nav > *, .no-flexgap .row > *, .no-flexgap .plat > *, .no-flexgap .rom .btns > *,
-.no-flexgap .toggle > *, .no-flexgap .steps > *, .no-flexgap .pairbox > *, .no-flexgap .emu .head > *,
-.no-flexgap .emu .group > *, .no-flexgap .choice > *, .no-flexgap .ribbon > * { margin-right: 8px; margin-bottom: 6px; }
-input, select, textarea { background: var(--panel2); border: 2px solid var(--line); border-radius: 10px; padding: 10px 12px; width: 100%; }
-textarea { font: 14px/1.4 ui-monospace, Menlo, monospace; min-height: 320px; }
-label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 15px; }
-.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.row > * { flex: 1 1 auto; } .row > button, .row > .fixed { flex: 0 0 auto; }
-.muted { color: var(--muted); } .ok { color: var(--ok); } .warn { color: var(--warn); } .err { color: var(--err); }
-.pill { display: inline-block; font-size: 13px; font-weight: 600; padding: 3px 10px; border-radius: 999px; background: #2e2650; color: var(--accent2); margin: 0 6px 6px 0; white-space: nowrap; }
-.pill.ok { background: #0f2e1c; color: #86efac; } .pill.off { background: var(--panel); color: var(--muted); } .pill.warn { background: #3a2a0c; color: #fcd34d; }
-.plats { display: grid; grid-gap: 16px; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
-.plat { background: var(--panel2); border: 2px solid transparent; border-radius: var(--radius); padding: 18px; cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 4px; }
-.plat .logo { height: 96px; display: flex; align-items: center; justify-content: center; margin-bottom: 10px; }
-.plat .logo img { width: 96px; height: 96px; object-fit: contain; background: transparent; }
-.plat .logo span { font-size: 40px; font-weight: 700; color: var(--accent2); }
-.plat .n { font-weight: 600; font-size: 19px; } .plat small { display: block; color: var(--muted); }
-.seg { display: inline-flex; border-radius: 10px; overflow: hidden; }
-.seg button { border-radius: 0; padding: 10px 14px; } .seg button.on { background: var(--accent); }
-.romtable td { vertical-align: middle; } .romtable img { width: 40px; height: 54px; object-fit: cover; border-radius: 4px; background: #11131a; display: block; }
-.rom { background: var(--panel2); border: 2px solid transparent; border-radius: var(--radius); overflow: hidden; display: flex; flex-direction: column; }
-/* 3:4 by padding rather than aspect-ratio, which older WebKit ignores. */
-.rom .cover { position: relative; height: 0; padding-top: 133.333%; background-color: #11131a; background-position: center; background-repeat: no-repeat; background-size: cover; }
-.rom .badge { position: absolute; left: 0; bottom: 0; margin: 8px; background: var(--ok); color: #052e12; font-size: 13px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
-.rom .badge.dl { background: var(--warn); color: #3a2503; }
-.rom .t { padding: 8px 10px 4px; font-size: 15px; font-weight: 600; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-height: 2.9em; }
-.rom .s { padding: 0 10px; font-size: 13px; color: var(--muted); }
-.rom button { margin: 8px 10px 10px; padding: 8px; }
-.rom .btns { display: flex; gap: 6px; margin: 8px 10px 10px; min-width: 0; }
-.rom .btns button { margin: 0; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rom .btns button.icon { flex: 0 0 auto; }
-button.icon { display: inline-flex; align-items: center; justify-content: center; padding: 8px 10px; line-height: 0; }
-button.icon svg { width: 18px; height: 18px; }
-.dl-item { padding: 12px 0; border-bottom: 1px solid var(--line); }
-.dl-item:last-child { border-bottom: 0; }
-.dl-item .meta { font-size: 15px; color: var(--muted); margin-top: 4px; }
-.bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin-top: 8px; }
-.bar i { display: block; height: 100%; background: var(--accent); width: 0; }
-table { width: 100%; border-collapse: collapse; font-size: 15px; }
-td, th { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { color: var(--muted); font-weight: 500; }
-pre { background: #0a0c11; border-radius: 10px; padding: 12px; overflow: auto; font-size: 13px; max-height: 60vh; white-space: pre-wrap; word-break: break-word; }
-code { background: var(--panel2); padding: 2px 6px; border-radius: 6px; word-break: break-all; font-size: 14px; }
-.code { font: 700 56px/1 ui-monospace, Menlo, monospace; letter-spacing: 8px; color: var(--accent2); margin: 12px 0; }
-.toggle { display: flex; align-items: center; gap: 10px; margin: 10px 0; } .toggle input { width: auto; transform: scale(1.4); }
-.toggle label { margin: 0; color: var(--text); font-size: 17px; }
-#toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel2); padding: 12px 20px; border-radius: 10px; display: none; z-index: 10; max-width: 90vw; }
-.steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; }
-.steps span { padding: 6px 14px; border-radius: 999px; background: var(--panel2); color: var(--muted); font-size: 15px; }
-.steps span.on { background: var(--accent); color: var(--text); } .steps span.done { color: var(--ok); }
-.wz { display: none; } .wz.on { display: block; }
-.pairbox { display: flex; gap: 28px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
-.qr { background: #fff; padding: 10px; border-radius: 10px; line-height: 0; } .qr svg { width: 220px; height: 220px; }
-.emu { background: var(--panel2); border-radius: 10px; padding: 16px; margin-bottom: 12px; }
-.emu .head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0; color: var(--text); font-size: 18px; }
-.emu .head input { width: auto; transform: scale(1.4); }
-.emu .head b { font-size: 22px; }
-.emu .path { color: var(--muted); font-size: 14px; margin: 6px 0 10px; }
-.emu .group { display: flex; gap: 10px; align-items: baseline; }
-.emu .group > small { color: var(--muted); width: 80px; flex: 0 0 80px; }
-.choice { display: flex; gap: 12px; align-items: flex-start; background: var(--panel2); border: 2px solid transparent; border-radius: 10px; padding: 14px; margin: 8px 0; cursor: pointer; color: var(--text); font-size: 17px; }
-.choice input { width: auto; transform: scale(1.3); margin-top: 5px; }
-.choice.disabled { opacity: .55; cursor: default; }
-.choice b { display: block; }
-#modal { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0,0,0,.6); display: none; align-items: flex-start; justify-content: center; z-index: 20; padding: 40px 16px; overflow: auto; }
-#modal.on { display: flex; }
-#modal .card { width: 100%; max-width: 900px; }
-[data-collapse].collapsed .collapsible { display: none; }
-.notice { border-left: 4px solid var(--warn); background: #2a2210; border-radius: 8px; padding: 12px 16px; margin: 14px 0; }
-.notice b { color: #fcd34d; }
-a { color: var(--accent2); }
-.ribbon { display: flex; flex-wrap: wrap; gap: 4px; margin: -4px 0 14px; }
-.ribbon button { min-width: 38px; padding: 6px 0; font-size: 15px; }
-.ribbon button:disabled { opacity: .3; }
-.ribbon, [data-rom] { scroll-margin-top: 90px; } /* clear of the sticky header */
-#updBody details { margin-top: 14px; }
+<!--INCLUDE:build/gen/inter-font.css-->
+<!--INCLUDE:ui/themes/classic.css-->
+<!--INCLUDE:ui/themes/acrylic.css-->
+<!--INCLUDE:ui/style.css-->
 </style>
 </head>
 <body>
@@ -166,6 +66,13 @@ a { color: var(--accent2); }
       <p class="muted">Folders are read from each emulator's own settings. Nothing is changed.</p>
       <div id="emus"><p class="muted">Looking for emulators</p></div>
       <div id="emuChoices"></div>
+      <div id="ownSystems"></div>
+      <div id="picker" class="card" style="display:none;margin-top:12px">
+        <h3 id="pickTitle">Choose a folder</h3>
+        <p class="muted" id="pickPath"></p>
+        <div class="row"><button class="primary" id="pickUse">Use this folder</button><button id="pickUp">Up</button><button id="pickCancel">Cancel</button></div>
+        <div id="pickList"></div>
+      </div>
       <div id="ps2Choice" style="display:none">
         <h3>PlayStation 2 memory cards</h3>
         <p class="muted">LRPS2 keeps every game on one shared memory card by default, and RomM stores saves per game. Pick how PS2 saves are handled.</p>
@@ -179,7 +86,7 @@ a { color: var(--accent2); }
           <div class="warn" id="ps2BackupNote"></div>
         </div></label>
       </div>
-      <div class="row" style="margin-top:14px"><button class="primary" id="wzEmus">Continue</button></div>
+      <div class="row" style="margin-top:14px"><button id="wzEmusCancel" style="display:none">Cancel</button><button class="primary" id="wzEmus">Continue</button></div>
     </div>
 
     <div class="wz" id="wz4">
@@ -282,7 +189,7 @@ a { color: var(--accent2); }
   <div class="card">
     <h2>Server</h2>
     <p id="srvInfo"></p>
-    <div class="row"><button id="tileBtn">Add home screen tile</button><button id="rerunSetup">Run setup again</button><button class="danger" id="forget">Unpair</button></div>
+    <div class="row"><button id="tileBtn">Add home screen tile</button><button id="editEmus">Emulators</button><button id="rerunSetup">Run setup again</button><button class="danger" id="forget">Unpair</button></div>
     <h3>PS4 and PS5 packages</h3>
     <p class="muted">Add these feeds to FPKGi. They use your RomM username and password.</p>
     <p><code id="feed4"></code><br><code id="feed5"></code></p>
@@ -291,6 +198,10 @@ a { color: var(--accent2); }
     <div class="row"><h2 style="margin:0">Updates</h2><button id="updCheck">Check now</button></div>
     <div id="updBody"><p class="muted">Checking</p></div>
     <div class="toggle"><input type="checkbox" id="updAuto"><label for="updAuto">Check for updates once a day</label></div>
+  </div>
+  <div class="card">
+    <h2>Appearance</h2>
+    <label for="themeSel">Theme</label><select id="themeSel"></select>
   </div>
   <div class="card">
     <h2>Sync</h2>
@@ -438,7 +349,7 @@ function renderStatus(s) {
     wizardFromStatus(s);
     return;
   }
-  if (document.querySelector("#pair.active")) showTab("home");
+  if (document.querySelector("#pair.active") && !wz.editing) showTab("home");
   var sy = s.sync;
   $("syncNow").disabled = sy.running;
   $("syncPhase").textContent = sy.running ? "Syncing: " + sy.phase : "Last sync " + ago(sy.last_run) + (s.foreground ? ", playing " + s.foreground : "");
@@ -546,13 +457,17 @@ function serverAtLeast(v, want) {
   return true;
 }
 function emuCard(c) {
+  if (c.ready === false)
+    return '<div class="emu" style="opacity:.6"><div class="head"><b>' + esc(c.name) + "</b>" + pill("not supported yet", "warn") + "</div>" +
+      '<div class="path">' + esc(c.root) + '</div><p class="muted">' + esc(c.note || "") + "</p></div>";
   var plats = (c.profile && c.profile.platforms) || [];
   var platPills = plats.map(function (p) {
     if (p.sync_requires_option) return pill(p.dir, "warn");
     return pill(p.dir, p.sync_saves === false ? "off" : "ok");
   }).join("");
-  return '<div class="emu"><label class="head"><input type="checkbox" data-root="' + esc(c.root) + '" checked><b>' + esc(c.name) + "</b>" +
-    (c.title_id ? pill(c.title_id, "off") : "") + "</label>" +
+  var on = wz.editing ? !!wz.current[c.root] : true;
+  return '<div class="emu"><label class="head"><input type="checkbox" data-root="' + esc(c.root) + '"' + (on ? " checked" : "") + "><b>" + esc(c.name) + "</b>" +
+    (c.title_id ? pill(c.title_id, "off") : "") + (wz.editing && !wz.current[c.root] ? pill("new", "ok") : "") + "</label>" +
     '<div class="path">' + esc(c.root) + "</div>" +
     (c.cores.length ? '<div class="group"><small>Cores</small><div>' + c.cores.map(function (x) { return pill(x); }).join("") + "</div></div>" : "") +
     (plats.length ? '<div class="group"><small>Platforms</small><div>' + platPills + "</div></div>" : "") + "</div>";
@@ -587,18 +502,24 @@ function emuConflicts() {
 function renderEmuChoices() {
   var list = emuConflicts(), prev = wz.choices || {};
   if (!list.length) { $("emuChoices").innerHTML = ""; return; }
+  var also = wz.also || {};
   $("emuChoices").innerHTML = "<h3>Which emulator plays what</h3>" +
-    '<p class="muted">Some systems are played by more than one of these emulators. Games download to, and saves sync with, the one you pick. You can change this later in Settings.</p>' +
+    '<p class="muted">Some systems are played by more than one of these emulators. Games download to the main one first; tick others to give them the same games. Emulators that keep saves in the same format share one save. You can change this later in Settings.</p>' +
     '<div class="row"><button id="allRetroarch">Use RetroArch for all</button></div>' +
     list.map(function (s) {
       var pick = prev[s.key] && s.options.some(function (o) { return o.root === prev[s.key]; }) ? prev[s.key]
         : (s.options.filter(function (o) { return o.retroarch; })[0] || s.options[0]).root;
-      return '<div class="emu"><div class="head"><b>' + esc(systemName(s.key)) + "</b></div>" + s.options.map(function (o) {
+      return '<div class="emu"><div class="head"><b>' + esc(systemName(s.key)) + "</b></div><small>Main</small>" + s.options.map(function (o) {
         return '<label class="toggle"><input type="radio" name="sys-' + esc(s.key) + '" data-sys="' + esc(s.key) + '" value="' + esc(o.root) + '"' +
           (o.root === pick ? " checked" : "") + ">" + esc(o.label) + "</label>";
+      }).join("") + "<small>Also in</small>" + s.options.map(function (o) {
+        var ticked = (also[s.key] || []).indexOf(o.root) >= 0;
+        return '<label class="toggle"><input type="checkbox" data-also="' + esc(s.key) + '" value="' + esc(o.root) + '"' +
+          (ticked ? " checked" : "") + (o.root === pick ? " disabled" : "") + ">" + esc(o.label) + "</label>";
       }).join("") + "</div>";
     }).join("");
-  each("#emuChoices input[data-sys]", function (x) { x.onchange = function () { wz.choices = emuChoices(); }; });
+  each("#emuChoices input[data-sys]", function (x) { x.onchange = function () { wz.choices = emuChoices(); wz.also = emuAlso(); renderEmuChoices(); }; });
+  each("#emuChoices input[data-also]", function (x) { x.onchange = function () { wz.also = emuAlso(); }; });
   $("allRetroarch").onclick = function () {
     list.forEach(function (s) {
       var ra = s.options.filter(function (o) { return o.retroarch; })[0];
@@ -608,6 +529,72 @@ function renderEmuChoices() {
   };
   wz.choices = emuChoices();
 }
+// Systems on the server no ticked emulator plays: off, or folders the user picks.
+function uncoveredSystems() {
+  var slugs = {};
+  each("#emus input[data-root]", function (x) {
+    if (!x.checked) return;
+    var c = (wz.emus || []).filter(function (e) { return e.root === x.dataset.root; })[0];
+    ((c && c.profile && c.profile.platforms) || []).forEach(function (p) { (p.romm || []).forEach(function (s) { slugs[s] = 1; }); });
+  });
+  return (wz.platforms || []).filter(function (p) { return p.rom_count > 0 && !slugs[p.slug] && !slugs[p.fs_slug]; });
+}
+function renderOwn() {
+  wz.own = wz.own || {};
+  var list = uncoveredSystems();
+  if (!list.length) { $("ownSystems").innerHTML = ""; return; }
+  var names = ["Games", "Saves", "States"];
+  $("ownSystems").innerHTML = "<h3>No emulator found for these</h3>" +
+    '<p class="muted">Turn one on to choose where its games, saves and save states go. Saves there are matched by the game\'s file name. Leave it off to skip it; you can set it up later in Settings.</p>' +
+    list.map(function (p) {
+      var o = wz.own[p.slug] = wz.own[p.slug] || { on: false, folders: ["", "", ""] };
+      return '<div class="emu"><label class="head"><input type="checkbox" data-own="' + esc(p.slug) + '"' + (o.on ? " checked" : "") + "><b>" +
+        esc(p.display_name || p.name) + "</b>" + pill(p.rom_count + " games", "off") + "</label>" +
+        (o.on ? names.map(function (n, k) {
+          return '<div class="row"><small style="min-width:60px">' + n + '</small><code style="flex:1">' + esc(o.folders[k] || (k ? "same as games" : "not chosen")) +
+            '</code><button class="small" data-pick="' + esc(p.slug) + '" data-which="' + k + '">Choose</button></div>';
+        }).join("") : "") + "</div>";
+    }).join("");
+  each("#ownSystems input[data-own]", function (x) { x.onchange = function () { wz.own[x.dataset.own].on = x.checked; renderOwn(); }; });
+  each("#ownSystems button[data-pick]", function (b) { b.onclick = function () { openPicker(b.dataset.pick, +b.dataset.which); }; });
+}
+function openPicker(slug, which) {
+  wz.pick = { slug: slug, which: which };
+  var o = wz.own[slug], p = (wz.platforms || []).filter(function (x) { return x.slug === slug; })[0];
+  $("pickTitle").textContent = "Choose the " + ["games", "saves", "save states"][which] + " folder for " + (p ? p.display_name || p.name : slug);
+  $("picker").style.display = "";
+  browse(o.folders[which] || o.folders[0] || "");
+}
+function browse(path) {
+  api("GET", "/api/fs?path=" + encodeURIComponent(path)).then(function (r) {
+    wz.pick.path = r.path; wz.pick.parent = r.parent;
+    $("pickPath").textContent = r.path || "Pick a drive";
+    $("pickUse").disabled = !r.path; $("pickUp").disabled = !r.path;
+    $("pickList").innerHTML = r.folders.map(function (f) { return '<button class="small" style="display:block;margin:4px 0" data-f="' + esc(f) + '">' + esc(f) + "</button>"; }).join("") ||
+      '<p class="muted">No folders here</p>';
+    each("#pickList button[data-f]", function (b) { b.onclick = function () { browse(r.path ? r.path + "/" + b.dataset.f : b.dataset.f); }; });
+  }).catch(function () { if (path) browse(""); });
+}
+$("pickUse").onclick = function () { wz.own[wz.pick.slug].folders[wz.pick.which] = wz.pick.path; $("picker").style.display = "none"; renderOwn(); };
+$("pickUp").onclick = function () { browse(wz.pick.parent || ""); };
+$("pickCancel").onclick = function () { $("picker").style.display = "none"; };
+function ownCustom() {
+  return uncoveredSystems().filter(function (p) { return wz.own[p.slug] && wz.own[p.slug].on; }).map(function (p) {
+    var o = wz.own[p.slug];
+    return { slugs: p.fs_slug && p.fs_slug !== p.slug ? [p.slug, p.fs_slug] : [p.slug], name: p.display_name || p.name,
+             rom_dir: o.folders[0], save_dir: o.folders[1], state_dir: o.folders[2] };
+  });
+}
+
+// Per system, the other emulators that keep it too: {"n64": [roots]}.
+function emuAlso() {
+  var out = {}, main = emuChoices();
+  each("#emuChoices input[data-also]", function (x) {
+    if (!x.checked || main[x.dataset.also] === x.value) return;
+    (out[x.dataset.also] = out[x.dataset.also] || []).push(x.value);
+  });
+  return out;
+}
 function emuChoices() {
   var out = {};
   each("#emuChoices input[data-sys]", function (x) { if (x.checked) out[x.dataset.sys] = x.value; });
@@ -615,19 +602,40 @@ function emuChoices() {
 }
 function loadEmus() {
   $("emus").innerHTML = '<p class="muted">Looking for emulators</p>';
-  api("GET", "/api/setup/detect").then(function (list) {
+  var current = wz.editing ? api("GET", "/api/config").then(function (cfg) {
+    // From Settings: what's set up now (which emulators, their main systems and extras).
+    wz.current = {}; wz.choices = {}; wz.also = {}; wz.own = {};
+    (cfg.profiles || []).forEach(function (p) {
+      if (p.enabled === false) return;
+      if ((p.id || "").indexOf("custom-") === 0) {
+        var slug = (((p.platforms || [])[0] || {}).romm || [])[0];
+        if (slug) wz.own[slug] = { on: true, folders: [p.rom_dir || "", p.save_dir || "", p.state_dir || ""] };
+        return;
+      }
+      wz.current[p.root] = true;
+      (p.platforms || []).forEach(function (e) {
+        var key = (e.romm || [])[0];
+        if (!key) return;
+        if ((p.extra || []).indexOf(key) >= 0) (wz.also[key] = wz.also[key] || []).push(p.root);
+        else if ((p.exclude || []).indexOf(key) < 0) wz.choices[key] = p.root;
+      });
+    });
+  }) : Promise.resolve();
+  current.then(function () { return api("GET", "/api/setup/detect"); }).then(function (list) {
     wz.loaded[3] = true;
     if (!list.length) {
-      $("emus").innerHTML = '<p class="warn">No emulators found.</p><p class="muted">You can continue with the default RetroArch profile and change folders later in Settings.</p>';
+      $("emus").innerHTML = '<p class="warn">No emulators found.</p><p class="muted">Turn on the systems below to choose their folders, or continue with the default RetroArch profile and change folders later in Settings.</p>';
       $("ps2Choice").style.display = "none";
+      wz.emus = [];
+      api("GET", "/api/platforms").then(function (p) { state.platforms = wz.platforms = p; renderOwn(); }).catch(function () {});
       return;
     }
     wz.emus = list;
     $("emus").innerHTML = list.map(emuCard).join("") +
       '<p class="muted">' + pill("synced", "ok") + pill("download only", "off") + pill("depends on a core option", "warn") + "</p>";
-    each("#emus input[data-root]", function (x) { x.onchange = renderEmuChoices; });
+    each("#emus input[data-root]", function (x) { x.onchange = function () { renderEmuChoices(); renderOwn(); }; });
     renderEmuChoices();
-    if (!state.platforms) api("GET", "/api/platforms").then(function (p) { state.platforms = p; renderEmuChoices(); }).catch(function () {});
+    api("GET", "/api/platforms").then(function (p) { state.platforms = wz.platforms = p; renderEmuChoices(); renderOwn(); }).catch(function () {});
     var hasPs2 = list.some(function (c) { return (c.cores || []).indexOf("LRPS2") >= 0; });
     $("ps2Choice").style.display = hasPs2 ? "" : "none";
     var v = state.status && state.status.server_version, ok = serverAtLeast(v, "5.3.0");
@@ -642,9 +650,14 @@ function ps2Mode() { var r = document.querySelector("input[name=ps2]:checked"); 
 $("wzEmus").onclick = function () {
   var roots = [];
   each("#emus input[data-root]", function (x) { if (x.checked) roots.push(x.dataset.root); });
-  api("POST", "/api/setup/emulators", { roots: roots, choices: emuChoices() })
+  var custom = ownCustom(), missing = custom.filter(function (c) { return !c.rom_dir; })[0];
+  if (missing) { $("pairErr").textContent = "Choose a games folder for " + missing.name + ", or turn it off."; return; }
+  api("POST", "/api/setup/emulators", { roots: roots, choices: emuChoices(), also: emuAlso(), custom: custom })
     .then(function () { return api("POST", "/api/config", { ps2_cards: ps2Mode() }); })
-    .then(function () { wzGo(4); }).catch(function (e) { $("pairErr").textContent = e.message; });
+    .then(function () {
+      if (!wz.editing) { wzGo(4); return; }
+      endEmuEdit(); toast("Emulators saved"); showTab("settings");
+    }).catch(function (e) { $("pairErr").textContent = e.message; });
 };
 
 function previewList(title, items, cls) {
@@ -702,6 +715,17 @@ $("wzFinish").onclick = function () {
   }).then(function () { $("wzFinish").disabled = false; toast("First sync started"); state.status.setup_complete = true; showTab("home"); poll(); })
     .catch(function (e) { $("wzFinish").disabled = false; $("pairErr").textContent = e.message; });
 };
+// Settings' Emulators: just that step, from what's set up now, without pausing sync.
+$("editEmus").onclick = function () {
+  wz.editing = true; wz.loaded[3] = false;
+  $("wzSteps").style.display = "none"; $("wzEmusCancel").style.display = ""; $("wzEmus").textContent = "Save";
+  showTab("pair"); wzGo(3);
+};
+function endEmuEdit() {
+  wz.editing = false; wz.loaded[3] = false; wz.current = {};
+  $("wzSteps").style.display = ""; $("wzEmusCancel").style.display = "none"; $("wzEmus").textContent = "Continue";
+}
+$("wzEmusCancel").onclick = function () { endEmuEdit(); showTab("settings"); };
 $("rerunSetup").onclick = function () {
   if (!confirm("Run setup again? Background sync pauses until you finish.")) return;
   api("POST", "/api/setup/restart").then(function () {
@@ -931,6 +955,7 @@ function loadSettings() {
     $("policy").value = c.conflict_policy; $("slot").value = c.slot; $("concurrency").value = c.download_concurrency; $("backups").value = c.keep_backups;
     $("profiles").value = JSON.stringify(c.profiles, null, 2);
     $("updAuto").checked = c.update_check;
+    $("themeSel").innerHTML = THEMES.map(function (t) { return '<option value="' + t.id + '"' + (t.id === c.ui_theme ? " selected" : "") + ">" + esc(t.name) + "</option>"; }).join("");
   });
   loadUpdate();
   loadSystems();
@@ -947,6 +972,13 @@ function loadSettings() {
     loadPs2(ps2);
   });
 }
+// ui/themes/<id>.css; the server puts the saved one on <html> (data-theme).
+var THEMES = [{ id: "classic", name: "Classic" }, { id: "acrylic", name: "Acrylic (frosted glass)" }];
+$("themeSel").onchange = function () {
+  var id = this.value;
+  document.documentElement.setAttribute("data-theme", id);
+  api("POST", "/api/config", { ui_theme: id }).then(function () { toast("Theme saved"); }).catch(function (e) { toast(e.message, 1); });
+};
 function loadSystems() {
   api("GET", "/api/systems").then(function (list) {
     $("systemsCard").style.display = list.length ? "" : "none";

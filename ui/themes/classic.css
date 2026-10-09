@@ -1,0 +1,56 @@
+/* Classic: RomM Sync's original dark look. Also the defaults, so this file
+ * lists every token ui/style.css uses; other themes override what they change
+ * under [data-theme="<id>"]. */
+:root {
+  /* Page */
+  --page: #0f1117;
+  --backdrop: none;              /* a background-image painted under everything */
+  --text: #e8eaf0;
+  --text-muted: #9aa1b2;
+  --font: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: ui-monospace, Menlo, monospace;
+
+  /* Surfaces */
+  --header: #181b24;
+  --surface: #181b24;            /* cards */
+  --surface-raised: #202431;     /* buttons, tiles, chips inside cards */
+  --field: #202431;              /* inputs */
+  --toast: #202431;
+  --sunken: #11131a;             /* cover placeholders */
+  --sunken-deep: #0a0c11;        /* log and code blocks */
+  --track: #2d3242;              /* progress bar tracks */
+  --overlay: rgba(0, 0, 0, .6);  /* behind dialogs */
+  --outline: #2d3242;            /* field borders and table rules */
+  --control-edge: transparent;   /* the 2 px border of buttons and tiles */
+  --hairline: none;              /* the border of cards, the header and toasts */
+  --shadow: none;                /* under cards */
+  --glass: none;                 /* backdrop-filter of cards, the header and toasts */
+
+  /* Colours */
+  --primary: #8b5cf6;
+  --on-primary: #e8eaf0;
+  --accent-text: #a78bfa;        /* links, the logo, big codes */
+  --ok: #22c55e;
+  --on-ok: #052e12;
+  --warn: #f59e0b;
+  --on-warn: #3a2503;
+  --err: #ef4444;
+  --danger-bg: #3a1d24;
+  --danger-text: #fca5a5;
+  --notice-bg: #2a2210;
+  --pill-bg: #2e2650;
+  --pill-text: #a78bfa;
+  --pill-ok-bg: #0f2e1c;
+  --pill-ok-text: #86efac;
+  --pill-off-bg: #181b24;
+  --pill-warn-bg: #3a2a0c;
+  --pill-warn-text: #fcd34d;
+  --focus: #fbbf24;
+  --focus-glow: rgba(251, 191, 36, .35);
+
+  /* Shape */
+  --radius: 10px;                /* controls */
+  --radius-card: 12px;           /* cards and tiles */
+  --radius-small: 6px;
+  --radius-notice: 8px;
+}

@@ -73,6 +73,16 @@ int autostart_replace(const void *data, size_t len, char *err, int en) {
         return -1;
     }
     LOGI("replaced %s (%zu bytes), previous version kept as %s", elf, len, bak);
+    /* A copy left in another loader's folder (from before switching loaders)
+     * would start the old version if that loader came back. */
+    const char *const *also = plat_info()->autostart_also;
+    for (int i = 0; also && also[i] && !getenv("ROMM_SYNC_AUTOSTART"); i++) {
+        char other[PATH_MAX_LEN];
+        snprintf(other, sizeof other, "%s/%s", also[i], plat_info()->payload);
+        if (!file_exists(other)) continue;
+        if (write_payload(other, data, len) == 0) LOGI("also replaced %s", other);
+        else LOGW("could not replace %s", other);
+    }
     return 1;
 }
 

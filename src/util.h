@@ -44,6 +44,7 @@ int set_file_mtime(const char *path, time_t t);
 char *read_file(const char *path, size_t *len); /* malloc'd, NUL-terminated */
 int write_file_atomic(const char *path, const void *data, size_t len);
 int copy_file(const char *src, const char *dst);
+int link_or_copy(const char *src, const char *dst); /* hard link, a copy across drives; folders too */
 int move_file(const char *src, const char *dst); /* rename, falls back to copy+unlink */
 void remove_tree(const char *path);              /* rm -rf */
 const char *path_basename(const char *path);
@@ -64,6 +65,8 @@ void iso8601_utc(time_t t, char *out, size_t n);  /* 2026-09-29T15:26:00+00:00 *
 time_t iso8601_parse(const char *s);             /* 0 on failure */
 
 int md5_file_hex(const char *path, char out[33]);
+/* FNV-1a 64 of a file, 16 lower-case hex digits (PS5N64 names saves by it). */
+int fnv1a64_file_hex(const char *path, char out[17]);
 void md5_hex(const void *data, size_t len, char out[33]);
 void random_uuid(char out[37]);
 

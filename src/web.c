@@ -77,6 +77,23 @@ static void send_response(int fd, int status, const char *ctype, const void *bod
     if (send_all(fd, hdr, (size_t)n) == 0 && len) send_all(fd, body, len);
 }
 
+/* The UI with the theme already on <html>, so the first frame is right. */
+static void send_page(int fd) {
+    char attr[64], hdr[256];
+    config_lock();
+    snprintf(attr, sizeof attr, " data-theme=\"%s\"", g_cfg.ui_theme);
+    config_unlock();
+    const char *page = UI_INDEX_HTML, *at = strstr(page, "<html");
+    size_t len = sizeof UI_INDEX_HTML - 1, head = at ? (size_t)(at - page) + 5 : 0;
+    if (!at) attr[0] = 0;
+    int n = snprintf(hdr, sizeof hdr,
+                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %zu\r\n"
+                     "Cache-Control: no-store\r\nConnection: close\r\n\r\n",
+                     len + strlen(attr));
+    if (send_all(fd, hdr, (size_t)n) == 0 && send_all(fd, page, head) == 0 && send_all(fd, attr, strlen(attr)) == 0)
+        send_all(fd, page + head, len - head);
+}
+
 static void send_json(int fd, int status, cJSON *j) {
     char *txt = cJSON_PrintUnformatted(j);
     send_response(fd, status, "application/json", txt ? txt : "null", txt ? strlen(txt) : 4, NULL);
@@ -533,13 +550,85 @@ static void proxy_asset(const request *r) {
 
 static cJSON *body_json(const request *r) { return r->body_len ? cJSON_Parse(r->body) : cJSON_CreateObject(); }
 
+/* Where the folder picker may look: internal storage and the drives the
+ * console mounts (ROMM_SYNC_FS_ROOTS, comma separated, replaces them in tests). */
+static int fs_roots(char roots[][PATH_MAX_LEN], int max) {
+    const char *env = getenv("ROMM_SYNC_FS_ROOTS");
+    char list[1024];
+    str_copy(list, sizeof list, env && *env ? env : "/data,/mnt/usb0,/mnt/usb1,/mnt/usb2,/mnt/usb3,/mnt/ext0,/mnt/ext1");
+    int n = 0;
+    char *save = NULL;
+    for (char *t = strtok_r(list, ",", &save); t && n < max; t = strtok_r(NULL, ",", &save))
+        if (dir_exists(t)) str_copy(roots[n++], PATH_MAX_LEN, t);
+    return n;
+}
+
+/* The folders in a folder, for the setup's folder picker: {path, parent,
+ * folders}. No path: the roots. Only folders, and only below a root. */
+static cJSON *fs_folders(const char *path, char *err, int en) {
+    char roots[8][PATH_MAX_LEN];
+    int nroots = fs_roots(roots, 8);
+    cJSON *j = cJSON_CreateObject(), *dirs = cJSON_CreateArray();
+    if (!path[0]) {
+        cJSON_AddStringToObject(j, "path", "");
+        cJSON_AddStringToObject(j, "parent", "");
+        for (int i = 0; i < nroots; i++) cJSON_AddItemToArray(dirs, cJSON_CreateString(roots[i]));
+        cJSON_AddItemToObject(j, "folders", dirs);
+        return j;
+    }
+    char clean[PATH_MAX_LEN];
+    str_copy(clean, sizeof clean, path);
+    size_t l = strlen(clean);
+    while (l > 1 && clean[l - 1] == '/') clean[--l] = 0;
+    int inside = 0;
+    for (int i = 0; i < nroots; i++) {
+        size_t rl = strlen(roots[i]);
+        if (!strncmp(clean, roots[i], rl) && (clean[rl] == 0 || clean[rl] == '/')) inside = 1;
+    }
+    if (clean[0] != '/' || strstr(clean, "/..") || strstr(clean, "/./") || !inside || !dir_exists(clean)) {
+        cJSON_Delete(j);
+        cJSON_Delete(dirs);
+        snprintf(err, (size_t)en, "not a folder the console can use");
+        return NULL;
+    }
+    DIR *d = opendir(clean);
+    struct dirent *de;
+    char (*names)[256] = malloc(512 * sizeof *names); /* on the heap: console threads have small stacks */
+    int n = 0;
+    while (names && d && (de = readdir(d)) && n < 512) {
+        if (de->d_name[0] == '.') continue;
+        char full[PATH_MAX_LEN];
+        path_join(full, sizeof full, clean, de->d_name);
+        if (dir_exists(full)) str_copy(names[n++], sizeof names[0], de->d_name);
+    }
+    if (d) closedir(d);
+    if (names) {
+        qsort(names, (size_t)n, sizeof names[0], (int (*)(const void *, const void *))strcasecmp);
+        for (int i = 0; i < n; i++) cJSON_AddItemToArray(dirs, cJSON_CreateString(names[i]));
+        free(names);
+    }
+    /* Up stops at a root. */
+    char parent[PATH_MAX_LEN] = "";
+    int at_root = 0;
+    for (int i = 0; i < nroots; i++) at_root |= !strcmp(clean, roots[i]);
+    if (!at_root) {
+        str_copy(parent, sizeof parent, clean);
+        char *slash = strrchr(parent, '/');
+        if (slash && slash != parent) *slash = 0;
+    }
+    cJSON_AddStringToObject(j, "path", clean);
+    cJSON_AddStringToObject(j, "parent", parent);
+    cJSON_AddItemToObject(j, "folders", dirs);
+    return j;
+}
+
 static void route(request *r) {
     int fd = r->fd;
     int is_get = !strcmp(r->method, "GET"), is_post = !strcmp(r->method, "POST");
     char err[256] = "";
 
     if (is_get && (!strcmp(r->path, "/") || !strcmp(r->path, "/index.html"))) {
-        send_response(fd, 200, "text/html; charset=utf-8", UI_INDEX_HTML, sizeof UI_INDEX_HTML - 1, NULL);
+        send_page(fd);
         return;
     }
     if (is_get && !strcmp(r->path, "/api/status")) {
@@ -651,23 +740,62 @@ static void route(request *r) {
     }
     if (is_post && !strcmp(r->path, "/api/setup/emulators")) {
         /* Profiles for the emulators picked in the wizard. "choices" maps a
-         * system several of them play to the root of the one that keeps it;
-         * the others exclude it. */
+         * system several of them play to the root of its main emulator;
+         * "also" lists, per system, the other emulators that keep it as
+         * extras (downloads linked in, a save shared where the format is the
+         * same); the rest exclude it. */
         cJSON *j = body_json(r), *found = detect_emulators(), *profiles = cJSON_CreateArray();
         const cJSON *root, *c, *choices = cJSON_GetObjectItemCaseSensitive(j, "choices");
+        const cJSON *also = cJSON_GetObjectItemCaseSensitive(j, "also");
         cJSON_ArrayForEach(root, cJSON_GetObjectItemCaseSensitive(j, "roots")) {
             cJSON_ArrayForEach(c, found) {
                 if (!cJSON_IsString(root) || strcmp(jget_str(c, "root", ""), root->valuestring) != 0) continue;
-                cJSON *p = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(c, "profile"), 1), *ex = cJSON_CreateArray();
-                const cJSON *e;
+                if (cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(c, "ready"))) continue; /* not supported yet */
+                cJSON *p = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(c, "profile"), 1), *ex = cJSON_CreateArray(),
+                      *extra = cJSON_CreateArray();
+                const cJSON *e, *x;
                 cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(p, "platforms")) {
                     const char *key = profiles_system_key(e), *keeper = jget_str(choices, key, NULL);
-                    if (keeper && strcmp(keeper, root->valuestring) != 0) cJSON_AddItemToArray(ex, cJSON_CreateString(key));
+                    if (!keeper || !strcmp(keeper, root->valuestring)) continue;
+                    /* "also": {"psx": [roots]} keeps the system on those as extras. */
+                    int kept = 0;
+                    cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(also, key))
+                        if (cJSON_IsString(x) && !strcmp(x->valuestring, root->valuestring)) kept = 1;
+                    cJSON_AddItemToArray(kept ? extra : ex, cJSON_CreateString(key));
                 }
                 if (cJSON_GetArraySize(ex)) cJSON_AddItemToObject(p, "exclude", ex);
                 else cJSON_Delete(ex);
+                if (cJSON_GetArraySize(extra)) cJSON_AddItemToObject(p, "extra", extra);
+                else cJSON_Delete(extra);
                 cJSON_AddItemToArray(profiles, p);
             }
+        }
+        /* "custom": systems no emulator was found for, with folders the user
+         * picked: [{"slugs": ["snes", "sfam"], "name", "rom_dir", "save_dir",
+         * "state_dir"}]. Saves there are matched by the game's file name. */
+        cJSON_ArrayForEach(c, cJSON_GetObjectItemCaseSensitive(j, "custom")) {
+            const cJSON *slugs = cJSON_GetObjectItemCaseSensitive(c, "slugs");
+            const char *first = cJSON_IsString(cJSON_GetArrayItem(slugs, 0)) ? cJSON_GetArrayItem(slugs, 0)->valuestring : "";
+            const char *rom_dir = jget_str(c, "rom_dir", "");
+            if (!first[0] || rom_dir[0] != '/') continue;
+            char id[96];
+            snprintf(id, sizeof id, "custom-%s", first);
+            cJSON *p = cJSON_CreateObject(), *plat = cJSON_CreateObject(), *plats = cJSON_CreateArray();
+            cJSON_AddStringToObject(p, "id", id);
+            cJSON_AddStringToObject(p, "name", jget_str(c, "name", first));
+            cJSON_AddBoolToObject(p, "enabled", 1);
+            cJSON_AddStringToObject(p, "root", rom_dir);
+            cJSON_AddStringToObject(p, "rom_dir", rom_dir);
+            const char *save_dir = jget_str(c, "save_dir", ""), *state_dir = jget_str(c, "state_dir", "");
+            cJSON_AddStringToObject(p, "save_dir", save_dir[0] == '/' ? save_dir : rom_dir);
+            cJSON_AddStringToObject(p, "state_dir", state_dir[0] == '/' ? state_dir : (save_dir[0] == '/' ? save_dir : rom_dir));
+            cJSON_AddStringToObject(p, "save_exts", ".srm,.sav,.mcd,.mcr,.eep,.fla,.sra,.dsv");
+            cJSON_AddStringToObject(p, "state_exts", ".state*");
+            cJSON_AddItemToObject(plat, "romm", cJSON_Duplicate(slugs, 1));
+            cJSON_AddStringToObject(plat, "dir", first);
+            cJSON_AddItemToArray(plats, plat);
+            cJSON_AddItemToObject(p, "platforms", plats);
+            cJSON_AddItemToArray(profiles, p);
         }
         cJSON_Delete(found);
         cJSON_Delete(j);
@@ -798,6 +926,26 @@ static void route(request *r) {
         else send_error(fd, 502, err);
         return;
     }
+    if (is_get && !strncmp(r->path, "/api/roms/", 10) && strstr(r->path, "/details")) {
+        int id = atoi(r->path + 10);
+        cJSON *j = id > 0 ? library_details(id, err, sizeof err) : NULL;
+        if (j) send_json(fd, 200, j);
+        else send_error(fd, id > 0 ? 502 : 400, id > 0 ? err : "no game");
+        return;
+    }
+    if (is_get && !strcmp(r->path, "/api/fs")) {
+        char path[PATH_MAX_LEN];
+        qparam(r, "path", path, sizeof path);
+        cJSON *j = fs_folders(path, err, sizeof err);
+        if (j) send_json(fd, 200, j);
+        else send_error(fd, 400, err);
+        return;
+    }
+    if (is_get && !strcmp(r->path, "/api/installed")) {
+        int limit = qint(r, "limit", 20);
+        send_json(fd, 200, library_installed(limit < 1 || limit > 200 ? 20 : limit));
+        return;
+    }
     if (is_post && !strcmp(r->path, "/api/download")) {
         cJSON *j = body_json(r);
         int rc;
@@ -880,6 +1028,29 @@ static void route(request *r) {
         config_unlock();
         if (plat_install_tile(port) == 0) send_ok(fd);
         else send_error(fd, 500, plat_info()->has_tile ? "tile install failed" : "home screen tiles aren't supported on this console");
+        return;
+    }
+    if (is_get && !strcmp(r->path, "/video")) {
+        /* RommPS's Codec call: a YouTube video in the console's browser, its
+         * player filling the page. YouTube's embeds refuse to play as a page
+         * of their own (error 153, no referrer), so this page hosts one. */
+        char v[32];
+        qparam(r, "v", v, sizeof v);
+        if (!v[0] || strspn(v, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_") != strlen(v)) {
+            send_error(fd, 400, "no video");
+            return;
+        }
+        char html[1024];
+        int n = snprintf(html, sizeof html,
+                         "<!doctype html><html><head><meta charset=\"utf-8\"><title>RommPS</title>"
+                         "<meta name=\"referrer\" content=\"strict-origin-when-cross-origin\">"
+                         "<style>html,body{margin:0;height:100%%;background:#000;overflow:hidden}"
+                         "iframe{position:fixed;inset:0;width:100%%;height:100%%;border:0}</style></head><body>"
+                         "<iframe src=\"https://www.youtube.com/embed/%s?autoplay=1&rel=0&playsinline=1&fs=1\" "
+                         "allow=\"autoplay; fullscreen; encrypted-media; picture-in-picture\" allowfullscreen "
+                         "referrerpolicy=\"strict-origin-when-cross-origin\"></iframe></body></html>",
+                         v);
+        send_response(fd, 200, "text/html; charset=utf-8", html, (size_t)n, NULL);
         return;
     }
     if (is_get && !strcmp(r->path, "/cover")) {

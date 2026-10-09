@@ -244,12 +244,15 @@ const char *profiles_system_key(const cJSON *entry) {
     return cJSON_IsString(first) ? first->valuestring : "";
 }
 
-int profiles_excludes(const cJSON *profile, const char *key) {
+/* Whether a profile's list ("exclude", "extra") names a system. */
+static int profile_lists(const cJSON *profile, const char *list, const char *key) {
     const cJSON *x;
-    cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(profile, "exclude"))
+    cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(profile, list))
         if (cJSON_IsString(x) && str_ieq(x->valuestring, key)) return 1;
     return 0;
 }
+
+int profiles_excludes(const cJSON *profile, const char *key) { return profile_lists(profile, "exclude", key); }
 
 int profiles_expand(const cJSON *profiles, profile_map **out) {
     int cap = 0, cnt = 0;
@@ -333,6 +336,12 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
             str_copy(m->save_exts, sizeof m->save_exts, jstr(p, e, "save_exts", ".srm,.sav"));
             str_copy(m->state_exts, sizeof m->state_exts, jstr(p, e, "state_exts", ".state*"));
             str_copy(m->save_name, sizeof m->save_name, jstr(p, e, "save_name", "{rom_stem}{ext}"));
+            str_copy(m->save_stems, sizeof m->save_stems, jstr(p, e, "save_stems", ""));
+            str_copy(m->state_stems, sizeof m->state_stems, jstr(p, e, "state_stems", ""));
+            str_copy(m->state_name, sizeof m->state_name, jstr(p, e, "state_name", "{rom_stem}{ext}"));
+            str_copy(m->save_format, sizeof m->save_format, jstr(p, e, "save_format", ""));
+            str_template(m->memcards, sizeof m->memcards, jstr(p, e, "memcards", ""), vars);
+            m->extra = profile_lists(p, "extra", profiles_system_key(e));
             m->sync_saves = m->base_sync_saves = jbool(p, e, "sync_saves", 1);
             str_copy(m->root, sizeof m->root, root);
             str_copy(m->ra_cfg_dir, sizeof m->ra_cfg_dir, ra_cfg_dir);
@@ -347,6 +356,16 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
             check_requirement(m, NULL, NULL, &m->sync_saves, m->sync_note, sizeof m->sync_note);
             cnt++;
         }
+    }
+    /* An extra shares the main emulator's save only when both keep it in the
+     * same known format; otherwise it syncs under a slot of its own. */
+    for (int i = 0; i < cnt; i++) {
+        if (!maps[i].extra) continue;
+        maps[i].own_slot = 1;
+        for (int k = 0; k < cnt; k++)
+            if (!maps[k].extra && !strcmp(maps[k].platform_dir, maps[i].platform_dir) && maps[i].save_format[0] &&
+                !strcmp(maps[k].save_format, maps[i].save_format))
+                maps[i].own_slot = 0;
     }
     *out = maps;
     return cnt;
@@ -364,7 +383,9 @@ int profile_map_handles(const profile_map *m, const char *slug, const char *fs_s
 
 const profile_map *profile_find_for_platform(const profile_map *maps, int n, const char *slug,
                                              const char *fs_slug) {
-    for (int i = 0; i < n; i++)
-        if (profile_map_handles(&maps[i], slug, fs_slug)) return &maps[i];
+    /* The main emulator first; an extra only when the system has no main one. */
+    for (int pass = 0; pass < 2; pass++)
+        for (int i = 0; i < n; i++)
+            if (maps[i].extra == pass && profile_map_handles(&maps[i], slug, fs_slug)) return &maps[i];
     return NULL;
 }

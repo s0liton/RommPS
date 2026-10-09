@@ -104,6 +104,18 @@ static cJSON *slug_array(const char *csv) {
     return a;
 }
 
+/* The save format a RetroArch core keeps, where another emulator keeps the
+ * same: a raw 128 KB PS1 memory card, or N64's combined .srm (EEPROM, four
+ * controller paks, SRAM and flash). */
+static const char *save_format_of(const char *system, const char *corename) {
+    if (!strcmp(system, "psx") && (strstr(corename, "Beetle PSX") || str_ieq(corename, "PCSX-ReARMed") ||
+                                   str_ieq(corename, "SwanStation")))
+        return "psx-card";
+    if (!strcmp(system, "n64") && (strstr(corename, "ParaLLEl") || strstr(corename, "Mupen64Plus")))
+        return "n64-srm";
+    return NULL;
+}
+
 /* One platform entry per system; the first core found for a system wins. */
 static void add_core_platforms(cJSON *plats, cJSON *cores, const char *core_id, const char *info) {
     char corename[64] = "", dbs[1024] = "";
@@ -131,6 +143,9 @@ static void add_core_platforms(cJSON *plats, cJSON *cores, const char *core_id, 
         cJSON_AddStringToObject(e, "dir", first);
         cJSON_AddStringToObject(e, "emulator", core_id);
         cJSON_AddStringToObject(e, "core_name", corename);
+        /* Saves other emulators keep in the same format share one save on RomM. */
+        const char *format = save_format_of(first, corename);
+        if (format) cJSON_AddStringToObject(e, "save_format", format);
         if (str_ieq(corename, "LRPS2") || str_ieq(corename, "PCSX2")) {
             /* Per-game cards (<game>.ps2) sync like any other save. */
             cJSON_AddStringToObject(e, "save_exts", ".ps2");
@@ -322,6 +337,8 @@ static void add_standalone(cJSON *out) {
         cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "detect"))
             if (!present && cJSON_IsString(x) && dir_exists(x->valuestring)) present = 1;
         if (!present) continue;
+        /* Found but not supported yet: shown in setup, never a profile. */
+        const int ready = !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(e, "ready"));
         cJSON *profile = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(e, "profile"), 1);
         if (!profile) continue;
         jset_str(profile, "id", jget_str(e, "id", "standalone"));
@@ -336,7 +353,10 @@ static void add_standalone(cJSON *out) {
         cJSON_AddStringToObject(c, "title_id", found);
         cJSON_AddItemToObject(c, "cores", cJSON_CreateArray());
         cJSON_AddItemToObject(c, "profile", profile);
-        LOGI("detected %s (%s)", jget_str(e, "name", ""), found[0] ? found : jget_str(c, "root", ""));
+        cJSON_AddBoolToObject(c, "ready", ready);
+        cJSON_AddStringToObject(c, "note", jget_str(e, "note", ""));
+        LOGI("detected %s (%s)%s", jget_str(e, "name", ""), found[0] ? found : jget_str(c, "root", ""),
+             ready ? "" : ", not supported yet");
         cJSON_AddItemToArray(out, c);
     }
     cJSON_Delete(catalog);

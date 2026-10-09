@@ -2,7 +2,7 @@
 
 ![Project Screenshot](assets/library.png)
 
-A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN + kstuff) and PS4 consoles (GoldHEN). Through my insatiable need to mod everything electronic I encounter, I had my 12.70 PS5 jailbroken the minute that P2JB was out. I maintain a RomM server to centralize all my _legal_ ROMs, saves, and savestates which all my devices sync with, and the PS5 needs similar treatment.
+A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN or onionHEN, with kstuff) and PS4 consoles (GoldHEN). Through my insatiable need to mod everything electronic I encounter, I had my 12.70 PS5 jailbroken the minute that P2JB was out. I maintain a RomM server to centralize all my _legal_ ROMs, saves, and savestates which all my devices sync with, and the PS5 needs similar treatment.
 
 - **Background save sync**
   - Monitors save file changes in the background, and uploads them as soon as they've changed. Periodic syncs also ensure that your PS5 always has the latest saves and savestates.
@@ -21,7 +21,7 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
 
 ## Requirements
 
-- A PS5 running etaHEN, or a PS4 running GoldHEN
+- A PS5 running etaHEN or onionHEN, or a PS4 running GoldHEN
 - RomM 5.0 or newer. (5.3.0 if you want to do shared memory card syncing instead of per-game)
 - RetroArch installed as a homebrew app (on the PS4, the RetroArch package that keeps its files in `/data/retroarch`)
 
@@ -34,9 +34,11 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
    ```
 3. A RomM Sync tile appears on the home screen after about 30 seconds. Open it, or go to `http://<ps5-ip>:8780` from another device.
 
-To start RomM Sync with the console, copy the payload to etaHEN's autostart folder or use the autoloader. You can do this from the last setup step, or with `make install PS5_HOST=<ps5-ip>` if you build it yourself.
+To start RomM Sync with the console, let your HEN start it: the last setup step does this for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, in `/data/etaHEN/payloads` or `/data/OnionHEN/payloads` (onionHEN's Toolbox has a toggle for it under Payloads). RomM Sync works out which HEN is running. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it there over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
 
 ### PS4
+
+> **Experimental.** The PS4 build has only been tested with RetroArch so far. Standalone emulators may work, but haven't been confirmed. On my console with GoldHEN 2.4b18.9, closing some homebrew emulators from the PS button menu crashes the console whether or not RomM Sync is running. Quitting them from their own menu avoids it.
 
 Needs GoldHEN 2.4b18.5 or newer, whose payload menu runs ELF payloads.
 
@@ -53,7 +55,7 @@ HTTP and HTTPS servers both work, on both consoles. Common certificate authoriti
 
 ## Updates
 
-Settings shows when a new version is out (it checks GitHub once a day, which you can turn off) and can install it for you. Nothing installs on its own. The update waits until no sync, download or game is running, replaces the payload in etaHEN's autostart folder (keeping the old one as `romm-sync.elf.bak`), and restarts RomM Sync. On the PS4 it replaces the payload in `/data/payloads`, and the new version starts on the next jailbreak.
+Settings shows when a new version is out (it checks GitHub once a day, which you can turn off) and can install it for you. Nothing installs on its own. The update waits until no sync, download or game is running, replaces the payload in the HEN's autostart folder (keeping the old one as `romm-sync.elf.bak`), and restarts RomM Sync. On the PS4 it replaces the payload in `/data/payloads`, and the new version starts on the next jailbreak.
 
 Each release is signed, with a manifest per console. RomM Sync only installs an update whose signature matches a key built into it, whose manifest names its own console's payload, and whose file matches the signed checksum, so a modified download (or the other console's build) is rejected.
 

@@ -219,3 +219,157 @@ int gameid_dolphin(const char *path, char *out, size_t n) {
     out[6] = 0;
     return 0;
 }
+
+/* ---- PlayStation discs ---------------------------------------------------
+ * A PS1 game's serial ("SCUS-94194") from SYSTEM.CNF's BOOT line, read from a
+ * 2048-byte ISO, a raw 2352-byte BIN (directly or through its .cue) or a CHD
+ * (libchdr). Emulators that keep one memory card per game name it by serial. */
+
+#include "libchdr/chd.h"
+
+typedef struct {
+    FILE *f;
+    int raw;               /* 2352-byte sectors */
+    chd_file *chd;
+    uint32_t hunk_bytes, frame_bytes, frames_per_hunk;
+    unsigned char *hunk;
+    long cached_hunk;
+} psx_disc;
+
+static int psx_open_file(psx_disc *d, const char *path) {
+    d->f = fopen(path, "rb");
+    if (!d->f) return -1;
+    static const unsigned char sync[12] = {0, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0};
+    unsigned char h[12];
+    d->raw = fread(h, 1, sizeof h, d->f) == sizeof h && !memcmp(h, sync, sizeof sync);
+    return 0;
+}
+
+/* The first data file a .cue names, beside it. */
+static int cue_first_file(const char *cue, char *out, size_t n) {
+    char *txt = read_file(cue, NULL);
+    if (!txt) return -1;
+    int rc = -1;
+    char *p = txt;
+    while ((p = strstr(p, "FILE"))) {
+        char *q = strchr(p, '"'), *e = q ? strchr(q + 1, '"') : NULL;
+        if (!q || !e) break;
+        *e = 0;
+        char dir[PATH_MAX_LEN];
+        str_copy(dir, sizeof dir, cue);
+        char *slash = strrchr(dir, '/');
+        if (slash) *slash = 0;
+        else str_copy(dir, sizeof dir, ".");
+        path_join(out, n, dir, q + 1);
+        rc = 0;
+        break;
+    }
+    free(txt);
+    return rc;
+}
+
+static int psx_open(psx_disc *d, const char *path) {
+    memset(d, 0, sizeof *d);
+    d->cached_hunk = -1;
+    if (str_ends_with_ci(path, ".chd")) {
+        if (chd_open(path, CHD_OPEN_READ, NULL, &d->chd) != CHDERR_NONE) return -1;
+        const chd_header *h = chd_get_header(d->chd);
+        d->hunk_bytes = h->hunkbytes;
+        d->frame_bytes = h->unitbytes ? h->unitbytes : 2448;
+        d->frames_per_hunk = d->hunk_bytes / d->frame_bytes;
+        d->hunk = malloc(d->hunk_bytes);
+        return d->hunk && d->frames_per_hunk ? 0 : -1;
+    }
+    if (str_ends_with_ci(path, ".cue")) {
+        char bin[PATH_MAX_LEN];
+        if (cue_first_file(path, bin, sizeof bin) != 0) return -1;
+        return psx_open_file(d, bin);
+    }
+    return psx_open_file(d, path);
+}
+
+static void psx_close(psx_disc *d) {
+    if (d->f) fclose(d->f);
+    if (d->chd) chd_close(d->chd);
+    free(d->hunk);
+}
+
+/* One 2048-byte user-data sector. */
+static int psx_sector(psx_disc *d, uint32_t lba, unsigned char *out) {
+    unsigned char frame[2352];
+    if (d->chd) {
+        long hunk = (long)(lba / d->frames_per_hunk);
+        if (hunk != d->cached_hunk) {
+            if (chd_read(d->chd, (uint32_t)hunk, d->hunk) != CHDERR_NONE) return -1;
+            d->cached_hunk = hunk;
+        }
+        memcpy(frame, d->hunk + (size_t)(lba % d->frames_per_hunk) * d->frame_bytes, sizeof frame);
+    } else if (d->raw) {
+        if (fseek(d->f, (long)lba * 2352, SEEK_SET) != 0 || fread(frame, 1, sizeof frame, d->f) != sizeof frame) return -1;
+    } else {
+        return fseek(d->f, (long)lba * SECTOR, SEEK_SET) == 0 && fread(out, 1, SECTOR, d->f) == SECTOR ? 0 : -1;
+    }
+    /* Mode 2 (PS1 discs) has an 8-byte subheader after the 16-byte header. */
+    memcpy(out, frame + (frame[15] == 2 ? 24 : 16), SECTOR);
+    return 0;
+}
+
+/* "BOOT = cdrom:\SCUS_941.94;1" -> "SCUS-94194". */
+static int serial_from_cnf(const char *cnf, char *out, size_t n) {
+    const char *b = strstr(cnf, "BOOT");
+    if (!b) return -1;
+    const char *eol = b + strcspn(b, "\r\n");
+    const char *name = NULL;
+    for (const char *p = b; p < eol; p++)
+        if (*p == '\\' || *p == ':') name = p + 1;
+    if (!name) return -1;
+    char letters[8] = "", digits[16] = "";
+    size_t nl = 0, nd = 0;
+    for (const char *p = name; p < eol && *p != ';'; p++) {
+        if (isalpha((unsigned char)*p) && nd == 0 && nl < 6) letters[nl++] = (char)toupper((unsigned char)*p);
+        else if (isdigit((unsigned char)*p) && nd < 10) digits[nd++] = *p;
+    }
+    letters[nl] = 0;
+    digits[nd] = 0;
+    if (nl < 3 || nd < 4) return -1;
+    snprintf(out, n, "%s-%s", letters, digits);
+    return 0;
+}
+
+int gameid_psx(const char *path, char *out, size_t n) {
+    psx_disc d;
+    if (psx_open(&d, path) != 0) {
+        psx_close(&d);
+        return -1;
+    }
+    int rc = -1;
+    unsigned char pvd[SECTOR], *dir = NULL;
+    if (psx_sector(&d, 16, pvd) == 0 && pvd[0] == 1 && !memcmp(pvd + 1, "CD001", 5)) {
+        uint32_t lba = le32(pvd + 156 + 2), size = le32(pvd + 156 + 10);
+        if (size > 64 * SECTOR) size = 64 * SECTOR;
+        dir = malloc(size + SECTOR);
+        uint32_t got = 0;
+        while (dir && got < size && psx_sector(&d, lba + got / SECTOR, dir + got) == 0) got += SECTOR;
+        for (uint32_t p = 0; dir && p + 33 < got;) {
+            unsigned rl = dir[p];
+            if (!rl) {
+                p = (p / SECTOR + 1) * SECTOR;
+                continue;
+            }
+            unsigned fl = dir[p + 32];
+            if (fl >= 10 && !strncasecmp((const char *)dir + p + 33, "SYSTEM.CNF", 10)) {
+                unsigned char cnf[SECTOR + 1];
+                if (psx_sector(&d, le32(dir + p + 2), cnf) == 0) {
+                    uint32_t len = le32(dir + p + 10);
+                    cnf[len < SECTOR ? len : SECTOR] = 0;
+                    rc = serial_from_cnf((const char *)cnf, out, n);
+                }
+                break;
+            }
+            p += rl;
+        }
+    }
+    free(dir);
+    psx_close(&d);
+    return rc;
+}

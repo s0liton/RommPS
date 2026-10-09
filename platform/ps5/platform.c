@@ -5,7 +5,9 @@
  * (ftpsrv install-ps5.c) and the foreground app (websrv). Links against
  * SceSystemService and SceAppInstUtil. */
 #include "platform.h"
+#include "emulators_json.h" /* generated from platform/ps5/emulators.json */
 
+#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -53,7 +55,17 @@ static const char *const HOMEBREW_DIRS[] = {
     "/mnt/usb3/homebrew", "/mnt/ext0/homebrew", "/mnt/ext1/homebrew", NULL};
 static const char *const EMULATOR_DIRS[] = {NULL};
 
-static const plat_info_t INFO = {
+/* Two HENs are in use, with the same autostart convention in their own
+ * folders: each starts payloads/<name>.elf when <name>.elf.auto_start sits
+ * next to it. onionHEN (github.com/aydencharles/onionHEN) keeps its runtime
+ * state in /system_tmp/onionhen, which is gone after a reboot, so that tells
+ * the one running now; they refuse to run together. Both leave the ELF loader
+ * on 9021 to us. An update replaces RomM Sync in the other HEN's folder too,
+ * so switching HENs never brings back an old copy. */
+static const char *const ETAHEN_ALSO[] = {"/data/OnionHEN/payloads", NULL};
+static const char *const ONIONHEN_ALSO[] = {"/data/etaHEN/payloads", NULL};
+
+static plat_info_t INFO = {
     .name = "ps5",
     .console = "PlayStation 5",
     .client = "romm-sync-ps5",
@@ -61,19 +73,39 @@ static const plat_info_t INFO = {
     .payload = "romm-sync.elf",
     .manifest = "manifest.json",
     .manifest_sig = "manifest.sig",
-    /* etaHEN starts each payloads/<name>.elf that has a <name>.elf.auto_start next to it. */
     .autostart_dir = "/data/etaHEN/payloads",
     .autostart_flag = "romm-sync.elf.auto_start",
+    .autostart_also = ETAHEN_ALSO,
     .loader_dir = "/data/etaHEN",
     .homebrew_dirs = HOMEBREW_DIRS,
     .emulator_dirs = EMULATOR_DIRS,
+    .emulator_catalog = EMULATORS_JSON,
     .retroarch_root = "/data/homebrew/PPSA99169",
     .mednafen_root = "/data/homebrew/Mednafen",
     .has_tile = 1,
     .can_relaunch = 1,
 };
 
-const plat_info_t *plat_info(void) { return &INFO; }
+static int is_dir(const char *path) {
+    struct stat st;
+    return !stat(path, &st) && S_ISDIR(st.st_mode);
+}
+
+/* onionHEN if it's running, else etaHEN if it's installed, else whichever is. */
+static void detect_hen(void) {
+    int onion = is_dir("/system_tmp/onionhen") || (!is_dir("/data/etaHEN") && is_dir("/data/OnionHEN"));
+    if (!onion) return;
+    INFO.loader = "onionHEN";
+    INFO.autostart_dir = "/data/OnionHEN/payloads";
+    INFO.autostart_also = ONIONHEN_ALSO;
+    INFO.loader_dir = "/data/OnionHEN";
+}
+
+const plat_info_t *plat_info(void) {
+    static pthread_once_t once = PTHREAD_ONCE_INIT;
+    pthread_once(&once, detect_hen);
+    return &INFO;
+}
 
 
 int plat_init(void) {

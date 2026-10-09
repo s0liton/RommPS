@@ -31,6 +31,10 @@ typedef struct {
     char stems[8][256];
     int nstems;
     char md5[33];
+    /* For profiles that name files by them (save_stems, state_stems): */
+    char serial[24];      /* a PS1 disc's, "SCUS-94194" */
+    char fnv64[17];       /* FNV-1a 64 of the game file */
+    char safe_stem[256];  /* stems[0], non-alphanumerics as "_" */
     rom_rules rules;
 } local_rom;
 
@@ -94,10 +98,14 @@ static const char *slot_for(const scan_ctx *c, const profile_map *m, const char 
     char *comma = strchr(first, ',');
     if (comma) *comma = 0;
     const char *ext = path_ext(file);
+    char base[64];
+    /* An extra emulator whose saves can't be shared keeps them apart. */
+    if (m->own_slot) snprintf(base, sizeof base, "%s-%s", c->slot, m->profile_id);
+    else str_copy(base, sizeof base, c->slot);
     if (!first[0] || str_ieq(ext, first)) {
-        str_copy(buf, n, c->slot);
+        str_copy(buf, n, base);
     } else {
-        snprintf(buf, n, "%s-%s", c->slot, ext[0] == '.' ? ext + 1 : ext);
+        snprintf(buf, n, "%s-%s", base, ext[0] == '.' ? ext + 1 : ext);
     }
     return buf;
 }
@@ -116,6 +124,87 @@ static void add_stem(local_rom *r, const char *stem) {
     str_copy(r->stems[r->nstems++], sizeof r->stems[0], stem);
 }
 
+
+/* The disc or file of a game that a serial or hash is read from: the game
+ * itself, or for a folder its first .cue, .chd, .iso or .bin. */
+static int game_file(const local_rom *r, char *out, size_t n) {
+    if (!dir_exists(r->path)) {
+        str_copy(out, n, r->path);
+        return 0;
+    }
+    static const char *const order[] = {".cue", ".chd", ".iso", ".bin"};
+    for (int k = 0; k < 4; k++) {
+        DIR *d = opendir(r->path);
+        struct dirent *de;
+        while (d && (de = readdir(d))) {
+            if (de->d_name[0] != '.' && str_ends_with_ci(de->d_name, order[k])) {
+                path_join(out, n, r->path, de->d_name);
+                closedir(d);
+                return 0;
+            }
+        }
+        if (d) closedir(d);
+    }
+    return -1;
+}
+
+static int map_uses(const profile_map *m, const char *var) {
+    return strstr(m->save_stems, var) || strstr(m->state_stems, var) || strstr(m->save_name, var) ||
+           strstr(m->state_name, var);
+}
+
+/* The template variables a game's file names can use. */
+static void name_vars(const local_rom *r, const char *ext, const char *vars[13]) {
+    const char *v[] = {"rom_stem", r->stems[0], "ext", ext ? ext : "", "rom_md5", r->md5, "serial", r->serial,
+                       "rom_fnv64", r->fnv64, "rom_stem_safe", r->safe_stem, NULL};
+    memcpy(vars, v, sizeof v);
+}
+
+/* Works out what the profile's extra names need (cached per file in the
+ * state's roms entry, keyed by size and mtime), then adds those names. */
+static void add_derived_stems(local_rom *r, cJSON *e) {
+    const profile_map *m = r->map;
+    size_t k = 0;
+    for (const char *p = r->stems[0]; *p && k + 1 < sizeof r->safe_stem; p++)
+        r->safe_stem[k++] = isalnum((unsigned char)*p) ? *p : '_';
+    r->safe_stem[k] = 0;
+    char file[PATH_MAX_LEN];
+    int need_serial = map_uses(m, "{serial}"), need_fnv = map_uses(m, "{rom_fnv64}");
+    if ((need_serial || need_fnv) && game_file(r, file, sizeof file) == 0) {
+        double size = (double)file_size(file), mtime = (double)file_mtime(file);
+        int fresh = e && jget_num(e, "id_size", -1) == size && jget_num(e, "id_mtime", -1) == mtime;
+        if (need_serial) {
+            if (fresh && cJSON_GetObjectItemCaseSensitive(e, "serial"))
+                str_copy(r->serial, sizeof r->serial, jget_str(e, "serial", ""));
+            else if (gameid_psx(file, r->serial, sizeof r->serial) != 0)
+                r->serial[0] = 0;
+        }
+        if (need_fnv) {
+            if (fresh && cJSON_GetObjectItemCaseSensitive(e, "fnv64"))
+                str_copy(r->fnv64, sizeof r->fnv64, jget_str(e, "fnv64", ""));
+            else if (fnv1a64_file_hex(file, r->fnv64) != 0)
+                r->fnv64[0] = 0;
+        }
+        if (e) {
+            jset_num(e, "id_size", size);
+            jset_num(e, "id_mtime", mtime);
+            if (need_serial) jset_str(e, "serial", r->serial);
+            if (need_fnv) jset_str(e, "fnv64", r->fnv64);
+        }
+    }
+    const char *vars[13];
+    name_vars(r, "", vars);
+    for (int pass = 0; pass < 2; pass++) {
+        char list[256], *save = NULL;
+        str_copy(list, sizeof list, pass ? m->state_stems : m->save_stems);
+        for (char *t = strtok_r(list, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+            char stem[256];
+            str_template(stem, sizeof stem, t, vars);
+            /* A template whose value is unknown (no serial) names nothing. */
+            if (stem[0] && !strchr(stem, '{') && strcmp(stem, "_1") != 0 && stem[0] != '_') add_stem(r, stem);
+        }
+    }
+}
 
 static int platform_ids_for_map(const scan_ctx *c, const profile_map *m, int *ids, int max) {
     int n = 0;
@@ -171,10 +260,14 @@ static cJSON *resolve_rom_on_server(const scan_ctx *c, const profile_map *m, con
     return match.by_stem;
 }
 
-static void record_local_rom(const char *path, int rom_id, const profile_map *m, const char *name,
-                             const char *fs_name, const char *md5, const local_rom *r) {
+static void record_local_rom(const char *path, int rom_id, const profile_map *m, const cJSON *srv,
+                             const char *md5, const local_rom *r) {
+    const char *name = jget_str(srv, "name", ""), *fs_name = jget_str(srv, "fs_name", "");
     cJSON *e = state_entry_ensure("roms", path);
     jset_num(e, "rom_id", rom_id);
+    /* For the app's "on this console" row: the cover and the platform. */
+    jset_num(e, "platform_id", jget_num(srv, "platform_id", 0));
+    jset_str(e, "cover", jget_str(srv, "path_cover_small", ""));
     jset_str(e, "profile", m->profile_id);
     jset_str(e, "platform_dir", m->platform_dir);
     jset_str(e, "name", name);
@@ -247,8 +340,7 @@ static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
                 rom_id = (int)jget_num(srv, "id", 0);
                 add_stem(&r, jget_str(srv, "fs_name_no_ext", ""));
                 str_copy(r.md5, sizeof r.md5, jget_str(srv, "md5_hash", ""));
-                record_local_rom(path, rom_id, m, jget_str(srv, "name", ""),
-                                 jget_str(srv, "fs_name", ""), r.md5, &r);
+                record_local_rom(path, rom_id, m, srv, r.md5, &r);
                 LOGI("matched %s -> RomM rom %d", path, rom_id);
             } else {
                 cJSON *ne = state_entry_ensure("roms", path);
@@ -266,6 +358,12 @@ static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
             continue;
         }
         r.rom_id = rom_id;
+        if (m->save_stems[0] || m->state_stems[0] || map_uses(m, "{rom_stem_safe}")) {
+            state_lock();
+            add_derived_stems(&r, state_entry("roms", path));
+            state_save();
+            state_unlock();
+        }
         profile_rules_for(m, path, &r.rules);
         if (c->nroms == c->caproms) {
             c->caproms = c->caproms ? c->caproms * 2 : 64;
@@ -867,9 +965,13 @@ static void download_target(const local_rom *r, const char *server_name, const c
         if (comma) *comma = 0;
         str_copy(ext, sizeof ext, first[0] ? first : path_ext(server_name));
     }
-    const char *vars[] = {"rom_stem", r->stems[0], "ext", ext, "rom_md5", r->md5, NULL};
+    const char *vars[13];
+    name_vars(r, ext, vars);
     char name[512], dir[PATH_MAX_LEN];
     str_template(name, sizeof name, r->map->save_name, vars);
+    /* A name from a value this game lacks (no serial read) falls back to its own. */
+    if (!name[0] || name[0] == '_' || name[0] == '.' || strchr(name, '{'))
+        str_template(name, sizeof name, "{rom_stem}{ext}", vars);
     if (!expected_dir(r, 0, dir, sizeof dir)) str_copy(dir, sizeof dir, r->map->save_dir);
     path_join(out, n, dir, name);
 }
@@ -1016,7 +1118,9 @@ static void state_local_name(const local_rom *r, const char *server_name, char *
             return;
         }
     }
-    snprintf(out, n, "%s%s", r->stems[0], path_ext(server_name));
+    const char *vars[13];
+    name_vars(r, path_ext(server_name), vars);
+    str_template(out, n, r->map->state_name, vars);
 }
 
 /* Downloads a state into place (backing up what was there) and records it. */
@@ -1094,8 +1198,101 @@ typedef struct {
     char error[256];
 } sync_result;
 
+/* A game played by several emulators that keep its save in the same format
+ * (save_format) has one save: the newest of their copies goes to the others,
+ * the copies replaced backed up first. Runs before the saves are scanned (so
+ * one save goes up) and after the downloads (so a new one reaches them all). */
+static int share_saves(scan_ctx *c) {
+    int copied = 0;
+    for (int i = 0; i < c->nroms; i++) {
+        const local_rom *a = &c->roms[i];
+        if (!a->map->save_format[0] || a->map->own_slot || !a->rules.sync_saves) continue;
+        /* The first member of each group does the work. */
+        int first = 1;
+        for (int k = 0; k < i && first; k++)
+            if (c->roms[k].rom_id == a->rom_id && !strcmp(c->roms[k].map->save_format, a->map->save_format) &&
+                !c->roms[k].map->own_slot && c->roms[k].rules.sync_saves)
+                first = 0;
+        if (!first) continue;
+        char paths[8][PATH_MAX_LEN];
+        int n = 0, newest = -1;
+        time_t newest_t = 0;
+        for (int k = i; k < c->nroms && n < 8; k++) {
+            const local_rom *r = &c->roms[k];
+            if (r->rom_id != a->rom_id || strcmp(r->map->save_format, a->map->save_format) || r->map->own_slot ||
+                !r->rules.sync_saves)
+                continue;
+            download_target(r, "", c->slot, c, paths[n], sizeof paths[n]);
+            time_t t = file_mtime(paths[n]);
+            if (t > newest_t) newest_t = t, newest = n;
+            n++;
+        }
+        if (n < 2 || newest < 0) continue;
+        char want[33];
+        if (md5_file_hex(paths[newest], want) != 0) continue;
+        for (int k = 0; k < n; k++) {
+            char have[33] = "";
+            if (k == newest || (md5_file_hex(paths[k], have) == 0 && !strcmp(have, want))) continue;
+            if (file_exists(paths[k])) backup_file(c, paths[k], a->rom_id);
+            mkdir_parent(paths[k]);
+            if (copy_file(paths[newest], paths[k]) == 0) {
+                set_file_mtime(paths[k], newest_t);
+                LOGI("shared save: %s -> %s", paths[newest], paths[k]);
+                copied++;
+            }
+        }
+    }
+    return copied;
+}
+
+/* Game ids, save ids and what was synced belong to one RomM server (and one
+ * device on it). Paired with another, they mean nothing there: they're
+ * forgotten, and the games are matched again by name. */
+static void server_id(char *out, size_t n) {
+    config_lock();
+    snprintf(out, n, "%s|%s", g_cfg.server_url, g_cfg.device_id);
+    config_unlock();
+}
+
+static void forget_server_records(void) {
+    static const char *const sections[] = {"roms", "saves", "states", "conflicts", "memcards"};
+    for (size_t i = 0; i < sizeof sections / sizeof sections[0]; i++) {
+        cJSON *sec = state_section(sections[i]);
+        while (sec->child) cJSON_Delete(cJSON_DetachItemViaPointer(sec, sec->child));
+    }
+}
+
+void sync_new_pairing(void) {
+    char id[700];
+    server_id(id, sizeof id);
+    state_lock();
+    forget_server_records();
+    jset_str(state_section("server"), "id", id);
+    state_save();
+    state_unlock();
+    LOGI("new pairing: the games are matched again");
+}
+
+/* The same check at every sync, for a config changed some other way. A state
+ * from before servers were recorded belongs to the server paired now. */
+static void forget_other_server(void) {
+    char id[700];
+    server_id(id, sizeof id);
+    state_lock();
+    cJSON *meta = state_section("server");
+    const char *was = jget_str(meta, "id", NULL);
+    if (was && strcmp(was, id) != 0) {
+        forget_server_records();
+        LOGI("paired with another RomM server: matching the games again");
+    }
+    jset_str(meta, "id", id);
+    state_save();
+    state_unlock();
+}
+
 static void run_sync(const char *reason, sync_result *res) {
     memset(res, 0, sizeof *res);
+    forget_other_server();
     scan_ctx c;
     set_phase("scanning local files");
     if (scan_prepare(&c) != 0) {
@@ -1103,6 +1300,7 @@ static void run_sync(const char *reason, sync_result *res) {
         scan_free(&c);
         return;
     }
+    share_saves(&c);
     scan_saves(&c);
     LOGI("sync (%s): %d local roms, %d saves, %d states", reason, c.nroms, c.nsaves, c.nstates);
 
@@ -1294,6 +1492,8 @@ static void run_sync(const char *reason, sync_result *res) {
     }
 
     res->cards = memcard_backup();
+    /* A save that just came down reaches the other emulators that share it. */
+    share_saves(&c);
 
     state_lock();
     state_save();

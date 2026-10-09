@@ -34,6 +34,7 @@ typedef struct {
     int profiles_custom;      /* 0: built-in profiles, not written to config.json */
     int setup_complete;       /* background syncs wait for the setup wizard */
     char ps2_cards[16];       /* "per_game" or "backup" */
+    char ui_theme[24];        /* web UI theme id (ui/themes/<id>.css) */
     char server_version[32];
 } config_t;
 
