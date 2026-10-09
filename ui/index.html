@@ -460,7 +460,7 @@ function emuCard(c) {
   if (c.ready === false)
     return '<div class="emu"><div class="head"><b>' + esc(c.name) + "</b>" + pill("no preset yet", "warn") + "</div>" +
       '<div class="path">' + esc(c.root) + '</div><p class="muted">' + esc(c.note || "") +
-      " If you have it working, choose its folders below.</p></div>";
+      " If yours works, pick its folders below.</p></div>";
   var plats = (c.profile && c.profile.platforms) || [];
   var platPills = plats.map(function (p) {
     if (p.sync_requires_option) return pill(p.dir, "warn");
@@ -505,7 +505,7 @@ function renderEmuChoices() {
   if (!list.length) { $("emuChoices").innerHTML = ""; return; }
   var also = wz.also || {};
   $("emuChoices").innerHTML = "<h3>Which emulator plays what</h3>" +
-    '<p class="muted">Some systems are played by more than one of these emulators. Games download to the main one first; tick others to give them the same games. Emulators that keep saves in the same format share one save. You can change this later in Settings.</p>' +
+    '<p class="muted">Some systems have more than one emulator here. Pick the main one for each, and tick any others that should get the same games. You can change this later in Settings.</p>' +
     '<div class="row"><button id="allRetroarch">Use RetroArch for all</button></div>' +
     list.map(function (s) {
       var pick = prev[s.key] && s.options.some(function (o) { return o.root === prev[s.key]; }) ? prev[s.key]
@@ -575,10 +575,10 @@ function renderOwn() {
   };
   $("ownSystems").innerHTML =
     (systems ? "<h3>No emulator found for these</h3>" +
-      '<p class="muted">Turn one on to choose where its games, saves and save states go. Saves there are matched by the game\'s file name. Leave it off to skip it; you can set it up later in Settings.</p>' +
+      '<p class="muted">Turn one on to pick where its games, saves and states go, or leave it off for now.</p>' +
       all.slice(0, systems).map(card).join("") : "") +
     (all.length > systems ? "<h3>Emulators with no preset yet</h3>" +
-      '<p class="muted">RomM Sync doesn\'t know these emulators\' folders yet. If yours works, turn it on and choose them. Where another emulator plays the same system, this one gets the games too and its saves sync on their own.</p>' +
+      '<p class="muted">RomM Sync doesn\'t know where these keep their files yet. If yours works, turn it on and pick its folders.</p>' +
       all.slice(systems).map(card).join("") : "");
   each("#ownSystems input[data-own]", function (x) { x.onchange = function () { wz.own[x.dataset.own].on = x.checked; renderOwn(); }; });
   each("#ownSystems button[data-pick]", function (b) { b.onclick = function () { openPicker(b.dataset.pick, +b.dataset.which); }; });

@@ -3,7 +3,7 @@
     "id": "psxs5", "name": "PSXS5 / SwanStationPS5",
     "title_ids": ["PPSA97510", "PPSA98510"],
     "detect": ["/data/PSXS5", "/data/homebrew/PPSA97510", "/data/homebrew/PPSA98510"],
-    "note": "Both apps share /data/PSXS5. One memory card per game, named by its disc serial; the main profile's saves.",
+    "note": "Both apps share /data/PSXS5. One memory card per game, named after the disc.",
     "profile": {
       "root": "/data/PSXS5", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/states",
       "bios_dir": "{root}/bios",
@@ -16,7 +16,7 @@
     "id": "ps5sx2", "name": "PS5SX2",
     "title_ids": ["PPSA99203"],
     "detect": ["/data/PCSX2", "/data/homebrew/PPSA99203"],
-    "note": "Two memory cards shared by every game: backed up to RomM as memory cards (RomM 5.3 and later).",
+    "note": "Two memory cards for every game, backed up to RomM (5.3 or newer).",
     "profile": {
       "root": "/data/PCSX2", "rom_dir": "{root}/games", "bios_dir": "{root}",
       "sync_saves": false, "memcards": "{root}/Mcd001.ps2,{root}/Mcd002.ps2",
@@ -27,7 +27,7 @@
     "id": "ps5n64", "name": "PS5N64",
     "title_ids": ["PPSA99206"],
     "detect": ["/data/PS5N64", "/data/homebrew/PPSA99206"],
-    "note": "Saves and states named by the game file's FNV-1a hash.",
+    "note": "Saves and states are named after a hash of the game file.",
     "profile": {
       "root": "/data/PS5N64", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/saves",
       "save_exts": ".sav", "save_name": "{rom_fnv64}{ext}", "save_stems": "{rom_fnv64}",

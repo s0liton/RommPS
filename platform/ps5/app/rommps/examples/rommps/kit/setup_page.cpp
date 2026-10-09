@@ -663,17 +663,17 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
         add({RowKind::info, "Couldn't look for emulators", "", error_}, {});
     else if (emulators_.empty())
         add({RowKind::info, "No emulators found", "",
-             "Continue with RetroArch's usual folders; change them later on the web page"},
+             "Continue with RetroArch's usual folders. You can change them later."},
             {});
     for (std::size_t i = 0; i < emulators_.size(); ++i)
     {
         const Emulator &e = emulators_[i];
         if (!e.ready)
         {
-            add({RowKind::info, e.name, "No preset yet", e.note + " If yours works, turn it on below and choose its folders."},
+            add({RowKind::info, e.name, "No preset yet", e.note + " If yours works, turn it on below and pick its folders."},
                 {RowRef::kEmulator, static_cast<int>(i)});
             for (const System &sy : e.systems)
-                add_own(e.id + "-" + sy.key, "Choose its folders; with another emulator for it, this one gets the games too");
+                add_own(e.id + "-" + sy.key, "Turn on to pick its folders");
             continue;
         }
         std::string detail = e.kind == "retroarch" ? "RetroArch" : e.kind == "mednafen" ? "Mednafen" : "Standalone";
@@ -705,7 +705,7 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
         for (const Option &o : c.options)
             if (o.root == main)
                 label = o.label;
-        add({RowKind::choice, system_name(c.key), label, "Its main emulator: downloads go there first"},
+        add({RowKind::choice, system_name(c.key), label, "Games download here first"},
             {RowRef::kMain, -1, c.key});
         // The others can play it too: the games linked in, one save where they keep the same kind.
         for (const Option &o : c.options)
@@ -714,7 +714,7 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
                 continue;
             const auto set = also_.find(c.key);
             const bool on = set != also_.end() && set->second.count(o.root);
-            add({RowKind::toggle, "   Also in " + o.label, "", "Games linked in; one save where they can share it", on},
+            add({RowKind::toggle, "   Also in " + o.label, "", "Gets the same games too", on},
                 {RowRef::kAlso, -1, c.key, o.root});
         }
     }
@@ -723,7 +723,7 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
     {
         const Own &o = own_.at(key);
         char detail[96];
-        std::snprintf(detail, sizeof detail, "%d game%s  \xC2\xB7  no emulator found: turn on to choose its folders",
+        std::snprintf(detail, sizeof detail, "%d game%s  \xC2\xB7  no emulator found. Turn on to pick its folders",
                       o.games, o.games == 1 ? "" : "s");
         add_own(key, detail);
     }
@@ -1206,8 +1206,7 @@ void SetupPage::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, cons
     if (step_ == kEmulators)
     {
         draw_heading(list, fonts, look, editing_ ? "Emulators" : "Your emulators",
-                     "RomM Sync keeps the saves of the ones you leave on, and downloads games into their folders. "
-                     "When several play a system, one is the main one; the others can get its games too.");
+                     "Saves sync for the emulators you leave on, and games download to their folders.");
         rows = emulator_rows(app);
         // Beside the list: the focused emulator's systems.
         const int focus = rows_.focus() - lead();
