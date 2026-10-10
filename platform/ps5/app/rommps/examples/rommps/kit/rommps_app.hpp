@@ -233,6 +233,13 @@ class App
     // A game's details; asks for them the first time.
     const Details &details(int rom_id);
     void refresh_installed();
+    // Asks for the platforms again: which emulator plays each, and its
+    // folder, change when emulators are set up here or in the web UI.
+    void reload_platforms()
+    {
+        if (!platforms_busy_)
+            refresh_platforms();
+    }
     // A cover's texture and palette; asks for it the first time.
     const Cover &cover(const std::string &path);
 
