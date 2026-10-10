@@ -137,7 +137,10 @@ class RommPS final : public app::Concept
                 if (tab_ == kSettings)
                     settings_.enter(app_);
                 if (tab_ == kLibrary)
+                {
                     library_.enter(app_);
+                    app_.reload_platforms(); // emulators may have changed meanwhile
+                }
             }
         }
         // Settings' Emulators opens that setup step on its own.

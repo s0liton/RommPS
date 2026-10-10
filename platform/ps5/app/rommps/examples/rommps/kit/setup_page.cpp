@@ -871,6 +871,7 @@ void SetupPage::update_emulators(App &app, const hui::InputFrame &input, float d
                 busy_ = false;
                 a->say("Emulators saved");
                 a->refresh_config();
+                a->reload_platforms();
                 return;
             }
             go(kPreview);
