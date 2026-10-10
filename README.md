@@ -68,7 +68,7 @@ If you are interested in downloading PS4 and PS5 games from your RomM server, Ro
 
 ### Install via ProsperoStore
 
-[ProsperoStoreQRCode](assets/prospero-store-rommps.png
+![ProsperoStoreQRCode](assets/prospero-store-rommps.png
 
 Install **RommPS** from [ProsperoStore](https://homebrew.page) and open it. It'll set up the background daemon, and take you through a setup wizard. That's it: RommPS carries the RomM Sync payload and starts it for you. From then on it starts with your HEN, so after a jailbreak or waking the console it's ready to go.
 
