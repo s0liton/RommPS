@@ -1,0 +1,165 @@
+{
+  "format": 1,
+  "version": "2026.10.23.1",
+  "console": "ps4",
+  "emulators": [
+    {
+      "id": "psnes", "name": "pSNES", "title_ids": ["PSNE00001"], "detect": ["/data/psnes"],
+      "profile": {
+        "root": "/data/psnes", "rom_dir": "{root}/roms", "save_dir": "{root}/sram", "bios_dir": "{root}/bios",
+        "save_exts": ".srm",
+        "state_dir": "{root}/saves", "state_exts": ".state", "state_format": "raw",
+        "state_stems": "{rom_stem}-0,{rom_stem}-1,{rom_stem}-2,{rom_stem}-3", "state_name": "{rom_stem}-0{ext}",
+        "firmware": {"from": {"satellaview": ["BS-X.bin"], "sufami-turbo": ["STBIOS.bin"]}},
+        "platforms": [{"romm": ["snes", "sfam"], "dir": "snes"}]
+      }
+    },
+    {
+      "id": "pnes", "name": "pNES", "title_ids": ["PNES00001"], "detect": ["/data/pnes"],
+      "profile": {
+        "root": "/data/pnes", "rom_dir": "{root}/roms", "save_dir": "{root}/save", "bios_dir": "{root}/bios",
+        "save_exts": ".sav",
+        "state_dir": "{root}/saves", "state_exts": ".state", "state_format": "raw",
+        "state_stems": "{rom_stem}-0,{rom_stem}-1,{rom_stem}-2,{rom_stem}-3", "state_name": "{rom_stem}-0{ext}",
+        "firmware": {"dir": "{root}"},
+        "platforms": [{"romm": ["nes", "famicom"], "dir": "nes"}, {"romm": ["fds"], "dir": "fds"}]
+      }
+    },
+    {
+      "id": "pgen", "name": "pGEN", "title_ids": ["PGEN00001"], "detect": ["/data/pgen"],
+      "profile": {
+        "root": "/data/pgen", "rom_dir": "{root}/{platform}", "save_dir": "{root}/rams", "bios_dir": "{root}/bios",
+        "save_exts": ".srm",
+        "state_dir": "{root}/saves", "state_exts": ".state", "state_format": "raw",
+        "state_stems": "{rom_stem}-0,{rom_stem}-1,{rom_stem}-2,{rom_stem}-3", "state_name": "{rom_stem}-0{ext}",
+        "platforms": [
+          {"romm": ["genesis", "genesis-slash-megadrive", "megadrive"], "dir": "megadrive"},
+          {"romm": ["sms", "mastersystem"], "dir": "mastersystem"},
+          {"romm": ["gamegear", "gg"], "dir": "gamegear"},
+          {"romm": ["segacd", "sega-cd"], "dir": "megacd", "save_exts": ".brm"},
+          {"romm": ["sg1000"], "dir": "sg1000"}
+        ]
+      }
+    },
+    {
+      "id": "pgba", "name": "pGBA", "title_ids": ["PGBA00001"], "detect": ["/data/pgba"],
+      "note": "Saves and states share the saves folder.",
+      "profile": {
+        "root": "/data/pgba", "rom_dir": "{root}/{platform}", "save_dir": "{root}/saves", "bios_dir": "{root}/bios",
+        "save_exts": ".sav",
+        "state_dir": "{root}/saves", "state_exts": ".state", "state_format": "raw",
+        "state_stems": "{rom_stem}-0,{rom_stem}-1,{rom_stem}-2,{rom_stem}-3", "state_name": "{rom_stem}-0{ext}",
+        "platforms": [
+          {"romm": ["gba"], "dir": "gba"},
+          {"romm": ["gbc"], "dir": "gbc"},
+          {"romm": ["gb"], "dir": "gb"}
+        ]
+      }
+    },
+    {
+      "id": "pfbn", "name": "pFBN", "title_ids": ["PFBN00001"], "detect": ["/data/pfba"],
+      "note": "Arcade saves are the games' own memory (eeproms), backed up as they are.",
+      "profile": {
+        "root": "/data/pfba", "rom_dir": "{root}/{platform}", "save_dir": "{root}/eeproms", "bios_dir": "{root}/arcade",
+        "save_exts": ".fs",
+        "state_dir": "{root}/saves", "state_exts": ".state", "state_format": "raw",
+        "state_stems": "{rom_stem}-0,{rom_stem}-1,{rom_stem}-2,{rom_stem}-3", "state_name": "{rom_stem}-0{ext}",
+        "firmware": {"dir": "{rom_dir}"},
+        "platforms": [
+          {"romm": ["arcade", "fbneo", "neogeoaes", "neogeomvs", "cps1", "cps2", "cps3"], "dir": "arcade"},
+          {"romm": ["neo-geo-pocket-color", "neo-geo-pocket", "ngpc", "ngp"], "dir": "ngp"},
+          {"romm": ["colecovision"], "dir": "coleco"},
+          {"romm": ["msx"], "dir": "msx"},
+          {"romm": ["zxs", "zx-spectrum"], "dir": "spectrum"},
+          {"romm": ["supergrafx"], "dir": "sgx"},
+          {"romm": ["channel-f", "fairchild-channel-f"], "dir": "channelf"}
+        ]
+      }
+    },
+    {
+      "id": "emusuni", "name": "EmuSuNi", "title_ids": ["EMSN00001"], "detect": ["/data/EmuSuNi"],
+      "note": "Set EmuSuNi's N64 folder to /data/EmuSuNi/n64 in its settings.",
+      "profile": {
+        "root": "/data/EmuSuNi", "bios_dir": "{root}/system",
+        "save_exts": ".srm",
+        "state_exts": ".state*", "state_format": "raw", "state_slot0": ".state1",
+        "platforms": [
+          {"romm": ["snes", "sfam"], "dir": "snes", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/states"},
+          {"romm": ["nes", "famicom"], "dir": "nes", "rom_dir": "{root}/nes", "save_dir": "{root}/saves/nes", "state_dir": "{root}/states/nes"},
+          {"romm": ["n64"], "dir": "n64", "rom_dir": "{root}/n64", "save_dir": "{root}/saves/n64", "state_dir": "{root}/states/n64", "save_format": "n64-srm", "cards": {"default": "per_game", "modes": "per_game"}}
+        ]
+      }
+    },
+    {
+      "id": "dolphinps4", "name": "DolphinPS4", "title_ids": ["DLPH00010"], "detect": ["/data/DolphinPS4"],
+      "note": "Dolphin, with its user folder in {root}/User. States are named after the disc's id.",
+      "profile": {
+        "root": "/data/DolphinPS4", "rom_dir": "{root}/games", "save_dir": "{root}/User",
+        "state_dir": "{root}/User/StateSaves", "state_exts": ".s0*", "state_format": "raw",
+        "state_stems": "{game_id}", "state_name": "{game_id}{ext}",
+        "firmware": {"dir": "{root}/User/GC", "only_named": true, "names": {"b17148254a5799684c7d783206504926": "USA/IPL.bin", "fc924a7c879b661abc37cec4f018fdf3": "USA/IPL.bin", "019e39822a9ca3029124f74dd4d55ac4": "USA/IPL.bin", "db92574caab77a7ec99d4605fd6f2450": "EUR/IPL.bin", "339848a0b7c2124cf155276c1e79cbd0": "EUR/IPL.bin", "0cdda509e2da83c85bfe423dd87346cc": "EUR/IPL.bin"}},
+        "platforms": [
+          {"romm": ["ngc", "gamecube"], "dir": "gamecube", "emulator": "dolphin", "save_layout": "gci", "bundle_dirs": "{root}/User/GC", "cards": {"default": "per_game", "modes": "per_game"}},
+          {"romm": ["wii"], "dir": "wii", "emulator": "dolphin", "save_layout": "wii", "bundle_dirs": "{root}/User/Wii"}
+        ]
+      }
+    },
+    {
+      "id": "resonance", "name": "Resonance", "title_ids": ["DCST00001"], "detect": ["/data/Resonance"],
+      "note": "Each game's own memory card syncs as its save; the shared ones are backed up as RomM memory cards.",
+      "profile": {
+        "root": "/data/Resonance", "rom_dir": "{root}/games", "save_dir": "{root}/data", "bios_dir": "{root}/data",
+        "save_exts": ".bin", "disc_id": "dreamcast",
+        "save_stems": "{game_id}_vmu_save_A1", "save_name": "{game_id}_vmu_save_A1{ext}",
+        "memcards": "{root}/data/vmu_save_A1.bin,{root}/data/vmu_save_B1.bin,{root}/data/vmu_save_C1.bin,{root}/data/vmu_save_D1.bin",
+        "state_dir": "{root}/data", "state_exts": ".state", "state_format": "raw",
+        "state_stems": "{rom_stem}_1,{rom_stem}_2,{rom_stem}_3", "state_name": "{rom_stem}{ext}",
+        "firmware": {"names": {"e10c53c2f8b90bab96ead2d368858623": "dc_boot.bin"}, "from": {"arcade": ["naomi.zip", "naomi2.zip", "awbios.zip"]}},
+        "platforms": [{"romm": ["dc", "dreamcast"], "dir": "dreamcast", "save_format": "dc-vmu", "cards": {"default": "per_game", "modes": "per_game,shared", "change": "Turn on Own memory card for each game in its settings (players 2 to 4 always share theirs)", "setting": {"file": "{root}/emu.cfg", "key": "PerGameVmu", "per_game": "yes,true", "shared": "no,false"}}}]
+      }
+    },
+    {
+      "id": "ps4sx2", "name": "PS4SX2", "title_ids": ["PCSX20007"], "detect": ["/data/PS4SX2"],
+      "note": "Two memory cards for every game, backed up to RomM (5.3 or newer). No save states yet.",
+      "profile": {
+        "root": "/data/PS4SX2", "rom_dir": "{root}/roms", "bios_dir": "{root}/bios",
+        "sync_saves": false, "memcards": "{root}/memcards/Mcd001.ps2,{root}/memcards/Mcd002.ps2",
+        "firmware": {"pick_one": ["21038400dc633070a78ad53090c53017", "dc69f0643a3030aaa4797501b483d6c4", "80ac46fa7e77b8ab4366e86948e54f83", "93ea3bcee4252627919175ff1b16a1d9", "d3e81e95db25f5a86a7b7474550a2155"]},
+        "platforms": [{"romm": ["ps2"], "dir": "ps2", "cards": {"default": "shared", "modes": "shared"}}]
+      }
+    },
+    {
+      "id": "nps64", "name": "NPS64", "title_ids": ["NPSX00064"], "detect": ["/data/NPS64"],
+      "note": "Saves and states are named after a hash of the game file (.z64 dumps).",
+      "profile": {
+        "root": "/data/NPS64", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "state_dir": "{root}/saves",
+        "bios_dir": "{root}/system", "fixed": ["rom_dir", "save_dir", "state_dir"],
+        "save_exts": ".srm", "save_name": "rom-{rom_fnv64}{ext}", "save_stems": "rom-{rom_fnv64}",
+        "state_exts": ".state", "state_stems": "rom-{rom_fnv64}", "state_name": "rom-{rom_fnv64}.slot1{ext}", "state_format": "raw",
+        "firmware": {"skip": true},
+        "platforms": [{"romm": ["n64"], "dir": "n64", "save_format": "n64-srm", "cards": {"default": "per_game", "modes": "per_game"}}]
+      }
+    },
+    {
+      "id": "mgbaps4", "name": "mGBA", "title_ids": ["MGBA00001"], "detect": ["/data/mgba"],
+      "profile": {
+        "root": "/data/mgba", "rom_dir": "{root}/roms", "save_dir": "{root}/saves", "state_dir": "{root}/states",
+        "save_exts": ".sav", "state_exts": ".ss*", "state_slot0": ".ss1", "state_format": "raw",
+        "platforms": [
+          {"romm": ["gba"], "dir": "gba"},
+          {"romm": ["gbc"], "dir": "gbc"},
+          {"romm": ["gb"], "dir": "gb"}
+        ]
+      }
+    },
+    {
+      "id": "snesui", "name": "SNESUI", "title_ids": ["SNES00001", "SNES00009"], "detect": ["/data/snes-ps4"],
+      "profile": {
+        "root": "/data/snes-ps4", "rom_dir": "{root}/juegos", "save_dir": "{root}/guardados", "state_dir": "{root}/guardados",
+        "save_exts": ".srm", "state_exts": ".st0,.st1,.st2,.st3", "state_slot0": ".st0", "state_format": "raw",
+        "firmware": {"skip": true},
+        "platforms": [{"romm": ["snes", "sfam"], "dir": "snes"}]
+      }
+    }
+  ]
+}
