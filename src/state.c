@@ -10,8 +10,21 @@
 
 static cJSON *g_state;
 static pthread_mutex_t g_state_lock = PTHREAD_MUTEX_INITIALIZER;
+/* For state_index: it changes when another thread takes the lock, or a record
+ * is removed or moved, so an index built before knows it may be out of date. */
+static pthread_t g_lock_holder;
+static int g_lock_held_once;
+static unsigned long g_lock_epoch;
 
-void state_lock(void) { pthread_mutex_lock(&g_state_lock); }
+void state_lock(void) {
+    pthread_mutex_lock(&g_state_lock);
+    const pthread_t self = pthread_self();
+    if (!g_lock_held_once || !pthread_equal(self, g_lock_holder)) {
+        g_lock_holder = self;
+        g_lock_held_once = 1;
+        g_lock_epoch++;
+    }
+}
 void state_unlock(void) { pthread_mutex_unlock(&g_state_lock); }
 
 static void state_path(char *out, size_t n) { path_join(out, n, plat_data_dir(), "state.json"); }
@@ -28,6 +41,7 @@ int state_load(void) {
         cJSON_Delete(g_state);
         g_state = cJSON_CreateObject();
     }
+    g_lock_epoch++;
     return 0;
 }
 
@@ -66,6 +80,52 @@ cJSON *state_entry_ensure(const char *section, const char *key) {
 
 void state_entry_remove(const char *section, const char *key) {
     cJSON_DeleteItemFromObjectCaseSensitive(state_section(section), key);
+    g_lock_epoch++;
+}
+
+struct state_index {
+    char section[32];
+    int built;
+    unsigned long epoch; /* g_lock_epoch when built */
+    cJSON **slots;
+    size_t cap; /* a power of two, at least twice the records; 0: no memory */
+};
+
+static void index_build(state_index *ix) {
+    const cJSON *sec = state_section(ix->section);
+    size_t n = 0, cap = 64;
+    for (const cJSON *e = sec->child; e; e = e->next) n++;
+    while (cap < 2 * n) cap *= 2;
+    free(ix->slots);
+    ix->slots = calloc(cap, sizeof *ix->slots);
+    ix->cap = ix->slots ? cap : 0;
+    for (cJSON *e = sec->child; e && ix->cap; e = e->next) {
+        if (!e->string) continue;
+        size_t i = str_hash(e->string) & (cap - 1);
+        while (ix->slots[i] && strcmp(ix->slots[i]->string, e->string)) i = (i + 1) & (cap - 1);
+        if (!ix->slots[i]) ix->slots[i] = e; /* a repeated key: the first, as cJSON finds */
+    }
+    ix->built = 1;
+    ix->epoch = g_lock_epoch;
+}
+
+state_index *state_index_new(const char *section) {
+    state_index *ix = calloc(1, sizeof *ix);
+    if (ix) str_copy(ix->section, sizeof ix->section, section);
+    return ix;
+}
+
+cJSON *state_index_get(state_index *ix, const char *key) {
+    if (!ix->built || ix->epoch != g_lock_epoch) index_build(ix);
+    for (size_t i = ix->cap ? str_hash(key) & (ix->cap - 1) : 0; ix->cap && ix->slots[i]; i = (i + 1) & (ix->cap - 1))
+        if (!strcmp(ix->slots[i]->string, key)) return ix->slots[i];
+    return state_entry(ix->section, key);
+}
+
+void state_index_free(state_index *ix) {
+    if (!ix) return;
+    free(ix->slots);
+    free(ix);
 }
 
 /* moved: an emulator's own folder move. A record already at the new name is
@@ -75,6 +135,7 @@ static int rekey(const char *from, const char *to, int moved) {
     static const char *const sections[] = {"roms", "saves", "states", "conflicts"};
     size_t fl = strlen(from);
     int n = 0;
+    g_lock_epoch++;
     for (size_t s = 0; s < sizeof sections / sizeof *sections; s++) {
         cJSON *sec = state_section(sections[s]), *found = cJSON_CreateArray(), *e = sec->child;
         while (e) {

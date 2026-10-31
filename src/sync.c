@@ -90,6 +90,8 @@ typedef struct {
     int nmaps;
     local_rom *roms;
     int nroms, caproms;
+    int *rom_slots; /* indexes into roms, hashed by path; -1: free */
+    int rom_slots_cap; /* a power of two, at least twice nroms */
     local_file *saves;
     int nsaves, capsaves;
     local_file *states;
@@ -717,11 +719,56 @@ static int nx_addon(const profile_map *m, const char *path) {
     return nx_is_addon(sync_nx_title(m, path, 0));
 }
 
+static void rom_slot_put(int *slots, int cap, const scan_ctx *c, int idx) {
+    size_t i = str_hash(c->roms[idx].path) & (size_t)(cap - 1);
+    while (slots[i] >= 0) i = (i + 1) & (size_t)(cap - 1);
+    slots[i] = idx;
+}
+
+/* roms[idx] into the hash the duplicate check reads; 0, or -1 out of memory. */
+static int rom_slot_add(scan_ctx *c, int idx) {
+    if (2 * (idx + 1) > c->rom_slots_cap) {
+        int cap = c->rom_slots_cap ? c->rom_slots_cap : 256;
+        while (2 * (idx + 1) > cap) cap *= 2;
+        int *slots = malloc(sizeof *slots * (size_t)cap);
+        if (!slots) return -1;
+        memset(slots, 0xff, sizeof *slots * (size_t)cap);
+        for (int k = 0; k < idx; k++) rom_slot_put(slots, cap, c, k);
+        free(c->rom_slots);
+        c->rom_slots = slots;
+        c->rom_slots_cap = cap;
+    }
+    rom_slot_put(c->rom_slots, c->rom_slots_cap, c, idx);
+    return 0;
+}
+
+/* The game is in roms already for this emulator. */
+static int rom_seen(const scan_ctx *c, const char *path, const profile_map *m) {
+    if (!c->rom_slots) { /* (no memory for the hash) */
+        for (int i = 0; i < c->nroms; i++)
+            if (!strcmp(c->roms[i].path, path) && !strcmp(c->roms[i].map->profile_id, m->profile_id) &&
+                !strcmp(c->roms[i].map->emulator, m->emulator) && c->roms[i].map->apart == m->apart)
+                return 1;
+        return 0;
+    }
+    for (size_t i = str_hash(path) & (size_t)(c->rom_slots_cap - 1); c->rom_slots[i] >= 0;
+         i = (i + 1) & (size_t)(c->rom_slots_cap - 1)) {
+        const local_rom *r = &c->roms[c->rom_slots[i]];
+        if (!strcmp(r->path, path) && !strcmp(r->map->profile_id, m->profile_id) &&
+            !strcmp(r->map->emulator, m->emulator) && r->map->apart == m->apart) /* (a core twin has its own) */
+            return 1;
+    }
+    return 0;
+}
+
 static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
     DIR *d = opendir(dir);
     if (!d) return;
     struct dirent *de;
     time_t now = time(NULL);
+    /* Every game's record, by a hash: looked up one by one, cJSON walks the
+     * whole section each time, and with a big library the scan went quadratic. */
+    state_index *recs = state_index_new("roms");
     while ((de = readdir(d))) {
         if (ignored_rom_file(de->d_name, m)) continue;
         char path[PATH_MAX_LEN];
@@ -733,12 +780,7 @@ static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
         /* Several platforms of one emulator can share a folder. Other
          * emulators playing the same folder (an extra with a mount, or one
          * set to the main one's games) each have the game, for their saves. */
-        int dup = 0;
-        for (int i = 0; i < c->nroms; i++)
-            if (!strcmp(c->roms[i].path, path) && !strcmp(c->roms[i].map->profile_id, m->profile_id) &&
-                !strcmp(c->roms[i].map->emulator, m->emulator) && c->roms[i].map->apart == m->apart) /* (a core twin has its own) */
-                dup = 1;
-        if (dup) continue;
+        if (rom_seen(c, path, m)) continue;
 
         local_rom r;
         memset(&r, 0, sizeof r);
@@ -778,7 +820,7 @@ static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
         }
 
         state_lock();
-        cJSON *e = state_entry("roms", path);
+        cJSON *e = recs ? state_index_get(recs, path) : state_entry("roms", path);
         int rom_id = e ? (int)jget_num(e, "rom_id", 0) : 0;
         time_t miss_at = e ? (time_t)jget_num(e, "miss_at", 0) : 0;
         /* A folder that holds several of the emulator's systems (Porpoise:
@@ -864,7 +906,7 @@ static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
         if (map_uses(m, "{game_id}") && rom_game_id(&r, r.game_id, sizeof r.game_id) != 0) r.game_id[0] = 0;
         if (m->save_stems[0] || m->state_stems[0] || map_uses(m, "{rom_stem_safe}") || m->n64_split_dir[0]) {
             state_lock();
-            add_derived_stems(&r, state_entry("roms", path));
+            add_derived_stems(&r, recs ? state_index_get(recs, path) : state_entry("roms", path));
             state_save();
             state_unlock();
         }
@@ -881,8 +923,14 @@ static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
             c->caproms = want;
         }
         c->roms[c->nroms++] = r;
+        if (rom_slot_add(c, c->nroms - 1) != 0) { /* the duplicate check goes the slow way */
+            free(c->rom_slots);
+            c->rom_slots = NULL;
+            c->rom_slots_cap = 0;
+        }
     }
     closedir(d);
+    state_index_free(recs);
 }
 
 /* The emulator's games: rom_dir's, and those in folders it still plays from
@@ -1363,6 +1411,7 @@ static void scan_free(scan_ctx *c) {
     cJSON_Delete(c->nx_files);
     profiles_free(c->maps);
     free(c->roms);
+    free(c->rom_slots);
     free(c->saves);
     free(c->states);
     cJSON_Delete(c->platforms);
@@ -3598,6 +3647,36 @@ static const char *emu_name(const profile_map *m) {
     return out;
 }
 
+typedef struct {
+    int rom_id, idx;
+} rom_key;
+
+static int rom_key_cmp(const void *a, const void *b) {
+    const rom_key *x = a, *y = b;
+    if (x->rom_id != y->rom_id) return x->rom_id < y->rom_id ? -1 : 1;
+    return (x->idx > y->idx) - (x->idx < y->idx);
+}
+
+/* roms by RomM id, then by place in roms: a game's copies (the same game in
+ * several emulators) side by side, in their order in roms, so finding them
+ * doesn't mean looking through every game for each one (with 25,000 games a
+ * sync went quadratic). roms[i] is (*keys)[(*pos)[i]]. 0, or -1 out of memory. */
+static int rom_groups(const scan_ctx *c, rom_key **keys, int **pos) {
+    *keys = malloc(sizeof **keys * (size_t)(c->nroms ? c->nroms : 1));
+    *pos = malloc(sizeof **pos * (size_t)(c->nroms ? c->nroms : 1));
+    if (!*keys || !*pos) {
+        free(*keys);
+        free(*pos);
+        *keys = NULL;
+        *pos = NULL;
+        return -1;
+    }
+    for (int i = 0; i < c->nroms; i++) (*keys)[i] = (rom_key){c->roms[i].rom_id, i};
+    qsort(*keys, (size_t)c->nroms, sizeof **keys, rom_key_cmp);
+    for (int p = 0; p < c->nroms; p++) (*pos)[(*keys)[p].idx] = p;
+    return 0;
+}
+
 /* Saves from before RomM's sync slots (no slot), or kept in another device's
  * slot: this console's sync never brings them.
  * A game here with no save of its own gets the newest one, and from then on
@@ -3615,13 +3694,19 @@ static int fetch_slotless_saves(scan_ctx *c, int only_rom) {
     if (only_rom) snprintf(api, sizeof api, "/api/saves?rom_id=%d", only_rom);
     cJSON *all = romm_call("GET", api, NULL, &st);
     int n = 0;
+    rom_key *keys = NULL;
+    int *pos = NULL;
+    if (st == 200) rom_groups(c, &keys, &pos); /* (without: the slow way) */
     for (int i = 0; st == 200 && i < c->nroms; i++) {
         const local_rom *r = &c->roms[i];
         if (!r->rules.sync_saves || r->map->save_layout[0] || (only_rom && r->rom_id != only_rom) ||
             find_save(c, r->rom_id, c->slot))
             continue;
-        int done_before = 0; /* another emulator's copy of the game took it */
-        for (int k = 0; k < i; k++) done_before |= c->roms[k].rom_id == r->rom_id;
+        /* Another emulator's copy of the game, earlier in roms, took it. */
+        int done_before = 0;
+        if (keys) done_before = pos[i] > 0 && keys[pos[i] - 1].rom_id == r->rom_id;
+        else
+            for (int k = 0; k < i; k++) done_before |= c->roms[k].rom_id == r->rom_id;
         if (done_before) continue;
         /* The newest of each kind: the save, and files beside it such as a
          * real-time clock (.rtc), each in the slot it would sync in. */
@@ -3665,6 +3750,8 @@ static int fetch_slotless_saves(scan_ctx *c, int only_rom) {
         }
     }
     cJSON_Delete(all);
+    free(keys);
+    free(pos);
     return n;
 }
 
@@ -4317,25 +4404,31 @@ static int share_bundles(scan_ctx *c);
 
 static int share_saves(scan_ctx *c) {
     int copied = share_bundles(c);
+    rom_key *keys;
+    int *pos;
+    if (rom_groups(c, &keys, &pos) != 0) {
+        LOGW("sharing saves skipped: out of memory");
+        return copied;
+    }
     for (int i = 0; i < c->nroms; i++) {
         const local_rom *a = &c->roms[i];
         if (!a->map->save_format[0] || a->map->own_slot || !a->rules.sync_saves || a->map->save_layout[0]) continue;
         /* The first member of each group does the work. */
         int first = 1;
         const char *family = profiles_save_family(a->map->save_format);
-        for (int k = 0; k < i && first; k++)
-            if (c->roms[k].rom_id == a->rom_id && !strcmp(profiles_save_family(c->roms[k].map->save_format), family) &&
-                !c->roms[k].map->own_slot && c->roms[k].rules.sync_saves)
+        for (int p = pos[i] - 1; p >= 0 && keys[p].rom_id == a->rom_id && first; p--) {
+            const local_rom *r = &c->roms[keys[p].idx];
+            if (!strcmp(profiles_save_family(r->map->save_format), family) && !r->map->own_slot && r->rules.sync_saves)
                 first = 0;
+        }
         if (!first) continue;
         char paths[8][PATH_MAX_LEN];
         const local_rom *whose[8];
         int n = 0, newest = -1, newest_blank = 0, newest_fresh = 0;
         time_t newest_t = 0;
-        for (int k = i; k < c->nroms && n < 8; k++) {
-            const local_rom *r = &c->roms[k];
-            if (r->rom_id != a->rom_id || strcmp(profiles_save_family(r->map->save_format), family) || r->map->own_slot ||
-                !r->rules.sync_saves)
+        for (int p = pos[i]; p < c->nroms && keys[p].rom_id == a->rom_id && n < 8; p++) {
+            const local_rom *r = &c->roms[keys[p].idx];
+            if (strcmp(profiles_save_family(r->map->save_format), family) || r->map->own_slot || !r->rules.sync_saves)
                 continue;
             download_target(r, "", c->slot, c, paths[n], sizeof paths[n]);
             time_t t = file_mtime(paths[n]);
@@ -4373,6 +4466,8 @@ static int share_saves(scan_ctx *c) {
             }
         }
     }
+    free(keys);
+    free(pos);
     return copied;
 }
 

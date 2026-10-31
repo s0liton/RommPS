@@ -105,6 +105,8 @@ time_t iso8601_parse(const char *s);             /* 0 on failure */
 int md5_file_hex(const char *path, char out[33]);
 /* FNV-1a 64 of a file, 16 lower-case hex digits (PS5N64 names saves by it). */
 int fnv1a64_file_hex(const char *path, char out[17]);
+/* FNV-1a of a string, for hash tables. */
+size_t str_hash(const char *s);
 void md5_hex(const void *data, size_t len, char out[33]);
 void random_uuid(char out[37]);
 
