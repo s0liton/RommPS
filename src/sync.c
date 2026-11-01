@@ -274,8 +274,8 @@ static int first_known_name(const char *tmpls, const char *const vars[21], const
 /* DuckStation's card for a game ({duck_card}, src/duckcard.h): by its
  * settings and the database of the DuckStation installed; without one, the
  * card holding the game's saves, else the likeliest name. Only the name is
- * kept, in the game's state entry (duck_card). */
-static void duck_name(local_rom *r, cJSON *e) {
+ * kept, in the game's state entry (duck_card); 1 if that entry changed. */
+static int duck_name(local_rom *r, cJSON *e) {
     const profile_map *m = r->map;
     char boot[PATH_MAX_LEN] = "", copies[PATH_MAX_LEN], dirs[PATH_MAX_LEN * 2], stem[256];
     /* The file DuckStation is given: a folder's playlist, else its disc. */
@@ -304,7 +304,7 @@ static void duck_name(local_rom *r, cJSON *e) {
     const duck_kind k = duck_card_stem(db, &g, 1, stem, sizeof stem, &sure);
     r->duck_off = k == DUCK_PER_GAME ? 0 : (int)k + 1;
     r->duck_card[0] = 0;
-    if (k != DUCK_PER_GAME) return;
+    if (k != DUCK_PER_GAME) return 0;
     const char *had = e ? jget_str(e, "duck_card", "") : "";
     if (!sure && !db && had[0] && jget_num(e, "duck_sure", 0) && !strcmp(jget_str(e, "duck_boot", ""), boot)) {
         /* Worked out from the database before, which isn't there now. */
@@ -321,12 +321,15 @@ static void duck_name(local_rom *r, cJSON *e) {
     char up[256];
     path_stem(up, sizeof up, path_basename(boot));
     snprintf(r->duck_up, sizeof r->duck_up, "%s_1.mcd", up);
-    if (!e) return;
+    if (!e) return 0;
     if (strcmp(had, stem) != 0)
         LOGI("%s: DuckStation's memory card for it is %s.mcd%s", path_basename(r->path), stem, sure ? "" : " (a guess)");
+    const int changed = strcmp(had, stem) != 0 || jget_num(e, "duck_sure", -1) != sure ||
+                        strcmp(jget_str(e, "duck_boot", ""), boot) != 0;
     jset_str(e, "duck_card", stem);
     jset_num(e, "duck_sure", sure);
     jset_str(e, "duck_boot", boot);
+    return changed;
 }
 
 /* A game DuckStation gives no card of its own: none of its saves sync. */
@@ -340,10 +343,12 @@ static void duck_rules(local_rom *r) {
 }
 
 /* Works out what the profile's extra names need (cached per file in the
- * state's roms entry, keyed by size and mtime), then adds those names. */
-static void add_derived_stems(local_rom *r, cJSON *e) {
+ * state's roms entry, keyed by size and mtime), then adds those names.
+ * 1 if the entry changed: a value wasn't cached, or its file changed. */
+static int add_derived_stems(local_rom *r, cJSON *e) {
     const profile_map *m = r->map;
     const int nbase = r->nstems; /* the game's own names, before any made from them */
+    int changed = 0;
     size_t k = 0;
     for (const char *p = r->stems[0]; *p && k + 1 < sizeof r->safe_stem; p++)
         r->safe_stem[k++] = isalnum((unsigned char)*p) ? *p : '_';
@@ -358,30 +363,37 @@ static void add_derived_stems(local_rom *r, cJSON *e) {
         if (need_serial) {
             if (fresh && cJSON_GetObjectItemCaseSensitive(e, "serial"))
                 str_copy(r->serial, sizeof r->serial, jget_str(e, "serial", ""));
-            else if (gameid_psx(file, r->serial, sizeof r->serial) != 0)
-                r->serial[0] = 0;
+            else {
+                changed = 1;
+                if (gameid_psx(file, r->serial, sizeof r->serial) != 0) r->serial[0] = 0;
+            }
         }
         if (need_fnv) {
             if (fresh && cJSON_GetObjectItemCaseSensitive(e, "fnv64"))
                 str_copy(r->fnv64, sizeof r->fnv64, jget_str(e, "fnv64", ""));
-            else if (fnv1a64_file_hex(file, r->fnv64) != 0)
-                r->fnv64[0] = 0;
+            else {
+                changed = 1;
+                if (fnv1a64_file_hex(file, r->fnv64) != 0) r->fnv64[0] = 0;
+            }
             for (size_t i = 0; i < sizeof r->fnv64_uc; i++) r->fnv64_uc[i] = (char)toupper((unsigned char)r->fnv64[i]);
         }
         if (need_n64) {
             if (fresh && cJSON_GetObjectItemCaseSensitive(e, "n64_md5"))
                 str_copy(r->n64_md5, sizeof r->n64_md5, jget_str(e, "n64_md5", ""));
-            else if (n64_rom_md5(file, r->n64_md5) != 0)
-                r->n64_md5[0] = 0;
+            else {
+                changed = 1;
+                if (n64_rom_md5(file, r->n64_md5) != 0) r->n64_md5[0] = 0;
+            }
         }
         if (need_crc) {
             uint32_t crc;
             if (fresh && cJSON_GetObjectItemCaseSensitive(e, "crc"))
                 str_copy(r->crc, sizeof r->crc, jget_str(e, "crc", ""));
-            else if (gameid_ps2_crc(file, &crc) == 0)
-                snprintf(r->crc, sizeof r->crc, "%08X", crc);
-            else
-                r->crc[0] = 0;
+            else {
+                changed = 1;
+                if (gameid_ps2_crc(file, &crc) == 0) snprintf(r->crc, sizeof r->crc, "%08X", crc);
+                else r->crc[0] = 0;
+            }
         }
         if (e) {
             jset_num(e, "id_size", size);
@@ -392,7 +404,7 @@ static void add_derived_stems(local_rom *r, cJSON *e) {
             if (need_n64) jset_str(e, "n64_md5", r->n64_md5);
         }
     }
-    if (map_uses(m, "{duck_card}")) duck_name(r, e);
+    if (map_uses(m, "{duck_card}") && duck_name(r, e)) changed = 1;
     const char *vars[21];
     name_vars(r, "", vars);
     for (int pass = 0; pass < 2; pass++) {
@@ -428,6 +440,7 @@ static void add_derived_stems(local_rom *r, cJSON *e) {
         str_template(stem, sizeof stem, eq + 1, vars);
         if (stem[0] && !strchr(stem, '{') && stem[0] != '_') add_stem(r, stem);
     }
+    return e && changed;
 }
 
 static int platform_ids_for_map(const scan_ctx *c, const profile_map *m, int *ids, int max) {
@@ -769,6 +782,10 @@ static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
     /* Every game's record, by a hash: looked up one by one, cJSON walks the
      * whole section each time, and with a big library the scan went quadratic. */
     state_index *recs = state_index_new("roms");
+    /* Records with new derived names are saved once, after the folder: saving
+     * writes the whole state, and a save per game made a scan of a few hundred
+     * PS1 games take minutes on a PS5 with a big library. */
+    int changed = 0;
     while ((de = readdir(d))) {
         if (ignored_rom_file(de->d_name, m)) continue;
         char path[PATH_MAX_LEN];
@@ -906,8 +923,7 @@ static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
         if (map_uses(m, "{game_id}") && rom_game_id(&r, r.game_id, sizeof r.game_id) != 0) r.game_id[0] = 0;
         if (m->save_stems[0] || m->state_stems[0] || map_uses(m, "{rom_stem_safe}") || m->n64_split_dir[0]) {
             state_lock();
-            add_derived_stems(&r, recs ? state_index_get(recs, path) : state_entry("roms", path));
-            state_save();
+            changed |= add_derived_stems(&r, recs ? state_index_get(recs, path) : state_entry("roms", path));
             state_unlock();
         }
         profile_rules_for(m, path, &r.rules);
@@ -931,6 +947,11 @@ static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
     }
     closedir(d);
     state_index_free(recs);
+    if (changed) {
+        state_lock();
+        state_save();
+        state_unlock();
+    }
 }
 
 /* The emulator's games: rom_dir's, and those in folders it still plays from
