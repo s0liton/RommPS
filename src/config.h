@@ -16,6 +16,8 @@ typedef struct {
     char client_device_identifier[40]; /* sent when pairing */
     char username[64];
     int tls_verify;
+    char client_cert[256];          /* mTLS .p12, relative to the data folder (or absolute); "" for none */
+    char client_cert_password[256]; /* its password, kept like the token */
     int web_port;
 
     int sync_interval_min;    /* periodic sync, 0 = off */

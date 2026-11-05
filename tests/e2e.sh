@@ -26,6 +26,15 @@ TLS_PORT=8898
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=127.0.0.1 -keyout "$T/tls.pem" -out "$T/tls.crt" 2>/dev/null
 cat "$T/tls.crt" >> "$T/tls.pem"
 python3 "$ROOT/tests/mock_romm.py" $TLS_PORT "$T/tls.pem" 2>"$T/mock-tls.log" &
+# And once more behind mTLS: a client certificate from its own CA, as a .p12.
+MTLS_PORT=8897
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=client-ca -keyout "$T/cca.key" -out "$T/cca.crt" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj /CN=rommps-test -keyout "$T/client.key" -out "$T/client.csr" 2>/dev/null
+openssl x509 -req -in "$T/client.csr" -CA "$T/cca.crt" -CAkey "$T/cca.key" -CAcreateserial -days 1 -out "$T/client.crt" 2>/dev/null
+openssl pkcs12 -export -inkey "$T/client.key" -in "$T/client.crt" -passout pass:s3cret -out "$T/client.p12"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=stranger -keyout "$T/other.key" -out "$T/other.crt" 2>/dev/null
+openssl pkcs12 -export -inkey "$T/other.key" -in "$T/other.crt" -passout pass: -out "$T/other.p12"
+MOCK_CLIENT_CA="$T/cca.crt" python3 "$ROOT/tests/mock_romm.py" $MTLS_PORT "$T/tls.pem" 2>"$T/mock-mtls.log" &
 RA="$T/RetroArch"; mkdir -p "$RA/roms/snes" "$RA/saves/Snes9x" "$T/data"
 # RetroArch defaults: saves sorted into a folder per core name.
 printf 'savefile_directory = ":/saves"\nsort_savefiles_enable = "true"\n' > "$RA/retroarch.cfg"
@@ -79,7 +88,30 @@ r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"127.0.0.1:$TLS_P
 post /api/config '{"tls_verify":false}' >/dev/null
 r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$TLS_PORT\"}")
 [[ "$r" == *pending* ]] || fail "pairing with checks off failed: $r"
-post /api/pair/forget >/dev/null; post /api/config '{"tls_verify":true}' >/dev/null
+post /api/pair/forget >/dev/null
+
+echo "0b. a server behind mTLS takes a client certificate (.p12)"
+cert() { curl -s -X POST "$API/api/client-cert" -d "{\"p12\":\"$(base64 -w0 "$1")\",\"password\":\"$2\"}"; }
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *"asks for a client certificate"* ]] || fail "missing client certificate not reported: $r"
+r=$(cert "$T/client.p12" wrong); [[ "$r" == *"wrong password"* ]] || fail "wrong password not reported: $r"
+r=$(cert "$T/tls.crt" ""); [[ "$r" == *"not a PKCS#12"* ]] || fail "a file that isn't a .p12 was taken: $r"
+r=$(curl -sf "$API/api/client-cert"); [[ "$r" == *'"active":false'* && "$r" == *'"file":""'* ]] || fail "a refused upload changed the certificate: $r"
+r=$(cert "$T/other.p12" ""); [[ "$r" == *'"active":true'* && "$r" == *"CN=stranger"* ]] || fail "a .p12 without a password wasn't taken: $r"
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *"didn't accept"* ]] || fail "a certificate the server won't take not reported: $r"
+r=$(cert "$T/client.p12" s3cret); [[ "$r" == *'"active":true'* && "$r" == *"CN=rommps-test"* && "$r" == *"valid until"* ]] || fail "certificate upload: $r"
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *pending* ]] || fail "pairing through mTLS failed: $r"
+[[ -f "$T/data/client.p12" ]] || fail "the certificate wasn't saved in the data folder"
+python3 -c "import json,sys; c=json.load(open(sys.argv[1])); assert c['client_cert']=='client.p12' and c['client_cert_password']=='s3cret', c" "$T/data/config.json" \
+  || fail "the certificate isn't in config.json"
+r=$(curl -sf "$API/api/config"); [[ "$r" != *s3cret* && "$r" == *'"client_cert":"client.p12"'* ]] || fail "the web UI's config shows the certificate's password: $r"
+post /api/pair/forget >/dev/null
+r=$(curl -sf -X POST "$API/api/client-cert/remove"); [[ "$r" == *'"active":false'* ]] || fail "certificate not removed: $r"
+[[ ! -f "$T/data/client.p12" ]] || fail "client.p12 left behind"
+grep -q s3cret "$T/data/config.json" && fail "the password stayed in config.json"
+post /api/config '{"tls_verify":true}' >/dev/null
 
 echo "1. setup: pair, detect emulators, preview, first sync"
 post /api/pair/start "{\"server_url\":\"http://127.0.0.1:$MOCK_PORT\"}" >/dev/null

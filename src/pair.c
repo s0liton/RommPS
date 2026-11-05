@@ -41,6 +41,11 @@ static void normalize_url(const char *in, char *out, size_t n) {
 static int check_server(const char *base, char *err, int en) {
     char version[32] = "";
     if (romm_heartbeat(base, version, sizeof version) != 0) {
+        char refused[256];
+        if (http_client_cert_refused(base, refused, sizeof refused)) {
+            snprintf(err, (size_t)en, "%s", refused);
+            return -2;
+        }
         config_lock();
         int verify = g_cfg.tls_verify;
         config_unlock();

@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "autostart.h"
+#include "clientcert.h"
 #include "config.h"
 #include "covers.h"
 #include "detect.h"
@@ -269,8 +270,20 @@ static cJSON *status_json(void) {
     cJSON_AddNumberToObject(j, "web_port", g_cfg.web_port);
     config_unlock();
     /* RomM not answering: the clients say so (it's checked again meanwhile). */
-    char trouble[160];
-    if (romm_no_answer(trouble, sizeof trouble)) {
+    char trouble[256];
+    config_lock();
+    char server[sizeof g_cfg.server_url];
+    str_copy(server, sizeof server, g_cfg.server_url);
+    config_unlock();
+    if (server[0] && http_client_cert_refused(server, trouble, sizeof trouble)) {
+        /* Asked again now and then, not at every poll: the proxy may have been fixed. */
+        static time_t asked;
+        cJSON_AddStringToObject(j, "server_trouble", trouble);
+        if (time(NULL) - asked >= 30) {
+            asked = time(NULL);
+            romm_check_back();
+        }
+    } else if (romm_no_answer(trouble, sizeof trouble)) {
         cJSON_AddStringToObject(j, "server_trouble", trouble);
         romm_check_back();
     }
@@ -455,7 +468,7 @@ static size_t redactions(redaction *r, size_t max) {
     const struct { const char *v; const char *to; } src[] = {
         {g_cfg.token, "<token>"}, {g_cfg.server_url, "<server>"}, {g_cfg.username, "<user>"},
         {g_cfg.device_name, "<device>"}, {g_cfg.device_id, "<device-id>"},
-        {g_cfg.client_device_identifier, "<device-id>"}};
+        {g_cfg.client_device_identifier, "<device-id>"}, {g_cfg.client_cert_password, "<password>"}};
     for (size_t i = 0; i < sizeof src / sizeof src[0] && n < max; i++)
         if (strlen(src[i].v) >= 3 && strcmp(src[i].v, plat_info()->console)) {
             str_copy(r[n].from, sizeof r[n].from, src[i].v);
@@ -668,8 +681,8 @@ static void emulator_logs(const char *dir, const redaction *r, size_t nr, zip_me
 /* Builds the bundle at zip_path. 0 on success. */
 static int diagnostics_bundle(const char *zip_path) {
     enum { kMax = 48 };
-    redaction r[8];
-    size_t nr = redactions(r, 8);
+    redaction r[10];
+    size_t nr = redactions(r, 10);
     char dir[PATH_MAX_LEN], path[PATH_MAX_LEN];
     path_join(dir, sizeof dir, plat_data_dir(), "diagnostics.tmp");
     remove_tree(dir);
@@ -982,6 +995,27 @@ static void route(request *r) {
     if (is_post && !strcmp(r->path, "/api/presets/check")) {
         if (presets_check() != 0) send_error(fd, 409, "a presets check is already running");
         else send_json(fd, 200, presets_status());
+        return;
+    }
+    /* The client certificate (mTLS) comes before pairing: without it a server
+     * that asks for one can't be reached at all. */
+    if (is_get && !strcmp(r->path, "/api/client-cert")) {
+        send_json(fd, 200, clientcert_status());
+        return;
+    }
+    if (is_post && !strcmp(r->path, "/api/client-cert")) {
+        cJSON *j = body_json(r);
+        int rc = clientcert_install(jget_str(j, "p12", ""), jget_str(j, "password", ""), err, sizeof err);
+        cJSON *pw = cJSON_GetObjectItemCaseSensitive(j, "password");
+        if (cJSON_IsString(pw)) memset(pw->valuestring, 0, strlen(pw->valuestring));
+        cJSON_Delete(j);
+        if (rc) send_error(fd, 400, err);
+        else send_json(fd, 200, clientcert_status());
+        return;
+    }
+    if (is_post && !strcmp(r->path, "/api/client-cert/remove")) {
+        clientcert_remove();
+        send_json(fd, 200, clientcert_status());
         return;
     }
     /* Autostart works before pairing too: RommPS sets it up and keeps it

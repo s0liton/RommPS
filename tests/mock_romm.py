@@ -656,6 +656,10 @@ if __name__ == "__main__":
             import ssl
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(sys.argv[2])
+            # mTLS: only clients with a certificate from this CA get in.
+            if os.environ.get("MOCK_CLIENT_CA"):
+                ctx.verify_mode = ssl.CERT_REQUIRED
+                ctx.load_verify_locations(os.environ["MOCK_CLIENT_CA"])
             srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
         SERVER["srv"] = srv
         srv.serve_forever()
