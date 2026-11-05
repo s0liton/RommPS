@@ -218,7 +218,9 @@ static int ra_cfg_get(const char *cfg, const char *key, char *out, size_t n) {
 static void ra_apply(const char *cfg, const char *key, const char *root, char *dst, size_t n) {
     char v[PATH_MAX_LEN];
     if (!ra_cfg_get(cfg, key, v, sizeof v) || !v[0] || !strcmp(v, "default")) return;
-    if (v[0] == ':' || v[0] == '~')
+    if (plat_info()->real_path && plat_info()->real_path(v, dst, n))
+        ;
+    else if (v[0] == ':' || v[0] == '~')
         snprintf(dst, n, "%s%s", root, v + 1);
     else if (!strncmp(v, "/app0", 5) && (v[5] == '/' || !v[5]))
         snprintf(dst, n, "%s%s", root, v + 5);

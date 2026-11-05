@@ -17,6 +17,10 @@ int presets_check(void);
 /* Tells preset version, source (built-in) or (downloaded), info about the state, errors, and last checked time */
 cJSON *presets_status(void);
 
+/* Fills the catalog's machine placeholders ("{rdhome}") in place, with
+ * plat_info's catalog_var. Templates it doesn't know ({root}) are left. */
+void presets_resolve(cJSON *node);
+
 /* Compare the version code within date to see if this contains newer presets. */
 int presets_version_cmp(const char *a, const char *b);
 

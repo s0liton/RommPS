@@ -37,6 +37,10 @@ typedef struct {
     /* Where the built-in emulator profiles point before setup finds the real folders. */
     const char *retroarch_root;
     const char *mednafen_root;
+    /* Where a found RetroArch's games go, when not in its content/ folder:
+     * a path where {esde} is the system's ES-DE folder name ("psx", "gc").
+     * NULL: content/<system>. */
+    const char *retroarch_rom_dir;
     /* Standalone emulators this console has, as a JSON array (detect.c), or NULL. */
     const char *emulator_catalog;
     /* plat_mounts_set works: an app can see another's folder through a mount
@@ -47,6 +51,14 @@ typedef struct {
     /* The payload updates itself from GitHub releases. Off on the PS5, where
      * RommPS carries the payload and its updates bring the new one. */
     int self_update;
+    /* Fills a placeholder of the emulator catalog ("{rdhome}": where
+     * RetroDECK keeps its games, which moves with it to the SD card) with
+     * this machine's folder. 1 if it knows the name, 0 if not (the
+     * placeholder stays, so that emulator isn't found). NULL: none. */
+    int (*catalog_var)(const char *name, char *out, size_t n);
+    /* Turns a folder an emulator names from inside its sandbox (a Flatpak's
+     * /var/config) into the real one. 1 if it did. NULL: paths are real. */
+    int (*real_path)(const char *path, char *out, size_t n);
 } plat_info_t;
 
 const plat_info_t *plat_info(void);

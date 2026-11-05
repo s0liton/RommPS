@@ -1,0 +1,311 @@
+{
+  "format": 1,
+  "version": "2026.11.05.3",
+  "console": "steamdeck",
+  "emulators": [
+    {
+      "id": "rd-duckstation",
+      "name": "DuckStation (RetroDECK)",
+      "title_ids": [
+        "duckstation-qt"
+      ],
+      "detect": [
+        "{rdsaves}/psx/duckstation"
+      ],
+      "note": "One memory card per game, named after the game file (DuckStation's default).",
+      "profile": {
+        "root": "{rdconfig}/duckstation",
+        "rom_dir": "{rdroms}/psx",
+        "save_dir": "{rdsaves}/psx/duckstation/memcards",
+        "state_dir": "{rdstates}/psx/duckstation",
+        "bios_dir": "{rdbios}",
+        "save_exts": ".mcd",
+        "save_name": "{rom_stem}_1{ext}",
+        "save_stems": "{rom_stem}_1,{serial}_1",
+        "state_exts": "",
+        "firmware": {
+          "names": {
+            "8dd7d5296a650fac7319bce665a6a53c": "scph5500.bin",
+            "490f666e1afb15b7362b406ed1cea246": "scph5501.bin",
+            "32736f17079d0b2b7024407c39bd3050": "scph5502.bin"
+          }
+        },
+        "platforms": [
+          {
+            "romm": [
+              "psx",
+              "ps1",
+              "playstation"
+            ],
+            "dir": "psx",
+            "emulator": "duckstation",
+            "save_format": "psx-card",
+            "cards": {
+              "default": "per_game",
+              "modes": "per_game"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-pcsx2",
+      "name": "PCSX2 (RetroDECK)",
+      "title_ids": [
+        "pcsx2-qt"
+      ],
+      "detect": [
+        "{rdsaves}/ps2/pcsx2"
+      ],
+      "note": "Shared memory cards by default (Mcd001.ps2, Mcd002.ps2). A game set to its own card in PCSX2's game properties gets <game>.ps2.",
+      "profile": {
+        "root": "{rdconfig}/PCSX2",
+        "rom_dir": "{rdroms}/ps2",
+        "bios_dir": "{rdbios}",
+        "memcards": "{card_dir}/Mcd001.ps2,{card_dir}/Mcd002.ps2",
+        "save_layout": "ps2",
+        "state_exts": "",
+        "pcsx2_cards": {
+          "dir": "{rdsaves}/ps2/pcsx2/memcards",
+          "game_ini": "{rdconfig}/PCSX2/gamesettings/{serial}_{crc}.ini",
+          "global_ini": "{rdconfig}/PCSX2/inis/PCSX2.ini",
+          "format": "ini",
+          "own_card": "{rom_stem}.ps2"
+        },
+        "firmware": {
+          "pick_one": [
+            "21038400dc633070a78ad53090c53017",
+            "dc69f0643a3030aaa4797501b483d6c4",
+            "80ac46fa7e77b8ab4366e86948e54f83",
+            "93ea3bcee4252627919175ff1b16a1d9",
+            "d3e81e95db25f5a86a7b7474550a2155"
+          ]
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ps2"
+            ],
+            "dir": "ps2",
+            "emulator": "pcsx2",
+            "cards": {
+              "default": "shared",
+              "modes": "per_game,shared"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-dolphin",
+      "name": "Dolphin (RetroDECK)",
+      "title_ids": [
+        "dolphin-emu"
+      ],
+      "detect": [
+        "{rdsaves}/gc/dolphin",
+        "{rdsaves}/wii/dolphin"
+      ],
+      "note": "GameCube saves as files per game (GCI folders, US/EU/JP). Wii saves from its NAND.",
+      "profile": {
+        "root": "{rddata}/dolphin-emu",
+        "rom_dir": "{rdroms}/{platform}",
+        "bios_dir": "{rdbios}",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ngc",
+              "gamecube"
+            ],
+            "dir": "gc",
+            "emulator": "dolphin",
+            "save_layout": "gci",
+            "bundle_dirs": "{rdsaves}/gc/dolphin",
+            "cards": {
+              "default": "per_game",
+              "modes": "per_game"
+            }
+          },
+          {
+            "romm": [
+              "wii"
+            ],
+            "dir": "wii",
+            "emulator": "dolphin",
+            "save_layout": "wii",
+            "bundle_dirs": "{rdsaves}/wii/dolphin"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-ppsspp",
+      "name": "PPSSPP (RetroDECK)",
+      "title_ids": [
+        "PPSSPPSDL",
+        "PPSSPPQt"
+      ],
+      "detect": [
+        "{rdsaves}/PSP/PPSSPP-SA"
+      ],
+      "note": "Each game's save folders, from PPSSPP's SAVEDATA.",
+      "profile": {
+        "root": "{rdconfig}/ppsspp",
+        "rom_dir": "{rdroms}/psp",
+        "bios_dir": "{rdbios}",
+        "state_exts": "",
+        "save_layout": "psp",
+        "bundle_dirs": "{rdsaves}/PSP/PPSSPP-SA",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "psp"
+            ],
+            "dir": "psp",
+            "emulator": "ppsspp"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-melonds",
+      "name": "melonDS (RetroDECK)",
+      "title_ids": [
+        "melonDS"
+      ],
+      "detect": [
+        "{rdsaves}/nds/melonds"
+      ],
+      "profile": {
+        "root": "{rdconfig}/melonDS",
+        "rom_dir": "{rdroms}/nds",
+        "save_dir": "{rdsaves}/nds/melonds",
+        "bios_dir": "{rdbios}",
+        "save_exts": ".sav",
+        "state_exts": "",
+        "sync_saves": true,
+        "firmware": {
+          "only_files": [
+            "bios7.bin",
+            "bios9.bin",
+            "firmware.bin"
+          ]
+        },
+        "platforms": [
+          {
+            "romm": [
+              "nds"
+            ],
+            "dir": "nds",
+            "emulator": "melonds",
+            "save_format": "nds-raw"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-azahar",
+      "name": "Azahar (RetroDECK)",
+      "title_ids": [
+        "azahar"
+      ],
+      "detect": [
+        "{rdsaves}/n3ds/azahar"
+      ],
+      "profile": {
+        "root": "{rdconfig}/azahar-emu",
+        "rom_dir": "{rdroms}/n3ds",
+        "bios_dir": "{rdbios}",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "3ds"
+            ],
+            "dir": "n3ds",
+            "emulator": "azahar",
+            "save_layout": "3ds",
+            "bundle_dirs": "{rdsaves}/n3ds/azahar/sdmc/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/title"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-cemu",
+      "name": "Cemu (RetroDECK)",
+      "title_ids": [
+        "Cemu_relwithdeb",
+        "Cemu"
+      ],
+      "detect": [
+        "{rdsaves}/wiiu/cemu"
+      ],
+      "profile": {
+        "root": "{rddata}/Cemu",
+        "rom_dir": "{rdroms}/wiiu",
+        "bios_dir": "{rddata}/Cemu",
+        "state_exts": "",
+        "firmware": {
+          "only_files": [
+            "keys.txt"
+          ]
+        },
+        "platforms": [
+          {
+            "romm": [
+              "wiiu"
+            ],
+            "dir": "wiiu",
+            "emulator": "cemu",
+            "save_layout": "wiiu",
+            "bundle_dirs": "{rdsaves}/wiiu/cemu"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-xemu",
+      "name": "xemu (RetroDECK)",
+      "title_ids": [
+        "xemu"
+      ],
+      "detect": [
+        "{rdsaves}/xbox/xemu"
+      ],
+      "note": "Saves from xemu's hard disk image, wherever xemu.toml puts it.",
+      "profile": {
+        "root": "{rddata}/xemu/xemu",
+        "rom_dir": "{rdroms}/xbox",
+        "bios_dir": "{rdbios}",
+        "sync_saves": true,
+        "state_exts": "",
+        "firmware": {
+          "only_files": [
+            "mcpx_1.0.bin",
+            "Complex_4627.bin"
+          ]
+        },
+        "platforms": [
+          {
+            "romm": [
+              "xbox"
+            ],
+            "dir": "xbox",
+            "emulator": "xemu",
+            "save_layout": "xbox"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -47,6 +47,41 @@ static void download_path(const char *name, char *out, size_t n) {
     path_join(out, n, dir, name);
 }
 
+/* One string's placeholders, when catalog_var knows them. */
+static void resolve_string(cJSON *s, int (*var)(const char *, char *, size_t)) {
+    const char *in = s->valuestring;
+    if (!strchr(in, '{')) return;
+    char out[PATH_MAX_LEN * 2], name[64], value[PATH_MAX_LEN];
+    size_t o = 0;
+    int changed = 0;
+    while (*in && o < sizeof out - 1) {
+        const char *end = *in == '{' ? strchr(in, '}') : NULL;
+        if (end && (size_t)(end - in - 1) < sizeof name) {
+            snprintf(name, sizeof name, "%.*s", (int)(end - in - 1), in + 1);
+            if (var(name, value, sizeof value)) {
+                o += (size_t)snprintf(out + o, sizeof out - o, "%s", value);
+                if (o >= sizeof out) return; /* too long: keep it as it was */
+                in = end + 1;
+                changed = 1;
+                continue;
+            }
+        }
+        out[o++] = *in++;
+    }
+    out[o] = 0;
+    if (changed) cJSON_SetValuestring(s, out);
+}
+
+void presets_resolve(cJSON *node) {
+    int (*var)(const char *, char *, size_t) = plat_info()->catalog_var;
+    if (!var || !node) return;
+    cJSON *c;
+    cJSON_ArrayForEach(c, node) {
+        if (cJSON_IsString(c)) resolve_string(c, var);
+        else presets_resolve(c);
+    }
+}
+
 static cJSON *usable(cJSON *f, const char *from) {
     const char *why = !cJSON_IsObject(f) ? "Not valid JSON"
                     : jget_num(f, "format", 0) != PRESETS_FORMAT ? "In a format this version cannot read"
@@ -54,7 +89,10 @@ static cJSON *usable(cJSON *f, const char *from) {
                     : presets_version_cmp(jget_str(f, "version", ""), "0") <= 0 ? "Missing its version value"
                     : !cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(f, "emulators")) ? "Missing emulators section."
                     : NULL;
-    if (!why) return f;
+    if (!why) {
+        presets_resolve(f);
+        return f;
+    }
     LOGW("Presets: %s is %s; Not using it", from, why);
     cJSON_Delete(f);
     return NULL;

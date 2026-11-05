@@ -91,12 +91,20 @@ static int is_psp_save(const char *folder) {
     return sfo_file_get(sfo, "SAVEDATA_PARAMS", v, sizeof v) == 0 || sfo_file_get(sfo, "SAVEDATA_FILE_LIST", v, sizeof v) == 0;
 }
 
-static const char *gc_region(char r) {
+/* Dolphin's region folder for a game: USA, JAP or EUR, unless the folder
+ * has RetroDECK's shorter US, JP or EU instead. */
+static const char *gc_region(const char *base, char r) {
+    const char *full, *brief;
     switch (r) {
-    case 'E': return "USA";
-    case 'J': case 'K': case 'W': return "JAP";
-    default: return "EUR";
+    case 'E': full = "USA", brief = "US"; break;
+    case 'J': case 'K': case 'W': full = "JAP", brief = "JP"; break;
+    default: full = "EUR", brief = "EU"; break;
     }
+    char p[PATH_MAX_LEN];
+    path_join(p, sizeof p, base, full);
+    if (dir_exists(p)) return full;
+    path_join(p, sizeof p, base, brief);
+    return dir_exists(p) ? brief : full;
 }
 
 static void wii_title_hex(const char *id, char *out) {
@@ -214,7 +222,7 @@ int bundle_open(bundle *b, const char *layout, const char *id, char bases[][PATH
         if (d) closedir(d);
     } else if (!strcmp(layout, "gci")) {
         if (strlen(id) < 6) return -1;
-        snprintf(b->dir, sizeof b->dir, "%s/%s/Card A", base, gc_region(id[3]));
+        snprintf(b->dir, sizeof b->dir, "%s/%s/Card A", base, gc_region(base, id[3]));
         DIR *d = opendir(b->dir);
         struct dirent *de;
         while (d && (de = readdir(d))) {

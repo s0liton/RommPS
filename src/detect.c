@@ -264,6 +264,7 @@ static void app_title(const char *root, char *name, size_t n, char *title_id, si
 static void cfg_dir(const char *cfg, const char *key, const char *root, char *out, size_t n) {
     char v[PATH_MAX_LEN];
     if (!cfg || !info_get(cfg, key, v, sizeof v) || !v[0] || !strcmp(v, "default")) return;
+    if (plat_info()->real_path && plat_info()->real_path(v, out, n)) return;
     if (v[0] == ':' || v[0] == '~') snprintf(out, n, "%s%s", root, v + 1);
     else if (!strncmp(v, "/app0", 5) && (v[5] == '/' || !v[5])) snprintf(out, n, "%s%s", root, v + 5);
     else str_copy(out, n, v);
@@ -362,6 +363,17 @@ static cJSON *retroarch_candidate(const char *root) {
         cJSON_Delete(plats); /* no .info files, keep the default platforms */
     }
     ra2_update_profile(profile, NULL);
+    /* A frontend's games folder (RetroDECK's roms/psx), not RetroArch's own. */
+    const char *rom_tpl = plat_info()->retroarch_rom_dir;
+    cJSON *ra_plats = rom_tpl ? cJSON_GetObjectItemCaseSensitive(profile, "platforms") : NULL, *e;
+    cJSON_ArrayForEach(e, ra_plats) {
+        const char *esde = detect_esde_name(e);
+        if (!esde) continue;
+        const char *vars[] = {"esde", esde, NULL};
+        char dir[PATH_MAX_LEN];
+        str_template(dir, sizeof dir, rom_tpl, vars);
+        jset_str(e, "rom_dir", dir);
+    }
 
     cJSON *c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "kind", "retroarch");
@@ -421,6 +433,7 @@ static cJSON *emulator_catalog(void) {
         char *txt = read_file(env, NULL);
         cJSON *j = txt ? cJSON_Parse(txt) : NULL;
         free(txt);
+        presets_resolve(j);
         return catalog_from(j);
     }
     return cJSON_Duplicate(presets_catalog(), 1);

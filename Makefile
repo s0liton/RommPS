@@ -3,6 +3,7 @@
 #   make host                          macOS/Linux build for development, in build/host/
 #   make ps5                           PS5 payload, needs the SDK (see platform/ps5/ps5.mk)
 #   make ps4                           PS4 payload, needs the SDK (see platform/ps4/ps4.mk)
+#   make steamdeck                     Steam Deck service, with the machine's compiler (platform/steamdeck/steamdeck.mk)
 #   tools/ps5-build.sh, tools/ps4-build.sh   the same inside the Docker SDK image
 #   make deploy PS5_HOST=<ip>          send the PS5 payload to the loader on port 9021
 #   make install PS5_HOST=<ip>         same, plus copy it into the HEN's autostart over FTP (PS5_HEN_DIR)
@@ -58,7 +59,7 @@ COMMON_CFLAGS += -DROMM_NETLOG
 endif
 COMMON_CFLAGS += $(EXTRA_CFLAGS)
 
-.PHONY: unit all host ps5 ps4 tools deploy install install-ps4 run clean
+.PHONY: unit all host ps5 ps4 steamdeck deploy-deck tools deploy install install-ps4 run clean
 
 all: host
 
@@ -124,6 +125,7 @@ run: host
 
 include platform/ps5/ps5.mk
 include platform/ps4/ps4.mk
+include platform/steamdeck/steamdeck.mk
 
 clean:
 	rm -rf build
