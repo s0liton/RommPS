@@ -38,7 +38,15 @@ int sync_game_running(void);
 typedef struct {
     int saves, states, conflicts, failed;
 } sync_game_result;
-int sync_game(int rom_id, const char *name, const char *system, sync_game_result *out);
+/* problem: what's wrong with the game's file (game_file_problem), said in
+ * the notification instead of how its saves went; NULL when nothing is. */
+int sync_game(int rom_id, const char *name, const char *system, const char *problem, sync_game_result *out);
+
+/* What's wrong with a game's file that keeps its saves from syncing, as the
+ * end of a sentence ("the game file is incomplete (216 MB of 2.4 GB): ..."):
+ * an Xbox image cut short. 1 then, and the file counts as said, so syncs
+ * don't say it again; 0 when nothing's known to be wrong. */
+int game_file_problem(const char *path, const char *layout, char *out, size_t n);
 /* "Metal Gear Solid was downloaded for PlayStation", for the notification. */
 void download_notice(char *out, size_t n, const char *name, const char *system);
 

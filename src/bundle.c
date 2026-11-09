@@ -1,5 +1,6 @@
 #include "bundle.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -22,8 +23,14 @@ int bundle_supported(const char *layout) {
 
 static void add(bundle *b, const char *path, const char *name) {
     if (b->n == b->cap) {
-        b->cap = b->cap ? b->cap * 2 : 16;
-        b->files = realloc(b->files, sizeof *b->files * (size_t)b->cap);
+        const int want = b->cap ? b->cap * 2 : 16;
+        void *grown = realloc(b->files, sizeof *b->files * (size_t)want);
+        if (!grown) {
+            LOGE("no memory for more files in %s's save: %s is left out", b->dir, name);
+            return;
+        }
+        b->files = grown;
+        b->cap = want;
     }
     str_copy(b->files[b->n].path, sizeof b->files[0].path, path);
     str_copy(b->files[b->n].name, sizeof b->files[0].name, name);
@@ -158,11 +165,32 @@ static void xbox_copy_out(bundle *b, const char *image) {
     write_file_atomic(stamp, now, strlen(now));
 }
 
-int bundle_open(bundle *b, const char *layout, const char *id, char bases[][PATH_MAX_LEN], int nbases) {
+/* psp, ps3: whether a save folder is the game's, by the title id it starts with. */
+static int folder_is_games(const bundle *b, const char *name) {
+    if (!strncasecmp(name, b->game_id, strlen(b->game_id))) return 1;
+    char list[sizeof b->also], *save = NULL;
+    str_copy(list, sizeof list, b->also);
+    for (char *t = strtok_r(list, ",", &save); t; t = strtok_r(NULL, ",", &save))
+        if (!strncasecmp(name, t, strlen(t))) return 1;
+    return 0;
+}
+
+/* "BLUS30190" out of "BLUS30190MC4_SAV": four letters, five digits, the
+ * shape of every PSP and PS3 title id. -1 for anything else. */
+static int title_id_of(const char *name, char out[10]) {
+    for (int i = 0; i < 9; i++)
+        if (i < 4 ? !isalpha((unsigned char)name[i]) : !isdigit((unsigned char)name[i])) return -1;
+    for (int i = 0; i < 9; i++) out[i] = (char)toupper((unsigned char)name[i]);
+    out[9] = 0;
+    return 0;
+}
+
+int bundle_open(bundle *b, const char *layout, const char *id, const char *also, char bases[][PATH_MAX_LEN], int nbases) {
     memset(b, 0, sizeof *b);
     if (!bundle_supported(layout) || !id[0] || nbases < 1) return -1;
     str_copy(b->layout, sizeof b->layout, layout);
     str_copy(b->game_id, sizeof b->game_id, id);
+    if (also) str_copy(b->also, sizeof b->also, also);
 
     if (!strcmp(layout, "ps2")) {
         /* The slot cards: the game's save folders on a folder card, or a file
@@ -204,11 +232,10 @@ int bundle_open(bundle *b, const char *layout, const char *id, char bases[][PATH
         str_copy(b->dir, sizeof b->dir, base);
         DIR *d = opendir(base);
         struct dirent *de;
-        size_t il = strlen(id);
         while (d && (de = readdir(d))) {
             char folder[PATH_MAX_LEN];
             path_join(folder, sizeof folder, base, de->d_name);
-            if (strncasecmp(de->d_name, id, il) != 0 || !dir_exists(folder) || !is_psp_save(folder)) continue;
+            if (!folder_is_games(b, de->d_name) || !dir_exists(folder) || !is_psp_save(folder)) continue;
             add_tree(b, folder, de->d_name, 0);
         }
         if (d) closedir(d);
@@ -492,12 +519,37 @@ int bundle_replace(bundle *b, const char *zip_path, const char *tmp_dir) {
         remove_tree(tmp_dir);
     }
 
-    char id[24], base[1][PATH_MAX_LEN], layout[8];
+    char id[24], base[1][PATH_MAX_LEN], layout[8], also[sizeof b->also];
     str_copy(id, sizeof id, b->game_id);
     str_copy(layout, sizeof layout, b->layout);
     str_copy(base[0], sizeof base[0], b->base);
+    str_copy(also, sizeof also, b->also);
     bundle_free(b);
     /* List the files again from the same folder. */
-    bundle_open(b, layout, id, base, 1);
+    bundle_open(b, layout, id, also, base, 1);
     return rc;
+}
+
+int bundle_other_ids(const bundle *b, const char *zip_path, const char *tmp_dir, char *out, size_t n) {
+    out[0] = 0;
+    if (strcmp(b->layout, "psp") != 0 && strcmp(b->layout, "ps3") != 0) return 0;
+    remove_tree(tmp_dir);
+    if (zip_extract_all(zip_path, tmp_dir) < 0) {
+        remove_tree(tmp_dir);
+        return -1;
+    }
+    DIR *d = opendir(tmp_dir);
+    struct dirent *de;
+    size_t o = 0;
+    while (d && (de = readdir(d))) {
+        char in[PATH_MAX_LEN], tid[10];
+        path_join(in, sizeof in, tmp_dir, de->d_name);
+        if (de->d_name[0] == '.' || !dir_exists(in) || folder_is_games(b, de->d_name) || title_id_of(de->d_name, tid) != 0)
+            continue;
+        if (strstr(out, tid) || o + strlen(tid) + 2 > n) continue; /* listed already, or no room */
+        o += (size_t)snprintf(out + o, n - o, "%s%s", o ? "," : "", tid);
+    }
+    if (d) closedir(d);
+    remove_tree(tmp_dir);
+    return 0;
 }

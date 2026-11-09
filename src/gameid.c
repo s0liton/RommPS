@@ -642,50 +642,103 @@ int gameid_from_library(const char *library_json, const char *system, const char
  * partition sits at 0 in a trimmed .xiso, or one video partition in on a full
  * disc image (XGD1). The magic is checked at both ends of the volume
  * descriptor, so a stray copy inside game data doesn't pass for one. */
-static int xdvdfs_root_file(FILE *f, const char *name, uint64_t *off, uint32_t *size) {
+static int xdvdfs_root(FILE *f, uint64_t *base, unsigned char **table, uint32_t *table_size) {
     static const uint64_t bases[] = {0, 34078720, 265879552, 405798912};
     unsigned char vd[SECTOR];
     for (size_t i = 0; i < sizeof bases / sizeof bases[0]; i++) {
         if (read_at(f, (long)(bases[i] + 0x10000), vd, sizeof vd) != 0 || memcmp(vd, "MICROSOFT*XBOX*MEDIA", 20) != 0 ||
             memcmp(vd + 0x7EC, "MICROSOFT*XBOX*MEDIA", 20) != 0)
             continue;
-        uint32_t table_size = le32(vd + 0x18);
-        if (!table_size || table_size > 512 * 1024) return -1;
-        unsigned char *table = malloc(table_size);
-        if (!table || read_at(f, (long)(bases[i] + (uint64_t)le32(vd + 0x14) * SECTOR), table, table_size) != 0) {
-            free(table);
+        const uint32_t size = le32(vd + 0x18);
+        if (!size || size > 512 * 1024) return -1;
+        unsigned char *t = malloc(size);
+        if (!t || read_at(f, (long)(bases[i] + (uint64_t)le32(vd + 0x14) * SECTOR), t, size) != 0) {
+            free(t);
             return -1;
         }
-        /* A binary tree, ordered by the uppercased name, a prefix first.
-         * Children are in 4-byte units; 0 or 0xff is none. */
-        uint32_t at = 0;
-        int rc = -1;
-        for (int depth = 0; depth < 64 && at + 14 <= table_size; depth++) {
-            const unsigned char *e = table + at;
-            const size_t len = e[13];
-            if (at + 14 + len > table_size) break;
-            int cmp = 0;
-            for (size_t k = 0; k < len && !cmp; k++) {
-                if (!name[k]) cmp = -1;
-                else cmp = toupper((unsigned char)name[k]) - toupper(e[14 + k]);
-            }
-            if (!cmp && name[len]) cmp = 1;
-            if (!cmp) {
-                if (!(e[12] & 0x10)) {
-                    *off = bases[i] + (uint64_t)le32(e + 4) * SECTOR;
-                    *size = le32(e + 8);
-                    rc = 0;
-                }
-                break;
-            }
-            const uint16_t next = le16(e + (cmp < 0 ? 0 : 2));
-            if (!next || next == 0xff) break;
-            at = (uint32_t)next * 4;
-        }
-        free(table);
-        return rc;
+        *base = bases[i];
+        *table = t;
+        *table_size = size;
+        return 0;
     }
     return -1;
+}
+
+static int xdvdfs_root_file(FILE *f, const char *name, uint64_t *off, uint32_t *size) {
+    uint64_t base;
+    unsigned char *table;
+    uint32_t table_size;
+    if (xdvdfs_root(f, &base, &table, &table_size) != 0) return -1;
+    /* A binary tree, ordered by the uppercased name, a prefix first.
+     * Children are in 4-byte units; 0 or 0xff is none. */
+    uint32_t at = 0;
+    int rc = -1;
+    for (int depth = 0; depth < 64 && at + 14 <= table_size; depth++) {
+        const unsigned char *e = table + at;
+        const size_t len = e[13];
+        if (at + 14 + len > table_size) break;
+        int cmp = 0;
+        for (size_t k = 0; k < len && !cmp; k++) {
+            if (!name[k]) cmp = -1;
+            else cmp = toupper((unsigned char)name[k]) - toupper(e[14 + k]);
+        }
+        if (!cmp && name[len]) cmp = 1;
+        if (!cmp) {
+            if (!(e[12] & 0x10)) {
+                *off = base + (uint64_t)le32(e + 4) * SECTOR;
+                *size = le32(e + 8);
+                rc = 0;
+            }
+            break;
+        }
+        const uint16_t next = le16(e + (cmp < 0 ? 0 : 2));
+        if (!next || next == 0xff) break;
+        at = (uint32_t)next * 4;
+    }
+    free(table);
+    return rc;
+}
+
+int gameid_xbox_short(const char *path, uint64_t *need, uint64_t *have) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    uint64_t base;
+    unsigned char *table;
+    uint32_t table_size;
+    int rc = 0;
+    if (xdvdfs_root(f, &base, &table, &table_size) == 0) {
+        /* Every entry of the root's tree, each visited once: where the
+         * furthest of them ends is as long as the image must be at least. */
+        uint32_t stack[256];
+        unsigned char *seen = calloc(table_size / 4 + 1, 1);
+        int sp = 0;
+        uint64_t end = 0;
+        stack[sp++] = 0;
+        while (seen && sp > 0) {
+            const uint32_t at = stack[--sp];
+            if (at + 14 > table_size || seen[at / 4]) continue;
+            seen[at / 4] = 1;
+            const unsigned char *e = table + at;
+            const uint64_t stop = base + (uint64_t)le32(e + 4) * SECTOR + le32(e + 8);
+            if (stop > end) end = stop;
+            for (int c = 0; c < 2; c++) {
+                const uint16_t next = le16(e + c * 2);
+                if (next && next != 0xff && next != 0xffff && sp < 256) stack[sp++] = (uint32_t)next * 4;
+            }
+        }
+        free(seen);
+        free(table);
+        if (fseek(f, 0, SEEK_END) == 0) {
+            const long size = ftell(f);
+            if (size >= 0 && end > (uint64_t)size) {
+                *need = end;
+                *have = (uint64_t)size;
+                rc = 1;
+            }
+        }
+    }
+    fclose(f);
+    return rc;
 }
 
 int gameid_xbox(const char *path, char *out, size_t n) {

@@ -426,6 +426,10 @@ echo "special-save" > "$RA/special/EarthBound (USA).srm"
 syncnow
 n=$(dump | python3 -c "import json,sys; print(sum(1 for x in json.load(sys.stdin)['saves'] if x['rom_id']==21))")
 [[ "$n" == 0 ]] || fail "game with shared cards in its own options must not sync"
+# The per-game folder's file was never synced and RomM already has EarthBound's
+# save: that's a conflict, not a quiet replacement. Keeping this one sends it up.
+[[ "$(last conflicts)" == 1 ]] || fail "a never-synced save against RomM's must be a conflict (got $(last conflicts))"
+post /api/conflicts/resolve "{\"path\":\"$RA/special/EarthBound (USA).srm\",\"keep\":\"local\"}" >/dev/null || fail "resolve failed"
 c=$(dump | python3 -c "import json,sys; s=sorted([x for x in json.load(sys.stdin)['saves'] if x['rom_id']==12], key=lambda x: x['updated_at']); print(s[-1]['content'].strip())")
 [[ "$c" == "special-save" ]] || fail "per-game save folder not used (got $c)"
 
@@ -702,6 +706,9 @@ syncnow
 # With Beetle the card is named after the game file: still the game's card.
 sleep 1; printf 'card-beetle' > "$T/psxemu/saves/Test Quest (USA)_1.mcd"
 syncnow
+# A card this console never synced, against the one RomM has: asked, not assumed.
+[[ "$(last conflicts)" == 1 ]] || fail "Beetle's never-synced card against RomM's must be a conflict (got $(last conflicts))"
+post /api/conflicts/resolve "{\"path\":\"$T/psxemu/saves/Test Quest (USA)_1.mcd\",\"keep\":\"local\"}" >/dev/null || fail "resolve failed"
 card=$(dump | python3 -c "import json,sys; s=sorted([x for x in json.load(sys.stdin)['saves'] if x['rom_id']==50], key=lambda x: x['updated_at']); print(s[-1]['content'])")
 [[ "$card" == "card-beetle" ]] || fail "the card Beetle names after the game file must sync: $card"
 # A blank card an emulator just made under the other name never beats one with a save on it.
@@ -1794,6 +1801,21 @@ python3 "$ROOT/tests/xboxhdd.py" get "$XB/hdd/disk.qcow2" 4D530004 "$T/xbout" >/
 [[ ! -e "$XB/hdd/disk.qcow2.romm" ]] || fail "no copy of the image may be left behind"
 syncnow
 [[ "$(xbunits)" == "$units" ]] || fail "a save just placed must not go up again: $(xbunits)"
+
+echo "28c1. An Xbox image cut short on the server: its save can't be placed, said once, not a failure every sync"
+python3 "$ROOT/tests/make_disc.py" xiso "$T/whole.xiso.iso" 4D530099
+head -c $((41 * 2048)) "$T/whole.xiso.iso" > "$XB/games/Cut (USA).xiso.iso"   # stops where its default.xbe starts
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":962,"platform_id":96,"name":"Cut","fs_name":"Cut (USA).xiso.iso"}' >/dev/null
+b64=$(python3 -c "import base64,io,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('4D530099/SLOT0/cut.sav','cut'); z.close(); print(base64.b64encode(b.getvalue()).decode())")
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":962,\"slot\":\"autosave\",\"file_name\":\"4D530099.zip\",\"emulator\":\"xemu\",\"content_b64\":\"$b64\"}" >/dev/null
+syncnow
+told() { grep -c "Its saves can't sync: the game file is incomplete" "$T/daemon.log"; }
+[[ "$(told)" == 1 ]] || fail "a game file cut short must be said, once: $(told) times"
+[[ "$(last failed)" == 0 ]] || fail "a game file cut short isn't a failed sync: $(last failed) failed"
+syncnow
+[[ "$(told)" == 1 && "$(last failed)" == 0 ]] || fail "said again or failed again on the next sync: $(told) times, $(last failed) failed"
+[[ "$(python3 "$ROOT/tests/xboxhdd.py" get "$XB/hdd/disk.qcow2" 4D530099 "$T/xbout")" == none ]] || fail "a save went onto the disk for a game with no id"
+rm "$XB/games/Cut (USA).xiso.iso"
 
 echo "28c2. DS saves: melonDS's .sav and the melonDS DS core's .srm are one raw save, shared between a main emulator and an extra"
 curl -skf -X POST "$SV/_admin/platform" -d '{"id":98,"slug":"nds","name":"Nintendo DS"}' >/dev/null

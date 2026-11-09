@@ -40,6 +40,10 @@ typedef struct {
     char base[PATH_MAX_LEN]; /* the candidate folder picked */
     char dir[PATH_MAX_LEN];  /* where the files live and the zip is unpacked */
     char account[16];        /* wiiu: this console's account folder, "80000001" */
+    /* psp, ps3: more title ids its save folders start with, comma-separated.
+     * Re-releases love saving under the original's id: Midnight Club: LA's
+     * Complete Edition (BLUS30442) writes BLUS30190MC4_SAV. */
+    char also[64];
     bundle_file *files;
     int n, cap;
     time_t mtime;
@@ -50,14 +54,21 @@ int bundle_supported(const char *layout);
 
 /* Picks the game's folder from candidate base folders (.../PSP/SAVEDATA,
  * .../User/GC, .../User/Wii, the 3DS SD card's .../title or Cemu's
- * mlc01/usr/save), preferring one that exists, and lists its files. */
-int bundle_open(bundle *b, const char *layout, const char *game_id, char bases[][PATH_MAX_LEN], int nbases);
+ * mlc01/usr/save), preferring one that exists, and lists its files. also:
+ * see bundle.also, NULL for none. */
+int bundle_open(bundle *b, const char *layout, const char *game_id, const char *also, char bases[][PATH_MAX_LEN],
+                int nbases);
 void bundle_free(bundle *b);
 
 /* RomM's hash for the zip this bundle would produce. */
 int bundle_hash(const bundle *b, char out[33]);
 int bundle_zip(const bundle *b, const char *zip_path);
-/* Replaces the bundle's files with the zip's contents. */
+/* Replaces the bundle's files with the zip's contents. -1 for a zip it
+ * can't use, with nothing replaced. */
 int bundle_replace(bundle *b, const char *zip_path, const char *tmp_dir);
+/* psp, ps3: the title ids of the save folders in a zip that aren't the
+ * bundle's (its game id or also), comma-separated into out ("" for none).
+ * Unpacks into tmp_dir to look, and clears it after. -1 for a bad zip. */
+int bundle_other_ids(const bundle *b, const char *zip_path, const char *tmp_dir, char *out, size_t n);
 
 #endif

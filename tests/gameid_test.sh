@@ -18,6 +18,12 @@ crc=$(python3 "$ROOT/tests/make_disc.py" ps2 "$T/sub.iso" SLES_501.23 DATA)
 expect "$T/sub.iso" "SLES-50123 $crc"
 python3 "$ROOT/tests/make_disc.py" xiso "$T/halo.xiso.iso" 4D530004
 [[ $("$CLI" xbox "$T/halo.xiso.iso") == 4D530004 ]] || fail "xiso: no 4D530004"
+[[ $("$CLI" xbox-short "$T/halo.xiso.iso") == - ]] || fail "a whole xiso read as cut short"
+head -c $((41 * 2048)) "$T/halo.xiso.iso" > "$T/cut.xiso.iso"   # stops where its default.xbe starts
+[[ $("$CLI" xbox "$T/cut.xiso.iso") == - ]] || fail "a cut xiso still gave a title id"
+[[ $("$CLI" xbox-short "$T/cut.xiso.iso") == "$(( 41 * 2048 + $(stat -c %s "$T/halo.xiso.iso") - 41 * 2048 )) $(( 41 * 2048 ))" ]] \
+  || fail "a cut xiso wasn't seen as short: $("$CLI" xbox-short "$T/cut.xiso.iso")"
+[[ $("$CLI" xbox-short "$T/xbox-game") == - ]] || fail "a game folder read as a short image"
 mkdir "$T/xbox-game" && python3 "$ROOT/tests/make_disc.py" xbe "$T/xbox-game/default.xbe" 54430003
 [[ $("$CLI" xbox "$T/xbox-game") == 54430003 ]] || fail "xbe folder: no 54430003"
 python3 "$ROOT/tests/make_disc.py" x360iso "$T/360.iso" 4D5307E6
