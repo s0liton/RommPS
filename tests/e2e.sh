@@ -1308,7 +1308,9 @@ echo "21. one-file folder games: saves named after the file sync; old extensionl
 curl -sfk -X POST "$TM/_admin/rom" -d '{"id":70,"platform_id":1,"name":"Folder Game","fs_name":"Folder Game",
   "files":[{"id":701,"file_name":"Folder Game (USA).sfc","content":"ROM:Folder Game (USA).sfc"}]}' >/dev/null
 post /api/download '{"rom_id":70}' >/dev/null
-for _ in $(seq 1 20); do got=$(find "$T" -path "*/Folder Game/Folder Game (USA).sfc" -not -path '*/data/*' | head -1); [[ -n "$got" ]] && break; sleep 0.25; done
+# The main emulator's copy: RomM's saves come down to it, and the extra's copy
+# would only be picked when find happens to list it first (it did, on CI).
+for _ in $(seq 1 20); do got=$(find "$T/homebrew" -path "*/Folder Game/Folder Game (USA).sfc" | head -1); [[ -n "$got" ]] && break; sleep 0.25; done
 [[ -n "$got" ]] || fail "a one-file folder game must download into its folder"
 gdir=$(dirname "$(dirname "$got")")
 sdir=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print([m['save_dir'] for m in json.load(sys.stdin) if m['rom_dir']=='$gdir'][0])")
