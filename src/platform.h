@@ -37,10 +37,15 @@ typedef struct {
     /* Where the built-in emulator profiles point before setup finds the real folders. */
     const char *retroarch_root;
     const char *mednafen_root;
-    /* Where a found RetroArch's games go, when not in its content/ folder:
-     * a path where {esde} is the system's ES-DE folder name ("psx", "gc").
-     * NULL: content/<system>. */
-    const char *retroarch_rom_dir;
+    /* Where the RetroArch found at root keeps its games, when not in its
+     * content/ folder: a path where {esde} is the system's ES-DE folder name
+     * ("psx", "gc"), or NULL for content/<system>. NULL: content/<system> for all. */
+    const char *(*retroarch_rom_dir)(const char *root);
+    /* What tells the RetroArch at root apart from the others in the same
+     * kind of folder (two Flatpaks, each with config/retroarch): its id's
+     * suffix ("emudeck": "retroarch-emudeck") and its name. 1 if it has one.
+     * NULL, or 0: the folder's name. */
+    int (*retroarch_label)(const char *root, char *label, size_t ln, char *name, size_t nn);
     /* Standalone emulators this console has, as a JSON array (detect.c), or NULL. */
     const char *emulator_catalog;
     /* plat_mounts_set works: an app can see another's folder through a mount
@@ -57,11 +62,37 @@ typedef struct {
      * placeholder stays, so that emulator isn't found). NULL: none. */
     int (*catalog_var)(const char *name, char *out, size_t n);
     /* Turns a folder an emulator names from inside its sandbox (a Flatpak's
-     * /var/config) into the real one. 1 if it did. NULL: paths are real. */
-    int (*real_path)(const char *path, char *out, size_t n);
+     * /var/config) into the real one, for the emulator whose folder is root
+     * (each Flatpak has its own /var/config). 1 if it did. NULL: paths are real. */
+    int (*real_path)(const char *root, const char *path, char *out, size_t n);
+    /* The app's name in messages ("RommDeck") and where its updates come
+     * from ("GitHub"); NULL: "RommPS" and "your homebrew store". */
+    const char *product;
+    const char *update_source;
+    /* Looks for the machine's folders again (an SD card mounted since, or
+     * RetroDECK set up after this started): 1 if catalog_var's answers
+     * changed. NULL: they never do. */
+    int (*refresh)(void);
+    /* Whether this starts with the machine some other way than the loader's
+     * autostart (a systemd unit). NULL: through autostart_dir, as above. */
+    int (*autostart_enabled)(void);
+    /* What messages call this machine ("Deck": "this Deck") and the ones it
+     * syncs with ("devices"); NULL: "console" and "consoles". */
+    const char *here;
+    const char *peers;
 } plat_info_t;
 
 const plat_info_t *plat_info(void);
+
+static inline const char *plat_product(void) { return plat_info()->product ? plat_info()->product : "RommPS"; }
+/* What the service calls itself in messages: the product's name where it
+ * has one (RommDeck, whose service has no name of its own to the user), else
+ * "RomM Sync". */
+static inline const char *plat_service_name(void) { return plat_info()->product ? plat_info()->product : "RomM Sync"; }
+static inline const char *plat_here(void) { return plat_info()->here ? plat_info()->here : "console"; }
+static inline const char *plat_update_source(void) {
+    return plat_info()->update_source ? plat_info()->update_source : "your homebrew store";
+}
 
 /* Names the process, stops any older copy and raises privileges. 1 if another
  * copy is running and this one should quit, -1 on a problem, 0 otherwise. */

@@ -117,6 +117,10 @@ class LibraryPage
 
     // ---- platforms
     void update_platforms(App &app, const hui::InputFrame &input, hui::ui::Feedback &feedback);
+#if defined(ROMMPS_DECK)
+    void draw_tile_name(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, App &app,
+                        const std::string &name, float x, float top, int focused) const;
+#endif
     void draw_platforms(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, App &app, Color accent,
                         float clock, float age) const;
     // ---- a grid of games
@@ -132,7 +136,7 @@ class LibraryPage
     void jump_letter(GameList &l, int letter, hui::ui::Feedback &feedback);
     // ---- search
     void open_search(const Scope &scope);
-    void update_search(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
+    void update_search(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback, bool &details);
     void draw_search(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, App &app, Color accent,
                      float clock) const;
 
@@ -146,7 +150,11 @@ class LibraryPage
     // platforms: the tiles, of platforms or collections
     Browse browse_ = kByPlatform;
     int tile_ = 0;
+    // The focused tile's name scrolls when it doesn't fit: which tile, and since when.
+    mutable int marquee_tile_ = -1;
+    mutable double marquee_since_ = 0.0;
     hui::tween::Spring tiles_scroll_; // in pixels
+    bool tiles_free_ = false; // scrolled by touch, away from the focus
 
     // a grid
     Scope grid_scope_;
@@ -161,6 +169,7 @@ class LibraryPage
     float install_armed_ = 0.0f; // seconds a second Square installs the whole collection
     int letter_ = 0; // the A to Z bar's focus, an index into the list's letters
     hui::tween::Spring grid_scroll_; // in rows
+    bool grid_free_ = false; // scrolled by touch, away from the focus
     hui::tween::Spring focus_x_, focus_y_;
     int shown_id_ = -1;
     float shown_age_ = 0.0f;

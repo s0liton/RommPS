@@ -68,6 +68,9 @@
     {"names": ["Dolphin"],
      "note": "A GCI folder: one file per save, so each game's own; synced as a zip of the game's .gci files.",
      "entry": {"save_layout": "gci", "cards": {"default": "per_game", "modes": "per_game"}}},
-    {"names": ["Azahar", "Citra"], "entry": {"save_layout": "3ds"}}
+    {"names": ["Azahar", "Citra"], "entry": {"save_layout": "3ds"}},
+    {"names": ["MAME"],
+     "note": "Each game's NVRAM folder, <save folder>/mame/nvram/<set>/, synced as a zip of it (<set>.zip), the same as standalone MAME's.",
+     "entry": {"save_layout": "folder", "bundle_dirs": "{save_path}/mame/nvram,{save_root}/mame/nvram"}}
   ]
 }

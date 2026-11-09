@@ -1,0 +1,7 @@
+# Known false positives (make lint). Each was checked by hand.
+# owners is checked in the loop's condition, and the loop ends right after it's freed
+nullPointerRedundantCheck:src/ps2card.c
+nullPointerArithmeticRedundantCheck:src/ps2card.c
+# ed.b is filled by db_key before ed is copied
+uninitvar:src/ps2card.c
+missingIncludeSystem

@@ -135,7 +135,8 @@ cJSON *autostart_status(void) {
     if (plat_info()->autostart_hint) cJSON_AddStringToObject(j, "hint", plat_info()->autostart_hint);
     cJSON_AddBoolToObject(j, "loader_found", n && p[0].present);
     cJSON_AddBoolToObject(j, "installed", n && file_exists(p[0].elf));
-    cJSON_AddBoolToObject(j, "enabled", n && enabled_at(&p[0]));
+    cJSON_AddBoolToObject(j, "enabled",
+                          plat_info()->autostart_enabled ? plat_info()->autostart_enabled() : n && enabled_at(&p[0]));
     cJSON_AddStringToObject(j, "path", n ? p[0].elf : "");
     cJSON_AddStringToObject(j, "version", version);
     cJSON *list = cJSON_AddArrayToObject(j, "copies");
@@ -215,7 +216,7 @@ int autostart_enable(const void *data, size_t len, char *err, int en) {
     place p[MAX_PLACES];
     int n = places(p, MAX_PLACES);
     if (!n) {
-        snprintf(err, (size_t)en, "%s can't start payloads with the console", plat_info()->loader);
+        snprintf(err, (size_t)en, "%s can't start payloads with the %s", plat_info()->loader, plat_here());
         return -1;
     }
     if (!p[0].present) {

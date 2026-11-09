@@ -54,6 +54,134 @@ int n64_rom_md5(const char *rom, char out[33]) {
     return 0;
 }
 
+/* SHA-256 (FIPS 180-4), for gopher64's names. */
+typedef struct {
+    uint32_t h[8];
+    uint64_t len;
+    unsigned char buf[64];
+    size_t fill;
+} sha256_ctx;
+
+static const uint32_t K256[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01,
+    0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
+    0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08,
+    0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
+
+#define ROR(x, n) ((x) >> (n) | (x) << (32 - (n)))
+
+static void sha256_block(sha256_ctx *c, const unsigned char *p) {
+    uint32_t w[64], v[8];
+    for (int i = 0; i < 16; i++) w[i] = (uint32_t)p[i * 4] << 24 | (uint32_t)p[i * 4 + 1] << 16 | (uint32_t)p[i * 4 + 2] << 8 | p[i * 4 + 3];
+    for (int i = 16; i < 64; i++) {
+        const uint32_t s0 = ROR(w[i - 15], 7) ^ ROR(w[i - 15], 18) ^ (w[i - 15] >> 3);
+        const uint32_t s1 = ROR(w[i - 2], 17) ^ ROR(w[i - 2], 19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+    }
+    memcpy(v, c->h, sizeof v);
+    for (int i = 0; i < 64; i++) {
+        const uint32_t t1 = v[7] + (ROR(v[4], 6) ^ ROR(v[4], 11) ^ ROR(v[4], 25)) + ((v[4] & v[5]) ^ (~v[4] & v[6])) + K256[i] + w[i];
+        const uint32_t t2 = (ROR(v[0], 2) ^ ROR(v[0], 13) ^ ROR(v[0], 22)) + ((v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]));
+        memmove(v + 1, v, 7 * sizeof *v);
+        v[4] += t1;
+        v[0] = t1 + t2;
+    }
+    for (int i = 0; i < 8; i++) c->h[i] += v[i];
+}
+
+static void sha256_init(sha256_ctx *c) {
+    static const uint32_t H0[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    memcpy(c->h, H0, sizeof H0);
+    c->len = 0;
+    c->fill = 0;
+}
+
+static void sha256_update(sha256_ctx *c, const unsigned char *p, size_t n) {
+    c->len += n;
+    while (n) {
+        const size_t take = 64 - c->fill < n ? 64 - c->fill : n;
+        memcpy(c->buf + c->fill, p, take);
+        c->fill += take;
+        p += take;
+        n -= take;
+        if (c->fill == 64) {
+            sha256_block(c, c->buf);
+            c->fill = 0;
+        }
+    }
+}
+
+static void sha256_final(sha256_ctx *c, unsigned char out[32]) {
+    const uint64_t bits = c->len * 8;
+    unsigned char pad = 0x80, zero = 0, len[8];
+    sha256_update(c, &pad, 1);
+    while (c->fill != 56) sha256_update(c, &zero, 1);
+    for (int i = 0; i < 8; i++) len[i] = (unsigned char)(bits >> (56 - i * 8));
+    sha256_update(c, len, 8);
+    for (int i = 0; i < 8; i++)
+        for (int k = 0; k < 4; k++) out[i * 4 + k] = (unsigned char)(c->h[i] >> (24 - k * 8));
+}
+
+/* Whether n bytes are valid UTF-8 (Rust's from_utf8, which gopher64 reads the header name with). */
+static int utf8_ok(const unsigned char *s, size_t n) {
+    for (size_t i = 0; i < n;) {
+        const unsigned char c = s[i];
+        size_t more;
+        if (c < 0x80) more = 0;
+        else if (c >= 0xC2 && c <= 0xDF) more = 1;
+        else if ((c & 0xF0) == 0xE0) more = 2;
+        else if (c >= 0xF0 && c <= 0xF4) more = 3;
+        else return 0;
+        if (i + more >= n && more) return 0;
+        for (size_t k = 1; k <= more; k++)
+            if ((s[i + k] & 0xC0) != 0x80) return 0;
+        i += more + 1;
+    }
+    return 1;
+}
+
+int n64_gopher_name(const char *rom, char *out, size_t n) {
+    FILE *fp = fopen(rom, "rb");
+    if (!fp) return -1;
+    unsigned char *buf = malloc(1 << 16), head[0x40], sum[32];
+    sha256_ctx ctx;
+    sha256_init(&ctx);
+    int order = -2;
+    size_t got, at = 0;
+    while (buf && (got = fread(buf, 1, 1 << 16, fp)) > 0) {
+        if (order == -2 && (got < sizeof head || (order = rom_order(buf)) < 0)) break;
+        to_z64(buf, got, order);
+        if (!at) memcpy(head, buf, sizeof head);
+        at += got;
+        sha256_update(&ctx, buf, got);
+    }
+    fclose(fp);
+    free(buf);
+    if (order < 0) return -1;
+    sha256_final(&ctx, sum);
+    /* The header's name, only [a-zA-Z0-9_ -] kept, trimmed; else the game id
+     * at 0x3B ("UNK" with a NUL in it). */
+    char name[24] = "";
+    size_t k = 0;
+    if (utf8_ok(head + 0x20, 20))
+        for (int i = 0x20; i < 0x34; i++)
+            if (isalnum(head[i]) || head[i] == '_' || head[i] == ' ' || head[i] == '-') name[k++] = (char)head[i];
+    name[k] = 0;
+    while (k && name[k - 1] == ' ') name[--k] = 0;
+    const char *prefix = name + strspn(name, " ");
+    if (!*prefix) {
+        if (memchr(head + 0x3B, 0, 3)) snprintf(name, sizeof name, "UNK");
+        else snprintf(name, sizeof name, "%.3s", (const char *)head + 0x3B);
+        prefix = name;
+    }
+    int o = snprintf(out, n, "%s-", prefix);
+    for (int i = 0; i < 32 && o > 0 && (size_t)o + 2 < n; i++) o += snprintf(out + o, n - (size_t)o, "%02X", sum[i]);
+    return o > 0 && (size_t)o < n && strlen(out) == strlen(prefix) + 65 ? 0 : -1;
+}
+
 /* The header's CRCs ("XXXXXXXX YYYYYYYY", as the database writes them) and
  * its name, trailing spaces off. */
 static int rom_header(const char *rom, char crc[18], char name[21]) {

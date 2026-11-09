@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "rommps_look.hpp"
+#if defined(ROMMPS_DECK)
+#include "rommps_api.hpp"
+#endif
 
 #include "core/save_file.hpp"
 #include "ui/components/component.hpp"
@@ -24,9 +27,26 @@ namespace rommps
 namespace
 {
 
-const char *const kFolder = PS5_APP_ROOT "/hui";
-const char *const kPath = PS5_APP_ROOT "/hui/rommps-look.txt";
-const char *const kSoundsPath = PS5_APP_ROOT "/hui/rommps-sounds.txt";
+#if defined(ROMMPS_DECK)
+// The app's own settings, beside RomM Sync's in the XDG data folder.
+const std::string kFolder = service_dir() + "/app";
+#else
+const std::string kFolder = PS5_APP_ROOT "/hui";
+#endif
+const std::string kPath = kFolder + "/rommps-look.txt";
+const std::string kSoundsPath = kFolder + "/rommps-sounds.txt";
+
+// On the PS5, files every app (and FTP) can change, as the console expects;
+// in the Deck's home folder they keep the user's own permissions.
+void loosen(const std::string &path, mode_t mode)
+{
+#if defined(ROMMPS_DECK)
+    (void)path;
+    (void)mode;
+#else
+    chmod(path.c_str(), mode);
+#endif
+}
 
 const hui::ui::Theme *theme_named(const char *id)
 {
@@ -156,9 +176,9 @@ void set_look(int index)
     if (ps5TestRun)
         return;
     hui::save::ensure_directory(kFolder);
-    chmod(kFolder, 0777);
+    loosen(kFolder, 0777);
     if (hui::save::write_atomic(kPath, std::string(look(index).id) + "\n").empty())
-        chmod(kPath, 0666);
+        loosen(kPath, 0666);
 }
 
 bool ui_sounds()
@@ -177,9 +197,9 @@ void set_ui_sounds(bool on)
     if (ps5TestRun)
         return;
     hui::save::ensure_directory(kFolder);
-    chmod(kFolder, 0777);
+    loosen(kFolder, 0777);
     if (hui::save::write_atomic(kSoundsPath, on ? "on\n" : "off\n").empty())
-        chmod(kSoundsPath, 0666);
+        loosen(kSoundsPath, 0666);
 }
 
 void draw_panel(hui::gfx::DrawList &list, const Look &look, const hui::gfx::Rect &r, float radius)

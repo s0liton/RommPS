@@ -22,7 +22,7 @@ namespace rommps {
 cJSON *Response::json() const { return body.empty() ? nullptr : cJSON_ParseWithLength(body.data(), body.size()); }
 
 std::string Response::message() const {
-    if (status == 0) return error.empty() ? "RommPS's background service isn't answering" : error;
+    if (status == 0) return error.empty() ? ROMM_APP "'s background service isn't answering" : error;
     std::string out;
     if (cJSON *j = json()) {
         const cJSON *e = cJSON_GetObjectItemCaseSensitive(j, "error");
@@ -74,7 +74,7 @@ Response http_request(const std::string &host, int port, const std::string &meth
     sa.sin_family = AF_INET;
     sa.sin_port = htons((uint16_t)port);
     if (::inet_pton(AF_INET, host.c_str(), &sa.sin_addr) != 1 || ::connect(fd, (sockaddr *)&sa, sizeof sa) != 0) {
-        r.error = "RommPS's background service isn't running (" + std::string(std::strerror(errno)) + ")";
+        r.error = ROMM_APP "'s background service isn't running (" + std::string(std::strerror(errno)) + ")";
         return r;
     }
     char head[1024];
@@ -92,7 +92,7 @@ Response http_request(const std::string &host, int port, const std::string &meth
         ssize_t n = ::recv(fd, buf, sizeof buf, 0);
         if (n < 0 && errno == EINTR) continue;
         if (n < 0) {
-            r.error = errno == EAGAIN || errno == EWOULDBLOCK ? "RommPS's background service took too long to answer" : std::strerror(errno);
+            r.error = errno == EAGAIN || errno == EWOULDBLOCK ? ROMM_APP "'s background service took too long to answer" : std::strerror(errno);
             return r;
         }
         if (n == 0) break;
@@ -101,7 +101,7 @@ Response http_request(const std::string &host, int port, const std::string &meth
     size_t split = in.find("\r\n\r\n");
     int status = 0;
     if (split == std::string::npos || std::sscanf(in.c_str(), "HTTP/%*d.%*d %d", &status) != 1) {
-        r.error = "RommPS's background service sent a reply the app can't read";
+        r.error = ROMM_APP "'s background service sent a reply the app can't read";
         return r;
     }
     r.status = status;
@@ -109,11 +109,27 @@ Response http_request(const std::string &host, int port, const std::string &meth
     return r;
 }
 
+const std::string &service_dir()
+{
+#if defined(ROMMPS_DECK)
+    static const std::string dir = [] {
+        const char *xdg = std::getenv("XDG_DATA_HOME");
+        if (xdg && *xdg)
+            return std::string(xdg) + "/romm-sync";
+        const char *home = std::getenv("HOME");
+        return std::string(home && *home ? home : "/home/deck") + "/.local/share/romm-sync";
+    }();
+#else
+    static const std::string dir = "/data/romm-sync";
+#endif
+    return dir;
+}
+
 int payload_port()
 {
     static const int port = [] {
         int p = 8780;
-        if (FILE *f = std::fopen("/data/romm-sync/config.json", "rb"))
+        if (FILE *f = std::fopen((service_dir() + "/config.json").c_str(), "rb"))
         {
             char buf[8192];
             const size_t n = std::fread(buf, 1, sizeof buf - 1, f);

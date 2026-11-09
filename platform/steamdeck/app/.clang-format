@@ -1,0 +1,25 @@
+# RommDeck's host: the same Allman style as RommPS's screens (platform/ps5/app/rommps/examples/rommps).
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+BreakBeforeBraces: Allman
+AccessModifierOffset: -2
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: true
+IndentCaseLabels: false
+NamespaceIndentation: None
+PointerAlignment: Right
+SortIncludes: Never
+ReflowComments: false
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+AlignOperands: Align
+AlignEscapedNewlines: DontAlign
+Cpp11BracedListStyle: true
+FixNamespaceComments: true
+MaxEmptyLinesToKeep: 2
+IndentExternBlock: NoIndent

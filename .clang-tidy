@@ -1,0 +1,20 @@
+# Bug-finding checks for our own C and C++ (make lint). Vendored code
+# (third_party/, the UI kit in .deps/) isn't checked.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-reserved-identifier,
+  -bugprone-assignment-in-if-condition,
+  -bugprone-branch-clone,
+  -bugprone-switch-missing-default-case,
+  -bugprone-multi-level-implicit-pointer-conversion,
+  clang-analyzer-*,
+  -clang-analyzer-security.insecureAPI.*,
+  -clang-analyzer-optin.performance.Padding,
+  performance-*,
+  -performance-enum-size
+HeaderFilterRegex: '(platform/steamdeck|examples/rommps/kit|platform/ps5/app/src)/'
+WarningsAsErrors: ''

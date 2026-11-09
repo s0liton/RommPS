@@ -333,7 +333,9 @@ class H(BaseHTTPRequestHandler):
             if p == "/_admin/rom" and method == "POST":  # e.g. a game RomM keeps as a folder holding one file
                 b = self.json_body()
                 for f in b.get("files", []):
-                    f["content"] = f["content"].encode()
+                    import base64
+                    f["content"] = base64.b64decode(f["content_b64"]) if "content_b64" in f else f["content"].encode()
+                    f.pop("content_b64", None)
                 DB["roms"][b["id"]] = b
                 return self.reply(200, rom_public(b))
             if p == "/_admin/virtual" and method == "POST":  # one RomM makes from metadata
@@ -399,6 +401,11 @@ class H(BaseHTTPRequestHandler):
                                        "missing": b.get("missing", False)})
                 if b.get("embed"):
                     next(x for x in DB["platforms"] if x["id"] == b["platform_id"])["embed_firmware"] = True
+                return self.reply(200, {})
+            if p == "/_admin/firmware_drop" and method == "POST":
+                # A platform's BIOS files gone, as when a newer set replaces them.
+                pid = self.json_body()["platform_id"]
+                DB["firmware"] = [f for f in DB["firmware"] if f["platform_id"] != pid]
                 return self.reply(200, {})
             if p == "/_admin/save_content":
                 sv = DB["saves"][int(qs("id"))]

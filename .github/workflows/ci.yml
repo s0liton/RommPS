@@ -17,3 +17,10 @@ jobs:
       - run: tests/e2e.sh
       - run: tests/ps2_e2e.sh
       - run: tests/autostart.sh
+
+  # RommDeck and the Deck's sync service: build, lint, test, package.
+  steamdeck:
+    uses: ./.github/workflows/steamdeck.yml
+    with:
+      sha: ${{ github.sha }}
+      version: ci

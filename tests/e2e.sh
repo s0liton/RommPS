@@ -394,6 +394,10 @@ echo "special-save" > "$RA/special/EarthBound (USA).srm"
 syncnow
 n=$(dump | python3 -c "import json,sys; print(sum(1 for x in json.load(sys.stdin)['saves'] if x['rom_id']==21))")
 [[ "$n" == 0 ]] || fail "game with shared cards in its own options must not sync"
+# The per-game folder's file was never synced and RomM already has EarthBound's
+# save: that's a conflict, not a quiet replacement. Keeping this one sends it up.
+[[ "$(last conflicts)" == 1 ]] || fail "a never-synced save against RomM's must be a conflict (got $(last conflicts))"
+post /api/conflicts/resolve "{\"path\":\"$RA/special/EarthBound (USA).srm\",\"keep\":\"local\"}" >/dev/null || fail "resolve failed"
 c=$(dump | python3 -c "import json,sys; s=sorted([x for x in json.load(sys.stdin)['saves'] if x['rom_id']==12], key=lambda x: x['updated_at']); print(s[-1]['content'].strip())")
 [[ "$c" == "special-save" ]] || fail "per-game save folder not used (got $c)"
 
@@ -670,6 +674,9 @@ syncnow
 # With Beetle the card is named after the game file: still the game's card.
 sleep 1; printf 'card-beetle' > "$T/psxemu/saves/Test Quest (USA)_1.mcd"
 syncnow
+# A card this console never synced, against the one RomM has: asked, not assumed.
+[[ "$(last conflicts)" == 1 ]] || fail "Beetle's never-synced card against RomM's must be a conflict (got $(last conflicts))"
+post /api/conflicts/resolve "{\"path\":\"$T/psxemu/saves/Test Quest (USA)_1.mcd\",\"keep\":\"local\"}" >/dev/null || fail "resolve failed"
 card=$(dump | python3 -c "import json,sys; s=sorted([x for x in json.load(sys.stdin)['saves'] if x['rom_id']==50], key=lambda x: x['updated_at']); print(s[-1]['content'])")
 [[ "$card" == "card-beetle" ]] || fail "the card Beetle names after the game file must sync: $card"
 # A blank card an emulator just made under the other name never beats one with a save on it.
@@ -1660,6 +1667,21 @@ curl -skf -X POST "$SV/_admin/firmware" -d '{"platform_id":90,"file_name":"bbbb.
 rm -rf "$NX/firmware"
 syncnow
 [[ "$(ls "$NX/firmware" 2>/dev/null | tr '\n' ' ')" == "aaaa.nca bbbb.cnmt.nca " ]] || fail "RomM's firmware must fill an empty folder: $(ls "$NX/firmware" 2>&1)"
+echo "    new keys and a new firmware set in RomM replace the old ones, never mixed"
+nxfw() { curl -skf -X POST "$SV/_admin/firmware" -d "{\"platform_id\":90,\"file_name\":\"$1\",\"content\":\"$2\"}" >/dev/null; }
+nxfw prod.keys keys-v1
+syncnow
+[[ "$(cat "$NX/keys/prod.keys" 2>&1)" == "keys-v1" ]] || fail "RomM's keys must come down: $(cat "$NX/keys/prod.keys" 2>&1)"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":90}' >/dev/null
+nxfw prod.keys keys-v2; nxfw cccc.nca romm-fw-c; nxfw dddd.cnmt.nca romm-fw-d
+syncnow
+[[ "$(cat "$NX/keys/prod.keys")" == "keys-v2" ]] || fail "newer keys in RomM must replace the old ones: $(cat "$NX/keys/prod.keys")"
+[[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "cccc.nca dddd.cnmt.nca " ]] || fail "a new firmware set must replace the old one: $(ls "$NX/firmware")"
+grep -q "RomM's firmware set changed, removed 2 files of the old one" "$T/daemon.log" || fail "the old set's removal wasn't logged"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":90}' >/dev/null
+nxfw aaaa.nca romm-fw-a; nxfw bbbb.cnmt.nca romm-fw-b
+syncnow
+[[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "aaaa.nca bbbb.cnmt.nca " ]] || fail "back to the first set: $(ls "$NX/firmware")"
 printf 'my-fw' > "$NX/firmware/mine.nca"   # the user puts their own set in
 syncnow
 [[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "mine.nca " ]] || fail "RomM's firmware beside the user's set must come out: $(ls "$NX/firmware")"
@@ -1762,6 +1784,21 @@ python3 "$ROOT/tests/xboxhdd.py" get "$XB/hdd/disk.qcow2" 4D530004 "$T/xbout" >/
 [[ ! -e "$XB/hdd/disk.qcow2.romm" ]] || fail "no copy of the image may be left behind"
 syncnow
 [[ "$(xbunits)" == "$units" ]] || fail "a save just placed must not go up again: $(xbunits)"
+
+echo "28c1. An Xbox image cut short on the server: its save can't be placed, said once, not a failure every sync"
+python3 "$ROOT/tests/make_disc.py" xiso "$T/whole.xiso.iso" 4D530099
+head -c $((41 * 2048)) "$T/whole.xiso.iso" > "$XB/games/Cut (USA).xiso.iso"   # stops where its default.xbe starts
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":962,"platform_id":96,"name":"Cut","fs_name":"Cut (USA).xiso.iso"}' >/dev/null
+b64=$(python3 -c "import base64,io,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('4D530099/SLOT0/cut.sav','cut'); z.close(); print(base64.b64encode(b.getvalue()).decode())")
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":962,\"slot\":\"autosave\",\"file_name\":\"4D530099.zip\",\"emulator\":\"xemu\",\"content_b64\":\"$b64\"}" >/dev/null
+syncnow
+told() { grep -c "Its saves can't sync: the game file is incomplete" "$T/daemon.log"; }
+[[ "$(told)" == 1 ]] || fail "a game file cut short must be said, once: $(told) times"
+[[ "$(last failed)" == 0 ]] || fail "a game file cut short isn't a failed sync: $(last failed) failed"
+syncnow
+[[ "$(told)" == 1 && "$(last failed)" == 0 ]] || fail "said again or failed again on the next sync: $(told) times, $(last failed) failed"
+[[ "$(python3 "$ROOT/tests/xboxhdd.py" get "$XB/hdd/disk.qcow2" 4D530099 "$T/xbout")" == none ]] || fail "a save went onto the disk for a game with no id"
+rm "$XB/games/Cut (USA).xiso.iso"
 
 echo "28c2. DS saves: melonDS's .sav and the melonDS DS core's .srm are one raw save, shared between a main emulator and an extra"
 curl -skf -X POST "$SV/_admin/platform" -d '{"id":98,"slug":"nds","name":"Nintendo DS"}' >/dev/null
@@ -2101,6 +2138,27 @@ keys=$(python3 -c "import json,sys; print(list(json.load(open(sys.argv[1]))['sav
 [[ -f "$T/moved/gba/bios/boot.bin" && -f "$T/movedgba/bios/boot.bin" ]] || fail "a system whose move was put off must keep both its folders"
 [[ "$(cd "$T/moved/gbc" && find . -type f)" == "./bios/mine.bin" && -f "$T/movedgbc/bios/boot.bin" ]] \
   || fail "only the copies may go from a system's old folder, never the folder in use: $(find "$T/moved/gbc" "$T/movedgbc")"
+
+echo "30b3. a saved profile's BIOS rules follow its newer preset (nothing lets the user set them)"
+D5="$T/data5"; mkdir -p "$D5"
+python3 - "$T/catalog.json" "$D5/config.json" "$T" <<'PY'
+import json, sys
+cat, t = json.load(open(sys.argv[1])), sys.argv[3]
+cat.append({"id": "fwlike", "name": "FW-like", "detect": [t + "/fwlike"], "profile": {"root": t + "/fwlike",
+    "firmware": {"dir": "{bios}/ps3", "by_ext": {".pup": ""}}, "platforms": [{"romm": ["ps3"], "dir": "ps3"}]}})
+json.dump(cat, open(sys.argv[1], "w"))
+json.dump({"web_port": 8788, "sync_interval_min": 0, "profiles_custom": True, "profiles": [
+    {"id": "fwlike", "name": "FW-like", "enabled": True, "root": t + "/fwlike", "firmware": {"skip": True},
+     "platforms": [{"romm": ["ps3"], "dir": "ps3"}]}]}, open(sys.argv[2], "w"))
+PY
+ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$D5" ROMM_SYNC_AUTOSTART="$T/etaHEN5" \
+  ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" \
+  "$ROOT/build/host/romm-sync" >>"$D5/daemon.log" 2>&1 &
+pid=$!; sleep 3; kill $pid; wait $pid 2>/dev/null || true
+fw=$(python3 -c "
+import json,sys
+print([json.dumps(p.get('firmware'), sort_keys=True) for p in json.load(open(sys.argv[1]))['profiles'] if p['id'] == 'fwlike'])" "$D5/config.json")
+[[ "$fw" == *'"by_ext": {".pup": ""}'*'"dir": "{bios}/ps3"'* ]] || fail "the saved BIOS rules must follow the preset: $fw"
 
 echo "30c. Dolphin's saves: an extra keeping them as the main does gets the main's folders mounted on its own"
 GM="$MB/TEST00003"; mkdir -p "$GM/games" "$GM/User/GC" "$GM/User/Wii"

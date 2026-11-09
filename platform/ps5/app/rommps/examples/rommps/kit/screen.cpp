@@ -33,6 +33,7 @@
 #include "settings_page.hpp"
 #include "setup_page.hpp"
 #include "sync_views.hpp"
+#include "touch.hpp"
 #include "ui/glyphs.hpp"
 #include "ui/motion.hpp"
 
@@ -53,6 +54,7 @@ namespace
 using gfx::Color;
 using gfx::Rect;
 using rommps::App;
+namespace touch = rommps::touch;
 
 const Color kWhite = Color::rgb(0xffffff);
 const Color kInk = Color::rgb(0x0b0d16);
@@ -107,7 +109,7 @@ class RommPS final : public app::Concept
     {
         static const app::ConceptInfo kInfo{
             "rommps",
-            "RommPS",
+            ROMM_APP,
             "Your RomM library and save sync",
             "examples/rommps/kit/screen.cpp",
             audio::SoundSet::glass,
@@ -146,9 +148,15 @@ class RommPS final : public app::Concept
             settings_.call().update(input, dt, feedback);
         if (ready && !sheet_open_ && !calling && !setup_.editing() && !view_.active())
         {
+            int to = -1;
             if (input.is_pressed(Action::page_prev) || input.is_pressed(Action::page_next))
+                to = (tab_ + (input.is_pressed(Action::page_next) ? 1 : kTabs - 1)) % kTabs;
+            // A tab touched in the top bar
+            if (const touch::Touch t = touch::take(&tab_); t.pressed && t.index >= 0 && t.index < kTabs && t.index != tab_)
+                to = t.index;
+            if (to >= 0)
             {
-                tab_ = (tab_ + (input.is_pressed(Action::page_next) ? 1 : kTabs - 1)) % kTabs;
+                tab_ = to;
                 tab_age_ = 0.0f;
                 feedback.play(audio::Cue::tab);
                 if (tab_ == kSettings)
@@ -207,7 +215,7 @@ class RommPS final : public app::Concept
         {
             // RomM Sync not running and RommPS couldn't start it: Cross tries again.
             if (app_.status().known && !app_.status().reachable && !app_.payload_starting() &&
-                input.is_pressed(Action::confirm))
+                (input.is_pressed(Action::confirm) || touch::take(this).pressed))
             {
                 app_.start_payload();
                 feedback.play(audio::Cue::focus);
@@ -268,13 +276,15 @@ class RommPS final : public app::Concept
         queue_position_.update(dt, 20.0f);
         // The six-row window, eased so the list scrolls with the focus.
         const int qcount = static_cast<int>(app_.queue().size());
-        queue_scroll_.target = static_cast<float>(std::clamp(queue_row_ - 5, 0, std::max(0, qcount - 6)));
+        if (!queue_free_)
+            queue_scroll_.target = static_cast<float>(std::clamp(queue_row_ - 5, 0, std::max(0, qcount - 6)));
         queue_scroll_.update(dt, 14.0f);
 
         installed_position_.target = static_cast<float>(installed_row_);
         installed_position_.update(dt, 20.0f);
         const int icount = static_cast<int>(app_.installed().size());
-        installed_scroll_.target = static_cast<float>(std::clamp(installed_row_ - 5, 0, std::max(0, icount - 6)));
+        if (!installed_free_)
+            installed_scroll_.target = static_cast<float>(std::clamp(installed_row_ - 5, 0, std::max(0, icount - 6)));
         installed_scroll_.update(dt, 14.0f);
     }
 
@@ -293,7 +303,7 @@ class RommPS final : public app::Concept
 
         gfx::DrawList &list = frame.scene;
         const float back = sheet_.value;
-        list.push_transform(1.0f - 0.035f * back, 960, 540, 0, 0);
+        list.push_transform(1.0f - 0.035f * back, kScreenW / 2, kScreenH / 2, 0, 0);
         draw_top_bar(list);
         const bool ready = app_.status().paired && app_.status().setup_complete;
         if (setting_up_)
@@ -331,7 +341,7 @@ class RommPS final : public app::Concept
         if (pair_open_)
             draw_pair(frame.overlay);
         // The hints first: the toast keeps clear of them.
-        hints_left_ = 1920.0f;
+        hints_left_ = kScreenW;
         const bool asking = move_open_ || pair_open_;
         if (!asking)
             draw_hints(back > 0.5f ? frame.overlay : frame.scene);
@@ -404,10 +414,16 @@ class RommPS final : public app::Concept
     // Home's buttons: Sync now, then the lists beside it.
     static constexpr int kHomeButtons = 4;
 
-    void update_home(const InputFrame &input, app::Feedback &feedback)
+    void update_home(const InputFrame &pad, app::Feedback &feedback)
     {
+        InputFrame input = pad;
         if (!app_.config().save_sync)
             return; // nothing to sync: Settings turns it back on
+        if (const touch::Touch t = touch::take(&home_focus_); t.index >= 0 && t.index < kHomeButtons)
+        {
+            home_focus_ = t.index;
+            input = touch::with(input, t);
+        }
         if (input.nav == Direction::left || input.nav == Direction::right)
         {
             const int next = home_focus_ + (input.nav == Direction::right ? 1 : -1);
@@ -445,6 +461,7 @@ class RommPS final : public app::Concept
         app_.check_on_console(g.id);
         sheet_open_ = true;
         addons_open_ = false;
+        addons_drag_ = 0.0f;
         versions_open_ = false;
         remove_hold_ = -1; // a hold from before doesn't carry over
         action_ = 0;
@@ -619,8 +636,12 @@ class RommPS final : public app::Concept
     // Rows of the update and DLC list that fit the sheet at once.
     static constexpr int kAddonRows = 6;
 
-    void update_sheet(const InputFrame &input, float dt, app::Feedback &feedback)
+    void update_sheet(const InputFrame &pad, float dt, app::Feedback &feedback)
     {
+        InputFrame input = pad;
+        // Touch: outside the sheet is Circle; a drag on it scrolls what it shows.
+        input = touch::with(input, touch::take(&sheet_open_), Action::back);
+        const touch::Touch panel = touch::take(&summary_scroll_);
         if (versions_open_)
         {
             update_versions(input, dt, feedback);
@@ -629,6 +650,12 @@ class RommPS final : public app::Concept
         if (addons_open_)
         {
             const int n = static_cast<int>(app_.details(sheet_game_.id).addons.size());
+            // Dragged: a row (40 pixels) at a time.
+            addons_drag_ += panel.scroll;
+            for (; addons_drag_ >= 40.0f; addons_drag_ -= 40.0f)
+                addons_top_ = std::min(addons_top_ + 1, std::max(0, n - kAddonRows));
+            for (; addons_drag_ <= -40.0f; addons_drag_ += 40.0f)
+                addons_top_ = std::max(addons_top_ - 1, 0);
             if (input.nav == Direction::up || input.nav == Direction::down)
             {
                 const int next = std::clamp(addons_top_ + (input.nav == Direction::down ? 1 : -1), 0,
@@ -648,6 +675,17 @@ class RommPS final : public app::Concept
         }
         const std::vector<SheetAction> actions = sheet_actions();
         const int count = static_cast<int>(actions.size());
+        if (const touch::Touch t = touch::take(&action_); t.index >= 0 && t.index < count)
+        {
+            action_ = t.index;
+            input = touch::with(input, t);
+        }
+        if (panel.scroll != 0.0f && summary_max_ > 0.0f)
+        {
+            summary_target_ = std::clamp(summary_target_ + panel.scroll, 0.0f, summary_max_);
+            if (panel.direct)
+                summary_scroll_.snap(summary_target_);
+        }
         // A press of Up or Down moves between the actions; holding it (D-pad or
         // left stick) past the repeat delay scrolls a long description instead.
         const float held = input.is_held(Action::down) || input.stick_y > 0.5f ? 1.0f
@@ -868,10 +906,15 @@ class RommPS final : public app::Concept
 
     // Cross downloads a version, a set of discs or a disc; what's on the
     // console comes off with a hold, like the sheet's own button.
-    void update_versions(const InputFrame &input, float dt, app::Feedback &feedback)
+    void update_versions(const InputFrame &pad, float dt, app::Feedback &feedback)
     {
+        InputFrame input = pad;
         const std::vector<VersionRow> picker = version_rows();
         const std::vector<rommps::Row> rows = rows_of(picker);
+        // Touch: outside the list is Circle; a row touched takes the focus first,
+        // so a hold on it starts at once.
+        input = touch::with(input, touch::take(&versions_open_), Action::back);
+        input = versions_list_.touch(input, rows);
         const int before = versions_list_.focus();
         const rommps::RowEvent pick = versions_list_.handle(rows, input, feedback);
         versions_list_.update(dt, static_cast<int>(rows.size()), kVersionRows * rommps::RowList::kRowHeight);
@@ -920,8 +963,9 @@ class RommPS final : public app::Concept
         const std::vector<rommps::Row> rows = rows_of(version_rows());
         const float rows_h = static_cast<float>(std::min<int>(static_cast<int>(rows.size()), kVersionRows)) *
                              rommps::RowList::kRowHeight;
-        const Rect box{360, 540 - (rows_h + 220) / 2, 1200, rows_h + 220};
+        const Rect box{360, kScreenH / 2 - (rows_h + 220) / 2, 1200, rows_h + 220};
         list.rounded_rect({0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight}, 0, Color::rgb(0x000000, 0.55f));
+        modal_zones(list, box, &versions_open_);
         Color solid = L.page; // nothing shows through the panel
         solid.a = 1.0f;
         list.rounded_rect(box, L.radius, solid);
@@ -958,9 +1002,12 @@ class RommPS final : public app::Concept
         return {{rommps::RowKind::action, n == 1 ? "Move it" : "Move them"}, {rommps::RowKind::action, "Not now"}};
     }
 
-    void update_move(const InputFrame &input, float dt, app::Feedback &feedback)
+    void update_move(const InputFrame &pad, float dt, app::Feedback &feedback)
     {
+        InputFrame input = pad;
         const std::vector<rommps::Row> rows = move_rows();
+        input = touch::with(input, touch::take(&move_open_), Action::back);
+        input = move_list_.touch(input, rows);
         const rommps::RowEvent pick = move_list_.handle(rows, input, feedback);
         move_list_.update(dt, static_cast<int>(rows.size()), 2 * rommps::RowList::kRowHeight);
         if (input.is_pressed(Action::back) || pick.row == 1)
@@ -992,7 +1039,8 @@ class RommPS final : public app::Concept
         const rommps::Look &L = look();
         const rommps::Status &s = app_.status();
         list.rounded_rect({0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight}, 0, Color::rgb(0x000000, 0.55f));
-        const Rect box{460, 280, 1000, 520};
+        const Rect box{460, (kScreenH - 520) / 2, 1000, 520};
+        modal_zones(list, box, &move_open_);
         Color solid = L.page; // nothing shows through the panel
         solid.a = 1.0f;
         list.rounded_rect(box, L.radius, solid);
@@ -1013,9 +1061,12 @@ class RommPS final : public app::Concept
         return {{rommps::RowKind::action, "Open Settings"}, {rommps::RowKind::action, "Not now"}};
     }
 
-    void update_pair(const InputFrame &input, float dt, app::Feedback &feedback)
+    void update_pair(const InputFrame &pad, float dt, app::Feedback &feedback)
     {
+        InputFrame input = pad;
         const std::vector<rommps::Row> rows = pair_rows();
+        input = touch::with(input, touch::take(&pair_open_), Action::back);
+        input = pair_list_.touch(input, rows);
         const rommps::RowEvent pick = pair_list_.handle(rows, input, feedback);
         pair_list_.update(dt, static_cast<int>(rows.size()), 2 * rommps::RowList::kRowHeight);
         if (input.is_pressed(Action::back) || pick.row == 1)
@@ -1037,7 +1088,8 @@ class RommPS final : public app::Concept
     {
         const rommps::Look &L = look();
         list.rounded_rect({0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight}, 0, Color::rgb(0x000000, 0.55f));
-        const Rect box{460, 280, 1000, 520};
+        const Rect box{460, (kScreenH - 520) / 2, 1000, 520};
+        modal_zones(list, box, &pair_open_);
         Color solid = L.page; // nothing shows through the panel
         solid.a = 1.0f;
         list.rounded_rect(box, L.radius, solid);
@@ -1052,11 +1104,13 @@ class RommPS final : public app::Concept
     }
 
     // The transfer tab: what's queued and running.
-    void update_queue(const InputFrame &input, float dt, app::Feedback &feedback)
+    void update_queue(const InputFrame &pad, float dt, app::Feedback &feedback)
     {
+        InputFrame input = pad;
         const int count = static_cast<int>(app_.queue().size());
         // The list can get shorter at any tick (finished ones cleared, the payload restarted).
         queue_row_ = std::clamp(queue_row_, 0, std::max(0, count - 1));
+        input = touch_list(input, &queue_row_, queue_scroll_, queue_free_, count, feedback);
         if ((input.nav == Direction::up || input.nav == Direction::down) && count > 0)
         {
             const int next = std::clamp(queue_row_ + (input.nav == Direction::down ? 1 : -1), 0, count - 1);
@@ -1096,11 +1150,13 @@ class RommPS final : public app::Concept
     }
 
     // The Downloads tab: the games on this console, one per row.
-    void update_downloads(const InputFrame &input, float dt, app::Feedback &feedback)
+    void update_downloads(const InputFrame &pad, float dt, app::Feedback &feedback)
     {
+        InputFrame input = pad;
         const int count = static_cast<int>(app_.installed().size());
         // The list can get shorter at any tick (a game removed on its sheet).
         installed_row_ = std::clamp(installed_row_, 0, std::max(0, count - 1));
+        input = touch_list(input, &installed_row_, installed_scroll_, installed_free_, count, feedback);
         if ((input.nav == Direction::up || input.nav == Direction::down) && count > 0)
         {
             const int next = std::clamp(installed_row_ + (input.nav == Direction::down ? 1 : -1), 0, count - 1);
@@ -1119,6 +1175,43 @@ class RommPS final : public app::Concept
         }
     }
 
+    // ---------------------------------------------------------------- touch
+
+    // Downloads' and Queue's lists (six rows in view, kListRowH apart): a row
+    // tapped takes the focus and Cross; a drag scrolls the list, and Up or
+    // Down then picks up from the bottom row in view, where the focus sits
+    // when the pad scrolls them.
+    static constexpr float kListRowH = 110.0f;
+
+    InputFrame touch_list(InputFrame input, int *row, tween::Spring &scroll, bool &free, int count, app::Feedback &feedback)
+    {
+        const touch::Touch t = touch::take(row);
+        if (touch::scroll(scroll, t, kListRowH, static_cast<float>(count - 6)))
+            free = true;
+        if (t.index >= 0 && t.index < count)
+        {
+            *row = t.index;
+            free = false;
+            return touch::with(input, t);
+        }
+        if (free && (input.nav == Direction::up || input.nav == Direction::down) && count > 0)
+        {
+            free = false;
+            *row = std::clamp(static_cast<int>(std::lround(scroll.value)) + 5, 0, count - 1);
+            feedback.play(audio::Cue::focus);
+            input.nav = Direction::none;
+        }
+        return input;
+    }
+
+    // A box over the dimmed screen: outside it is Circle (owner takes that),
+    // the box itself keeps touches from what's under it.
+    static void modal_zones(gfx::DrawList &list, const Rect &box, const void *owner)
+    {
+        touch::zone(list, {0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight}, owner, 0);
+        touch::zone(list, box, nullptr, -1, touch::kButton);
+    }
+
     // ---------------------------------------------------------------- drawing
 
     void draw_top_bar(gfx::DrawList &list) const
@@ -1129,8 +1222,8 @@ class RommPS final : public app::Concept
         list.push_opacity(in);
         float x = kMargin;
         const bool ready = app_.status().paired && app_.status().setup_complete;
-        ui::text(list, fonts.display, "RommPS", x, 96 - 10 * (1.0f - in), 34, L.text);
-        x += 220;
+        const float title_w = ui::text(list, fonts.display, ROMM_APP, x, 96 - 10 * (1.0f - in), 34, L.text);
+        x += std::max(220.0f, title_w + 48); // RommPS's 220; a longer name pushes the tabs along
         if (ready)
         {
             for (int i = 0; i < kTabs; ++i)
@@ -1138,6 +1231,7 @@ class RommPS final : public app::Concept
                 const bool active = i == tab_;
                 const float w = ui::text(list, active ? fonts.semibold : fonts.regular, kTabNames[i], x,
                                          92 - 10 * (1.0f - in), 26, active ? L.text : L.muted);
+                touch::zone(list, {x - 22, 44, w + 44, 76}, &tab_, i, touch::kButton);
                 if (active)
                     list.rounded_rect({x, 104, w, 4}, 2, accent());
                 x += w + 44;
@@ -1205,16 +1299,16 @@ class RommPS final : public app::Concept
         list.push_opacity(in);
         const Rect panel{360, 300, 1200, 440};
         draw_panel(list, panel, 36);
+        touch::zone(list, panel, this, 0, touch::kButton); // touched: try starting it again
         const float x = panel.x + 72;
         const bool starting = app_.payload_starting() || (s.known && !s.reachable && app_.payload_error().empty());
         ui::text(list, fonts.display,
                  !s.known ? "Connecting to the background service" : starting ? "Starting the background service" : "The background service isn't running", x,
                  panel.y + 120, 56, L.panel_text);
         ui::paragraph(list, fonts.regular,
-                      starting ? "RommPS syncs through a background service, and starts it for you. "
+                      starting ? ROMM_APP " syncs through a background service, and starts it for you. "
                                  "This takes a few seconds."
-                               : "RommPS couldn't start its background service. Press Cross to try again, or load romm-sync.elf "
-                                 "with your HEN's payload loader.",
+                               : ROMM_SERVICE_DOWN,
                       x, panel.y + 190, 28, 1060, 42, L.panel_muted, 4);
         if (!starting && !app_.payload_error().empty())
             ui::text(list, fonts.regular, fonts.regular.font->fit(rommps::plain_text(app_.payload_error().c_str()), 22, 1060), x,
@@ -1265,6 +1359,7 @@ class RommPS final : public app::Concept
             const bool focused = i == home_focus_;
             const float w = fonts.semibold.font->measure(labels[i], 28) + (focused ? 104.0f : 64.0f);
             const Rect button{bx, 410, w, 68};
+            touch::zone(list, button, &home_focus_, i, touch::kButton);
             if (focused)
             {
                 list.glow(button, 34, 18, accent().with_alpha(0.35f));
@@ -1295,7 +1390,7 @@ class RommPS final : public app::Concept
         tiles[1] = {"CONFLICTS", value};
         std::snprintf(value, sizeof value, "%d up \xC2\xB7 %d down", s.last_up, s.last_down);
         tiles[2] = {"LAST SYNC", s.sync_count ? value : "-"};
-        tiles[3] = {"ROMMPS", "v" + s.version};
+        tiles[3] = {ROMM_APP_UPPER, "v" + s.version};
         for (int i = 0; i < 4; ++i)
         {
             const float appear = tween::stagger(tab_age_, 2 + i, 0.07f, 0.5f);
@@ -1365,11 +1460,13 @@ class RommPS final : public app::Concept
         const int first = std::max(0, static_cast<int>(std::floor(scroll)) - 1);
         list.rounded_rect({kMargin - 24, top + (queue_position_.value - scroll) * kRowH, 1776, kRowH - 14},
                           26, L.text.with_alpha(0.1f));
-        list.push_clip({0, top, 1920, 6 * kRowH});
+        list.push_clip({0, top, kScreenW, 6 * kRowH});
+        touch::zone(list, {0, top, kScreenW, 6 * kRowH}, &queue_row_, -1);
         for (int i = first; i < static_cast<int>(downloads.size()) && i < first + 9; ++i)
         {
             const rommps::Download &d = downloads[static_cast<std::size_t>(i)];
             const float y = top + (static_cast<float>(i) - scroll) * kRowH;
+            touch::zone(list, {kMargin - 24, y, 1776, kRowH - 14}, &queue_row_, i);
             ui::text(list, fonts.semibold, context_.fonts.semibold.font->fit(d.name, 28, 1100), kMargin, y + 42, 28, L.text);
             // "PlayStation  ·  Waiting". A download that failed before RomM said
             // which platform the game is on has none: no dot in front then.
@@ -1448,7 +1545,7 @@ class RommPS final : public app::Concept
         }
         if (games.empty())
         {
-            ui::text(list, fonts.regular, "Nothing on this console yet.", kMargin, 310, 28, L.muted);
+            ui::text(list, fonts.regular, "Nothing on this " ROMM_HERE " yet.", kMargin, 310, 28, L.muted);
             ui::text(list, fonts.regular, "Games you download from your library land here.", kMargin, 348, 22,
                      L.muted.with_alpha(0.7f));
             list.pop_opacity();
@@ -1462,11 +1559,13 @@ class RommPS final : public app::Concept
         list.rounded_rect(
             {kMargin - 24, top + (installed_position_.value - scroll) * kRowH, 1776, kRowH - 14}, 26,
             L.text.with_alpha(0.1f));
-        list.push_clip({0, top, 1920, 6 * kRowH});
+        list.push_clip({0, top, kScreenW, 6 * kRowH});
+        touch::zone(list, {0, top, kScreenW, 6 * kRowH}, &installed_row_, -1);
         for (int i = first; i < static_cast<int>(games.size()) && i < first + 9; ++i)
         {
             const rommps::Game &g = games[static_cast<std::size_t>(i)];
             const float y = top + (static_cast<float>(i) - scroll) * kRowH;
+            touch::zone(list, {kMargin - 24, y, 1776, kRowH - 14}, &installed_row_, i);
             const Rect thumb{kMargin, y + 8, 66, 88};
             rommps::draw_cover(list, fonts, L, app_, &g, thumb, 1.0f, 10, false);
             ui::text(list, fonts.semibold, context_.fonts.semibold.font->fit(g.name, 28, 1160), kMargin + 96, y + 42,
@@ -1501,6 +1600,9 @@ class RommPS final : public app::Concept
         const float t = sheet_.value;
         constexpr float kHeight = 680.0f;
         const Rect sheet{120, gfx::kVirtualHeight - kHeight * t - 40.0f * t + 60.0f * (1.0f - t), 1680, kHeight};
+        // Touch: outside the sheet closes it; a drag on it scrolls the description.
+        touch::zone(list, {0, 0, gfx::kVirtualWidth, gfx::kVirtualHeight}, &sheet_open_, 0);
+        touch::zone(list, sheet, &summary_scroll_, -1);
         list.push_opacity(tween::clamp01(t * 1.4f));
         list.shadow({sheet.x, sheet.y + 20, sheet.w, sheet.h}, 44, 60, Color::rgb(0x000000, 0.5f));
         list.glass(glass, sheet, 44, kWhite);
@@ -1661,6 +1763,7 @@ class RommPS final : public app::Concept
         {
             const bool focused = i == action_;
             const float y = ay + static_cast<float>(i) * 84;
+            touch::zone(list, {ax, y, 460, 72}, &action_, i, touch::kButton);
             if (!focused)
                 list.bordered_rect({ax, y, 460, 72}, 36, L.panel_text.with_alpha(0.06f), 1.5f, L.outline);
             const SheetAction &a = actions[static_cast<std::size_t>(i)];
@@ -1699,7 +1802,7 @@ class RommPS final : public app::Concept
         // Beside the button hints, on their line, when there's room for it;
         // above them when they leave too little.
         const float room = std::min(1180.0f, hints_left_ - 24.0f - kMargin);
-        const Rect r = room >= 480.0f ? Rect{kMargin, 978, room, 64} : Rect{kMargin, 892, 1180, 64};
+        const Rect r = room >= 480.0f ? Rect{kMargin, kScreenH - 102, room, 64} : Rect{kMargin, kScreenH - 188, 1180, 64};
         const std::string fitted = fonts.regular.font->fit(message, 24, r.w - 64);
         const rommps::Look &L = look();
         list.rounded_rect(r, 32, L.covers ? Color::rgb(0x14182e, 0.92f) : L.page.with_alpha(0.95f));
@@ -1720,6 +1823,7 @@ class RommPS final : public app::Concept
         hints_left_ = std::min(hints_left_, plate.x);
         draw_panel(list, plate);
         ui::draw_hints(list, fonts, style, hints, count, 1824, true);
+        touch::hints(list, fonts, hints, count, 1824, true);
     }
 
     void draw_hints(gfx::DrawList &list) const
@@ -1830,10 +1934,11 @@ class RommPS final : public app::Concept
     ui::SpringColor palette_[4];
     ui::Pulse nudge_;
     float nudge_direction_ = 0.0f;
-    mutable float hints_left_ = 1920.0f; // where this frame's button hints start, for the toast
+    mutable float hints_left_ = kScreenW; // where this frame's button hints start, for the toast
     bool sheet_open_ = false;
     bool addons_open_ = false; // the sheet lists the game's update and DLC
     int addons_top_ = 0;       // the first of them shown
+    float addons_drag_ = 0.0f; // a touch drag on them, not yet a row's worth
     bool versions_open_ = false; // the sheet's game's versions, in a list over it
     rommps::RowList versions_list_;
     tween::Spring sheet_;
@@ -1853,9 +1958,11 @@ class RommPS final : public app::Concept
     bool cancel_seen_ = false; // hold_to_cancel ran this frame
     tween::Spring queue_position_;
     tween::Spring queue_scroll_; // the window's first row, eased
+    bool queue_free_ = false;    // scrolled by touch, away from the focus
     int installed_row_ = 0;    // the Downloads list's focus
     tween::Spring installed_position_;
     tween::Spring installed_scroll_;
+    bool installed_free_ = false; // scrolled by touch, away from the focus
     rommps::SettingsPage settings_;
     rommps::LibraryPage library_;
     rommps::Game sheet_game_; // the game the details sheet is for

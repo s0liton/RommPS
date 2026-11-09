@@ -1,0 +1,29 @@
+# The C core (src/), the platform layers and the app's API client: K&R
+# braces, four spaces, short ifs and functions on one line. RommPS's and
+# RommDeck's screens have their own (Allman) style beside them.
+# Check with: make format-check. Vendored code (third_party/, .deps/) is left alone.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortLoopsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: All
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: true
+IndentCaseLabels: false
+PointerAlignment: Right
+SortIncludes: Never
+ReflowComments: false
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+AlignConsecutiveMacros: None
+AlignEscapedNewlines: DontAlign
+AlignOperands: Align
+SpaceAfterCStyleCast: false
+BreakBeforeBinaryOperators: None
+IndentPPDirectives: None
+Cpp11BracedListStyle: true
+MaxEmptyLinesToKeep: 2
+IndentExternBlock: NoIndent

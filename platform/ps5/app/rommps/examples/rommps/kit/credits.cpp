@@ -7,13 +7,17 @@
 #include "core/tween.hpp"
 #include "qrcodegen.h"
 #include "rommps_api.hpp"
+#include "touch.hpp"
 #include "stb_image.h" // implemented by base/VulkanglTFModel.cpp
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 
-#if !defined(PS5_HOST_REFERENCE)
+#if defined(ROMMPS_DECK)
+#include <sys/wait.h>
+#include <unistd.h>
+#elif !defined(PS5_HOST_REFERENCE)
 extern "C" int sceSystemServiceLaunchWebBrowser(const char *uri, void *param);
 #endif
 
@@ -56,7 +60,7 @@ constexpr Step kScript[] = {
     /*  1 */ {Kind::say, 0, "Who is this? How did you get this frequency?", 2},
     /*  2 */ {Kind::say, 1, "Every slot you overwrite. Every state you load. Each one a memory, thrown away the moment a "
                             "better one comes along.", 3},
-    /*  3 */ {Kind::say, 1, "Left alone, they drift apart. One console remembers the castle you conquered. Another, a "
+    /*  3 */ {Kind::say, 1, "Left alone, they drift apart. One " ROMM_DEVICE " remembers the castle you conquered. Another, a "
                             "door still locked.", 4},
     /*  4 */ {Kind::say, 0, "So you keep them in sync.", 5},
     /*  5 */ {Kind::say, 1, "We give them context. One truth, kept on a server of your choosing.", 6},
@@ -87,7 +91,22 @@ const Color kDark = Color::rgb(0x020805);
 // Opens a link in the console's web browser; RommPS keeps running behind it.
 bool open_in_browser(const char *url)
 {
-#if defined(PS5_HOST_REFERENCE)
+#if defined(ROMMPS_DECK)
+    // The desktop's browser (Game Mode shows it over the app). Forked twice,
+    // so xdg-open isn't the app's child and leaves no zombie behind.
+    const pid_t pid = ::fork();
+    if (pid == 0)
+    {
+        if (::fork() == 0)
+        {
+            ::execlp("xdg-open", "xdg-open", url, static_cast<char *>(nullptr));
+            ::_exit(127);
+        }
+        ::_exit(0);
+    }
+    int status = 0;
+    return pid > 0 && ::waitpid(pid, &status, 0) == pid;
+#elif defined(PS5_HOST_REFERENCE)
     (void)url;
     return false;
 #else
@@ -103,7 +122,11 @@ float hold_for(const char *text)
 // A cheap hash for the static.
 float noise(int x, int y, int frame)
 {
-    std::uint32_t h = static_cast<std::uint32_t>(x * 374761393 + y * 668265263 + frame * 2147483647);
+    // Unsigned, so it wraps: signed overflow is undefined, and an optimiser
+    // that assumes it can't happen may turn the loops around this into
+    // endless ones (RommDeck ran out of memory drawing the static).
+    std::uint32_t h = static_cast<std::uint32_t>(x) * 374761393u + static_cast<std::uint32_t>(y) * 668265263u +
+                      static_cast<std::uint32_t>(frame) * 2147483647u;
     h = (h ^ (h >> 13)) * 1274126177u;
     return static_cast<float>((h ^ (h >> 16)) & 0xffff) / 65535.0f;
 }
@@ -202,7 +225,7 @@ void draw_credits(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const L
     const float tx = avatar.x + avatar.w + 24;
     ui::text(list, fonts.regular, "Made with love", tx, rect.y + 52, 22, look.panel_muted);
     ui::text(list, fonts.semibold, "by s0liton", tx, rect.y + 86, 26, look.panel_text);
-    ui::text(list, fonts.regular, focused ? "Press Cross" : "", tx, rect.y + 120, 18, look.accent);
+    ui::text(list, fonts.regular, focused ? "Press " ROMM_BTN_CONFIRM : "", tx, rect.y + 120, 18, look.accent);
 
     const float q = rect.h;
     draw_qr(list, qr, {rect.x + rect.w - q, rect.y, q, q});
@@ -245,8 +268,9 @@ void CodecCall::go(int step, hui::ui::Feedback &feedback)
     }
 }
 
-void CodecCall::update(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void CodecCall::update(const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     if (!active_)
         return;
     age_ += dt;
@@ -257,6 +281,15 @@ void CodecCall::update(const hui::InputFrame &input, float dt, hui::ui::Feedback
             active_ = false;
         return;
     }
+    // The touch screen: a tap anywhere is Cross, on an answer it's that
+    // answer, and on the key line's Hang up it's Circle.
+    if (const touch::Touch t = touch::take(&choice_); t.index >= 0)
+    {
+        choice_ = t.index;
+        input = touch::with(input, t);
+    }
+    input = touch::with(input, touch::take(this));
+    input = touch::with(input, touch::take(&closing_), Action::back);
     if (input.is_pressed(Action::back))
     {
         feedback.play(Cue::modal_close);
@@ -336,6 +369,7 @@ void CodecCall::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, floa
     const float shown = h * tween::cubic_out(open);
     list.push_clip({0, (h - shown) * 0.5f, w, std::max(2.0f, shown)});
     list.rounded_rect({0, 0, w, h}, 0, kDark);
+    touch::zone(list, {0, 0, w, h}, this, 0); // anywhere: Cross
 
     const bool ringing = step_ < 0;
     const Step *step = ringing ? nullptr : &kScript[step_];
@@ -405,8 +439,8 @@ void CodecCall::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, floa
         ui::text(list, fonts.mono, "INCOMING TRANSMISSION", 260, 700, 24, kGreen, Align::left, 4.0f);
         ui::text(list, fonts.regular, step->text, 260, 770, 40, Color::rgb(0xe9fff0));
         ui::paragraph(list, fonts.regular,
-                      opened_ ? "Playing in the browser. Close it to come back here, then press Cross."
-                              : "The browser didn't open. Scan the code to watch on your phone, then press Cross.",
+                      opened_ ? "Playing in the browser. Close it to come back here, then press " ROMM_BTN_CONFIRM "."
+                              : "The browser didn't open. Scan the code to watch on your phone, then press " ROMM_BTN_CONFIRM ".",
                       260, 840, 28, 1050, 40, kGreen.with_alpha(0.85f), 3);
         draw_qr(list, qr, {1420, 650, 260, 260});
         ui::text(list, fonts.mono, "SCAN TO WATCH", 1550, 950, 18, kDimGreen, Align::center, 3.0f);
@@ -422,16 +456,30 @@ void CodecCall::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, floa
             for (int i = 0; i < 2; ++i)
             {
                 const Rect r{260.0f + static_cast<float>(i) * 260.0f, 880, 220, 70};
+                touch::zone(list, r, &choice_, i, touch::kButton);
                 const bool on = i == choice_;
                 list.bordered_rect(r, 6, on ? kGreen : Color::rgb(0x041a0c), 3, on ? kGreen : kDimGreen);
                 ui::text(list, fonts.mono, answers[i], r.cx(), r.cy() + 12, 32, on ? kDark : kGreen, Align::center, 6.0f);
             }
         }
     }
-    const char *keys = step && step->kind == Kind::ask    ? "LEFT RIGHT  CHOOSE      CROSS  ANSWER      CIRCLE  HANG UP"
-                       : step && step->kind == Kind::watch ? "CROSS  CONTINUE      CIRCLE  HANG UP"
-                                                           : "CIRCLE  HANG UP      CROSS  NEXT";
-    ui::text(list, fonts.mono, keys, w - 120, h - 60, 20, kDimGreen, Align::right, 2.0f);
+    const char *keys = step && step->kind == Kind::ask
+                           ? "LEFT RIGHT  CHOOSE      " ROMM_KEY_CONFIRM "  ANSWER      " ROMM_KEY_BACK "  HANG UP"
+                       : step && step->kind == Kind::watch ? ROMM_KEY_CONFIRM "  CONTINUE      " ROMM_KEY_BACK "  HANG UP"
+                                                           : ROMM_KEY_BACK "  HANG UP      " ROMM_KEY_CONFIRM "  NEXT";
+    const float keys_w = ui::text(list, fonts.mono, keys, w - 120, h - 60, 20, kDimGreen, Align::right, 2.0f);
+#if defined(ROMMPS_DECK)
+    // Hang up, on the key line: last when there's a question or a video, else first.
+    {
+        const char *hang_up = ROMM_KEY_BACK "  HANG UP";
+        const float hw = fonts.mono.font->measure(hang_up, 20) + 2.0f * static_cast<float>(std::strlen(hang_up));
+        const bool last = step && (step->kind == Kind::ask || step->kind == Kind::watch);
+        const float hx = last ? w - 120 - hw : w - 120 - keys_w;
+        touch::zone(list, {hx - 24, h - 100, hw + 48, 64}, &closing_, 0, touch::kButton);
+    }
+#else
+    (void)keys_w;
+#endif
 
     // Scanlines over it all.
     for (float y = 0; y < h; y += 4.0f)

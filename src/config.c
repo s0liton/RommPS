@@ -183,6 +183,7 @@ int config_load(void) {
     }
     if (!g_cfg.device_name[0]) set_device_name("");
     if (!g_cfg.profiles) g_cfg.profiles = profiles_default();
+    else profiles_drop_unsupported(g_cfg.profiles);
     if (!g_cfg.client_device_identifier[0]) random_uuid(g_cfg.client_device_identifier);
     return config_save();
 }

@@ -30,6 +30,13 @@ A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN 
 - **Easter Eggs**
   - Check in the Settings, scroll the settings list, see if you find the X. This **hint** won't be here forever.
 
+# Steam Deck Support
+Having finally built this damn thing for the PS5, I tried to tame my excitement as I sat down to set up a RomM client on my Steam Deck. Grinning ear to ear, I set everything up and went to play my favorite game on PS2. The smile faded quickly as I realized that it didn't support PSX, PS2, and a shitload of other emulators. I restrained my self from throwing my Steam Deck at the tree outside my office window. 
+
+Anyway, here's a port of RommPS for the Steam Deck. It has full feature parity with the PS5 version, and will use RommPS as its upstream. It features an identical UI app to manage everything, and works with RetroDeck and EmuDeck configurations today. It also has a companion Decky plugin if you're too lazy to open the main app. 
+
+I guess we'll call it....**RommDeck**. Yeah, sure. Whatever. Enjoy it.
+
 ## Requirements
 
 - A PS5 running etaHEN or onionHEN, or a PS4 running GoldHEN

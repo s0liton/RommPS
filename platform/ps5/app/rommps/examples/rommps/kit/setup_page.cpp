@@ -5,6 +5,7 @@
 
 #include "cJSON.h"
 #include "credits.hpp"
+#include "touch.hpp"
 #include "core/tween.hpp"
 #include "ui/motion.hpp"
 
@@ -332,8 +333,9 @@ void SetupPage::update(App &app, const hui::InputFrame &input, float dt, hui::ui
     }
 }
 
-void SetupPage::update_server(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void SetupPage::update_server(App &app, const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     if (!url_known_ && app.config().known)
     {
         url_ = app.config().server_url.empty() ? "http://" : app.config().server_url;
@@ -346,6 +348,8 @@ void SetupPage::update_server(App &app, const hui::InputFrame &input, float dt, 
     keys_.style.reduced_motion = false;
     if (!busy_)
     {
+        input = touch::with(input, touch::take(&tls_verify_), Action::north); // the TLS line touched
+        input = touch::type(keys_, input);
         if (input.is_pressed(Action::north))
         {
             tls_verify_ = !tls_verify_;
@@ -782,8 +786,9 @@ void SetupPage::browse(App &app, const std::string &path)
     });
 }
 
-void SetupPage::update_picker(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void SetupPage::update_picker(App &app, const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     std::vector<Row> rows;
     const bool at_drives = fs_path_.empty();
     if (!at_drives)
@@ -793,6 +798,7 @@ void SetupPage::update_picker(App &app, const hui::InputFrame &input, float dt, 
     }
     for (const std::string &f : fs_folders_)
         rows.push_back({RowKind::action, f, "", ""});
+    input = pick_rows_.touch(input, rows);
     const RowEvent e = pick_rows_.handle(rows, input, feedback);
     pick_rows_.update(dt, static_cast<int>(rows.size()), kRows.h);
     if (input.is_pressed(Action::back))
@@ -901,7 +907,7 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
     // and its folders.
     const std::vector<Conflict> all_systems = systems();
     if (!all_systems.empty())
-        add({RowKind::header, "On this console"}, {});
+        add({RowKind::header, "On this " ROMM_HERE}, {});
     static const char *const kSyncLabel[] = {"Saves and states", "Saves", "Off"};
     auto sync_index = [&](const std::string &key) {
         const auto it = sync_.find(key);
@@ -1019,7 +1025,7 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
             std::string detail = !cm.note.empty()                  ? "    " + cm.note
                                  : method == "shared" && !shared_ok ? "    Shared cards need RomM 5.3 or newer"
                                  : game_saves && method != "shared" ? "    Each game gets its own card, which syncs as its save"
-                                 : method == "shared"               ? "    The whole cards sync between your consoles"
+                                 : method == "shared"               ? "    The whole cards sync between your " ROMM_PEERS
                                                                     : "    Each game's card syncs as its save";
             Row r{RowKind::choice, "   Memory cards", method == "shared" ? "Shared, synced" : "One per game", detail};
             r.enabled = choice;
@@ -1046,8 +1052,9 @@ std::vector<Row> SetupPage::emulator_rows(const App &app, std::vector<RowRef> *r
     return rows;
 }
 
-void SetupPage::update_emulators(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void SetupPage::update_emulators(App &app, const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     if (emulators_loaded_ && !busy_ && !error_.empty() && (retry_in_ -= dt) <= 0.0f)
         emulators_loaded_ = false; // look again; the error stays up until it works
     if (!emulators_loaded_ && !busy_)
@@ -1058,6 +1065,8 @@ void SetupPage::update_emulators(App &app, const hui::InputFrame &input, float d
     if (leaving_)
     {
         const std::vector<Row> choices = leave_rows();
+        input = touch::with(input, touch::take(&leaving_), Action::back);
+        input = leave_list_.touch(input, choices);
         const RowEvent pick = leave_list_.handle(choices, input, feedback);
         leave_list_.update(dt, static_cast<int>(choices.size()), 3 * RowList::kRowHeight);
         if (input.is_pressed(Action::back) || pick.row == 2)
@@ -1080,6 +1089,7 @@ void SetupPage::update_emulators(App &app, const hui::InputFrame &input, float d
     }
     std::vector<RowRef> refs;
     const std::vector<Row> rows = emulator_rows(app, &refs);
+    input = rows_.touch(input, rows);
     const RowEvent e = rows_.handle(rows, input, feedback);
     rows_.update(dt, static_cast<int>(rows.size()), kRows.h);
     const int at = rows_.focus();
@@ -1418,12 +1428,14 @@ std::vector<Row> SetupPage::preview_rows(std::vector<int> *ids) const
     return rows;
 }
 
-void SetupPage::update_preview(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void SetupPage::update_preview(App &app, const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     if (save_sync_ && !preview_.loaded && !preview_.loading)
         load_preview(app);
     std::vector<int> ids;
     const std::vector<Row> rows = preview_rows(&ids);
+    input = rows_.touch(input, rows);
     const RowEvent e = rows_.handle(rows, input, feedback);
     rows_.update(dt, static_cast<int>(rows.size()), kRows.h);
     const int id = e.row >= 0 ? ids[static_cast<std::size_t>(e.row)] : -1;
@@ -1458,7 +1470,7 @@ std::vector<Row> SetupPage::finish_rows(std::vector<int> *ids) const
     if (save_sync_)
     {
         add({RowKind::choice, "Resolving save conflicts", label_of(kPolicies, c.conflict_policy),
-             "What RommPS will do by default whenever a save conflict exists between this PS5 and your RomM Server"}, 0);
+             "What " ROMM_APP " will do by default whenever a save conflict exists between this " ROMM_MODEL " and your RomM Server"}, 0);
         add({RowKind::toggle, "Upload saves as they change", "", "While you play", c.sync_on_change}, 1);
         add({RowKind::toggle, "Sync when a game closes", "", "", c.sync_on_game_exit}, 2);
         add({RowKind::toggle, "Sync when a game starts", "", "", c.sync_on_game_start}, 3);
@@ -1472,8 +1484,9 @@ std::vector<Row> SetupPage::finish_rows(std::vector<int> *ids) const
     return rows;
 }
 
-void SetupPage::update_finish(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void SetupPage::update_finish(App &app, const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     if (!finish_known_ && app.config().known)
     {
         finish_ = app.config();
@@ -1481,6 +1494,7 @@ void SetupPage::update_finish(App &app, const hui::InputFrame &input, float dt, 
     }
     std::vector<int> ids;
     const std::vector<Row> rows = finish_rows(&ids);
+    input = rows_.touch(input, rows);
     const RowEvent e = rows_.handle(rows, input, feedback);
     rows_.update(dt, static_cast<int>(rows.size()), kRows.h);
     if (input.is_pressed(Action::back))
@@ -1631,6 +1645,7 @@ void SetupPage::draw_server(hui::gfx::DrawList &list, const hui::ui::Fonts &font
     else
     {
         ui::draw_button(list, fonts, look.glyphs(), ui::Button::triangle, kField.x + 4, y - 9, 30);
+        touch::zone(list, {kField.x - 8, y - 36, 520, 52}, &tls_verify_, 0, touch::kButton);
         ui::text(list, fonts.regular,
                  tls_verify_ ? "Verify TLS certificate" : "Don't verify TLS certificate",
                  kField.x + 46, y, 22, look.muted);
@@ -1639,6 +1654,8 @@ void SetupPage::draw_server(hui::gfx::DrawList &list, const hui::ui::Fonts &font
     list.push_opacity(busy_ ? 0.4f : 1.0f);
     ui::Canvas canvas{list, fonts, 0, clock};
     keys_.draw(canvas);
+    if (!busy_)
+        touch::keys(list, keys_);
     list.pop_opacity();
 }
 
@@ -1646,7 +1663,7 @@ void SetupPage::draw_approve(hui::gfx::DrawList &list, const hui::ui::Fonts &fon
                              float clock) const
 {
     const Status &s = app.status();
-    draw_heading(list, fonts, look, "Approve this console in RomM",
+    draw_heading(list, fonts, look, "Approve this " ROMM_HERE " in RomM",
                  "On your phone or computer, open the address below, sign in to RomM and enter the code.");
     const float in = tween::stagger(step_age_, 2, 0.08f, 0.6f);
     list.push_opacity(in);
@@ -1713,7 +1730,7 @@ void SetupPage::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, cons
     if (step_ == kEmulators)
     {
         draw_heading(list, fonts, look, editing_ ? "Emulators" : "Your emulators",
-                     dirty() ? "Unsaved changes. Press Triangle to save them." : "Choose the emulator for each platform.");
+                     dirty() ? "Unsaved changes. Press " ROMM_BTN_NORTH " to save them." : "Choose the emulator for each platform.");
         std::vector<RowRef> refs;
         rows = emulator_rows(app, &refs);
         // Each platform's row, with its logo before its name.
@@ -1780,14 +1797,17 @@ void SetupPage::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, cons
     }
     list.push_opacity(in);
     // The emulators' list takes the full width: no panel beside it.
-    const float width = step_ == kEmulators ? 1920.0f - 2 * kRows.x : kRows.w;
+    const float width = step_ == kEmulators ? kScreenW - 2 * kRows.x : kRows.w;
     rows_.draw(list, fonts, look, rows, {kRows.x, kRows.y + 24 * (1.0f - in), width, kRows.h}, clock);
     list.pop_opacity();
     if (step_ == kEmulators && leaving_)
     {
         // Over everything: save before going back?
-        list.rounded_rect({0, 0, 1920, 1080}, 0, hui::gfx::Color::rgb(0x000000, 0.55f));
+        list.rounded_rect({0, 0, kScreenW, kScreenH}, 0, hui::gfx::Color::rgb(0x000000, 0.55f));
         const Rect box{560, 330, 800, 470};
+        // Touch: outside the box is Circle (keep editing); the box keeps touches from the rows under it.
+        touch::zone(list, {0, 0, kScreenW, kScreenH}, &leaving_, 0);
+        touch::zone(list, box, nullptr, -1, touch::kButton);
         hui::gfx::Color solid = look.page; // the page's colour under the panel, so nothing shows through
         solid.a = 1.0f;
         list.rounded_rect(box, look.radius, solid);

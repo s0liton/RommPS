@@ -1,6 +1,6 @@
 {
-  "format": 1,
-  "version": "2026.11.05.3",
+  "format": 2,
+  "version": "2026.11.06.15",
   "console": "steamdeck",
   "emulators": [
     {
@@ -12,16 +12,44 @@
       "detect": [
         "{rdsaves}/psx/duckstation"
       ],
-      "note": "One memory card per game, named after the game file (DuckStation's default).",
+      "note": "One memory card per game, named as DuckStation names it.",
+      "vars": {
+        "cfg": {
+          "path": [
+            "{rdconfig}/duckstation"
+          ]
+        },
+        "cards": {
+          "file": "{cfg}/settings.ini",
+          "format": "ini",
+          "section": "MemoryCards",
+          "key": "Directory",
+          "default": "{rdsaves}/psx/duckstation/memcards"
+        },
+        "shared1": {
+          "file": "{cfg}/settings.ini",
+          "format": "ini",
+          "section": "MemoryCards",
+          "key": "Card1Path",
+          "default": "shared_card_1.mcd",
+          "base": "{cards}"
+        },
+        "duckdb": {
+          "path": [
+            "{fpsys}/app/net.retrodeck.retrodeck/current/active/files/retrodeck/components/duckstation/bin/resources",
+            "{home}/.local/share/flatpak/app/net.retrodeck.retrodeck/current/active/files/retrodeck/components/duckstation/bin/resources"
+          ]
+        }
+      },
       "profile": {
-        "root": "{rdconfig}/duckstation",
+        "root": "{cfg}",
         "rom_dir": "{rdroms}/psx",
-        "save_dir": "{rdsaves}/psx/duckstation/memcards",
+        "save_dir": "{cards}",
         "state_dir": "{rdstates}/psx/duckstation",
         "bios_dir": "{rdbios}",
         "save_exts": ".mcd",
-        "save_name": "{rom_stem}_1{ext}",
-        "save_stems": "{rom_stem}_1,{serial}_1",
+        "save_name": "{duck_card}{ext}",
+        "save_stems": "{duck_card}",
         "state_exts": "",
         "firmware": {
           "names": {
@@ -42,8 +70,16 @@
             "save_format": "psx-card",
             "cards": {
               "default": "per_game",
-              "modes": "per_game"
-            }
+              "modes": "per_game,shared",
+              "change": "Set DuckStation's Memory Card 1 to a separate card per game",
+              "setting": {
+                "file": "{cfg}/settings.ini",
+                "key": "Card1Type",
+                "per_game": "PerGame,PerGameTitle,PerGameFileTitle",
+                "shared": "Shared"
+              }
+            },
+            "memcards": "{shared1}"
           }
         ]
       }
@@ -170,6 +206,82 @@
             ],
             "dir": "psp",
             "emulator": "ppsspp"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-rpcs3",
+      "name": "RPCS3 (RetroDECK)",
+      "title_ids": [
+        "rpcs3"
+      ],
+      "detect": [
+        "{rdsaves}/ps3/rpcs3"
+      ],
+      "note": "Each game's save folders, from RPCS3's savedata. RomM's PS3UPDAT.PUP comes down to bios/ps3, to install in RPCS3.",
+      "profile": {
+        "root": "{rdstorage}/rpcs3",
+        "rom_dir": "{rdroms}/ps3",
+        "bios_dir": "{rdbios}",
+        "state_exts": "",
+        "save_layout": "ps3",
+        "bundle_dirs": "{rdsaves}/ps3/rpcs3,{rdstorage}/rpcs3/dev_hdd0/home/00000001/savedata",
+        "firmware": {
+          "dir": "{bios}/ps3",
+          "by_ext": {
+            ".pup": ""
+          },
+          "installed": "{rdstorage}/rpcs3/dev_flash/vsh/etc/version.txt",
+          "install": "In RPCS3: File, Install Firmware, then pick {file}",
+          "install_without": "Add PS3UPDAT.PUP to RomM's PS3 firmware: it comes down to install in RPCS3"
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ps3"
+            ],
+            "dir": "ps3",
+            "emulator": "rpcs3"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-vita3k",
+      "name": "Vita3K (RetroDECK)",
+      "title_ids": [
+        "Vita3K"
+      ],
+      "detect": [
+        "{rdsaves}/psvita/vita3k"
+      ],
+      "note": "Games come down as RomM has them, to install in Vita3K; ES-DE lists each by a .psvita file. Saves are user 00's, one folder per game. RomM's PSVUPDAT.PUP and PSP2UPDAT.PUP come down to bios/psvita, to install in Vita3K.",
+      "profile": {
+        "root": "{rdstorage}/psvita/Vita3K",
+        "rom_dir": "{rdroms}/psvita",
+        "bios_dir": "{rdbios}",
+        "state_exts": "",
+        "save_layout": "psvita",
+        "bundle_dirs": "{rdsaves}/psvita/vita3k,{rdstorage}/psvita/Vita3K/ux0/user/00/savedata",
+        "firmware": {
+          "dir": "{bios}/psvita",
+          "by_ext": {
+            ".pup": ""
+          },
+          "installed": "{rdstorage}/psvita/Vita3K/vs0/sys/external",
+          "install": "In Vita3K: File, Install Firmware, then pick {file} (and the other .pup beside it)",
+          "install_without": "In RetroDECK's Configurator: Tools, Install: Vita3K Firmware (or add PSVUPDAT.PUP to RomM's PS Vita firmware)"
+        },
+        "platforms": [
+          {
+            "romm": [
+              "psvita",
+              "vita"
+            ],
+            "dir": "psvita",
+            "emulator": "vita3k",
+            "vita_install": true
           }
         ]
       }
@@ -303,6 +415,2862 @@
             "dir": "xbox",
             "emulator": "xemu",
             "save_layout": "xbox"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-primehack",
+      "name": "PrimeHack (RetroDECK)",
+      "title_ids": [
+        "primehack"
+      ],
+      "detect": [
+        "{rdsaves}/wii/primehack",
+        "{rdsaves}/gc/primehack"
+      ],
+      "note": "Metroid Prime Trilogy. Wii saves from its NAND, GameCube ones as files per game, kept the way Dolphin keeps them.",
+      "profile": {
+        "root": "{rddata}/primehack",
+        "bios_dir": "{rdbios}",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ngc",
+              "gamecube"
+            ],
+            "dir": "gc",
+            "emulator": "dolphin",
+            "rom_dir": "{rdroms}/primehack",
+            "save_layout": "gci",
+            "bundle_dirs": "{rdsaves}/gc/primehack,{rddata}/primehack/GC",
+            "cards": {
+              "default": "per_game",
+              "modes": "per_game"
+            }
+          },
+          {
+            "romm": [
+              "wii"
+            ],
+            "dir": "wii",
+            "emulator": "dolphin",
+            "rom_dir": "{rdroms}/primehack",
+            "save_layout": "wii",
+            "bundle_dirs": "{rdsaves}/wii/primehack,{rddata}/primehack/Wii"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rd-mame",
+      "name": "MAME (RetroDECK)",
+      "title_ids": [
+        "mame"
+      ],
+      "detect": [
+        "{rdsaves}/mame-sa"
+      ],
+      "note": "Each game's NVRAM, MAME's nvram/<set>/ folder, synced as a zip of it (<set>.zip, its files under <set>/).",
+      "vars": {
+        "mroms": {
+          "file": "{rdconfig}/mame/ini/mame.ini",
+          "format": "space",
+          "key": "rompath",
+          "split": ";",
+          "ignore": "$",
+          "exists": true,
+          "default": "{rdroms}/arcade"
+        },
+        "nvram": {
+          "file": "{rdconfig}/mame/ini/mame.ini",
+          "format": "space",
+          "key": "nvram_directory",
+          "default": "{rdsaves}/mame-sa/nvram"
+        },
+        "mstates": {
+          "file": "{rdconfig}/mame/ini/mame.ini",
+          "format": "space",
+          "key": "state_directory",
+          "default": "{rdsaves}/mame-sa/sta"
+        }
+      },
+      "profile": {
+        "root": "{rdsaves}/mame-sa",
+        "sync_saves": true,
+        "save_dir": "{nvram}",
+        "state_dir": "{mstates}",
+        "state_exts": "",
+        "save_layout": "folder",
+        "bundle_dirs": "{nvram}",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "arcade",
+              "mame"
+            ],
+            "dir": "arcade",
+            "emulator": "mame",
+            "rom_dir": "{mroms}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "eden",
+      "name": "Eden",
+      "flatpak": "dev.eden_emu.eden",
+      "title_ids": [
+        "eden"
+      ],
+      "detect": [
+        "{home}/.var/app/dev.eden_emu.eden/data/eden",
+        "{home}/.local/share/flatpak/app/dev.eden_emu.eden",
+        "{fpsys}/app/dev.eden_emu.eden"
+      ],
+      "note": "Games with their updates and DLC, keys, firmware and the saves of Eden's current user. Its Flathub Flatpak sees no folder outside its own, so its games go in ~/.var/app/dev.eden_emu.eden/data/eden/games, unless you allow your games folder (flatpak override). The games and updates folders go into Eden's settings while it's closed, once it has started once.",
+      "vars": {
+        "data_dir": {
+          "path": "{sandbox}/eden"
+        },
+        "cfg": {
+          "path": "{home}/.var/app/dev.eden_emu.eden/config/eden"
+        },
+        "nand": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "nand_directory",
+          "default": "{data_dir}/nand"
+        },
+        "saves": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "save_directory",
+          "default": "{nand}"
+        },
+        "games": {
+          "readable": [
+            "{roms}/switch",
+            "{data_dir}/games"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{data_dir}",
+        "rom_dir": "{games}",
+        "update_dir": "{data_dir}/updates",
+        "dlc_dir": "{data_dir}/updates",
+        "bios_dir": "{data_dir}",
+        "state_exts": "",
+        "firmware": {
+          "by_ext": {
+            ".keys": "keys",
+            ".nca": "{nand}/system/Contents/registered"
+          }
+        },
+        "platforms": [
+          {
+            "romm": [
+              "switch"
+            ],
+            "dir": "switch",
+            "emulator": "eden",
+            "save_layout": "switch",
+            "bundle_dirs": "{saves}/user/save/0000000000000000/{switch_user}",
+            "switch_users": "{nand}/system/save/8000000000000010/su/avators/profiles.dat",
+            "switch_user_index": "{cfg}/qt-config.ini",
+            "config_writes": [
+              {
+                "file": "{cfg}/qt-config.ini",
+                "section": "UI",
+                "array": "Paths\\gamedirs",
+                "match": "path",
+                "seed": [
+                  {
+                    "path": "SDMC",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  },
+                  {
+                    "path": "UserNAND",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  },
+                  {
+                    "path": "SysNAND",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  }
+                ],
+                "add": {
+                  "path": "{rom_dir}",
+                  "deep_scan": "false",
+                  "expanded": "true"
+                }
+              },
+              {
+                "file": "{cfg}/qt-config.ini",
+                "section": "UI",
+                "array": "Paths\\external_content_dirs",
+                "match": "path",
+                "add": {
+                  "path": "{update_dir}"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "eden-appimage",
+      "name": "Eden (AppImage)",
+      "title_ids": [
+        "eden",
+        "Eden.AppImage",
+        "eden.AppImage",
+        "Eden-Linux-v0.2",
+        "Eden-Linux-v0.3"
+      ],
+      "detect": [
+        "{home}/.local/share/eden",
+        "{home}/.config/eden/qt-config.ini",
+        "{home}/Applications/Eden*.AppImage"
+      ],
+      "note": "Games with their updates and DLC, keys, firmware and the saves of Eden's current user, in the folders its settings name (EmuDeck's NAND too). The games and updates folders go into Eden's settings while it's closed, once it has started once.",
+      "vars": {
+        "data_dir": {
+          "path": "{home}/.local/share/eden"
+        },
+        "cfg": {
+          "path": "{home}/.config/eden"
+        },
+        "nand": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "nand_directory",
+          "default": "{data_dir}/nand"
+        },
+        "saves": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "save_directory",
+          "default": "{nand}"
+        },
+        "games": {
+          "path": "{roms}/switch",
+          "default": "{roms}/switch"
+        }
+      },
+      "profile": {
+        "root": "{data_dir}",
+        "rom_dir": "{games}",
+        "update_dir": "{data_dir}/updates",
+        "dlc_dir": "{data_dir}/updates",
+        "bios_dir": "{data_dir}",
+        "state_exts": "",
+        "firmware": {
+          "by_ext": {
+            ".keys": "keys",
+            ".nca": "{nand}/system/Contents/registered"
+          }
+        },
+        "platforms": [
+          {
+            "romm": [
+              "switch"
+            ],
+            "dir": "switch",
+            "emulator": "eden",
+            "save_layout": "switch",
+            "bundle_dirs": "{saves}/user/save/0000000000000000/{switch_user}",
+            "switch_users": "{nand}/system/save/8000000000000010/su/avators/profiles.dat",
+            "switch_user_index": "{cfg}/qt-config.ini",
+            "config_writes": [
+              {
+                "file": "{cfg}/qt-config.ini",
+                "section": "UI",
+                "array": "Paths\\gamedirs",
+                "match": "path",
+                "seed": [
+                  {
+                    "path": "SDMC",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  },
+                  {
+                    "path": "UserNAND",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  },
+                  {
+                    "path": "SysNAND",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  }
+                ],
+                "add": {
+                  "path": "{rom_dir}",
+                  "deep_scan": "false",
+                  "expanded": "true"
+                }
+              },
+              {
+                "file": "{cfg}/qt-config.ini",
+                "section": "UI",
+                "array": "Paths\\external_content_dirs",
+                "match": "path",
+                "add": {
+                  "path": "{update_dir}"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "citron",
+      "name": "Citron",
+      "title_ids": [
+        "citron",
+        "citron.AppImage",
+        "Citron.AppImage",
+        "citron_nightly-"
+      ],
+      "detect": [
+        "{home}/.local/share/citron",
+        "{home}/.config/citron/qt-config.ini",
+        "{home}/Applications/citron*.AppImage"
+      ],
+      "note": "Games with their updates and DLC, keys, firmware and the saves of Citron's current user. The games and updates folders go into Citron's settings while it's closed, once it has started once.",
+      "vars": {
+        "data_dir": {
+          "path": "{home}/.local/share/citron"
+        },
+        "cfg": {
+          "path": "{home}/.config/citron"
+        },
+        "nand": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "nand_directory",
+          "default": "{data_dir}/nand"
+        },
+        "saves": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "save_directory",
+          "default": "{nand}"
+        },
+        "games": {
+          "path": "{roms}/switch",
+          "default": "{roms}/switch"
+        }
+      },
+      "profile": {
+        "root": "{data_dir}",
+        "rom_dir": "{games}",
+        "update_dir": "{data_dir}/updates",
+        "dlc_dir": "{data_dir}/updates",
+        "bios_dir": "{data_dir}",
+        "state_exts": "",
+        "firmware": {
+          "by_ext": {
+            ".keys": "keys",
+            ".nca": "{nand}/system/Contents/registered"
+          }
+        },
+        "platforms": [
+          {
+            "romm": [
+              "switch"
+            ],
+            "dir": "switch",
+            "emulator": "citron",
+            "save_layout": "switch",
+            "bundle_dirs": "{saves}/user/save/0000000000000000/{switch_user}",
+            "switch_users": "{nand}/system/save/8000000000000010/su/avators/profiles.dat",
+            "switch_user_index": "{cfg}/qt-config.ini",
+            "config_writes": [
+              {
+                "file": "{cfg}/qt-config.ini",
+                "section": "UI",
+                "array": "Paths\\gamedirs",
+                "match": "path",
+                "seed": [
+                  {
+                    "path": "SDMC",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  },
+                  {
+                    "path": "UserNAND",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  },
+                  {
+                    "path": "SysNAND",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  }
+                ],
+                "add": {
+                  "path": "{rom_dir}",
+                  "deep_scan": "false",
+                  "expanded": "true"
+                }
+              },
+              {
+                "file": "{cfg}/qt-config.ini",
+                "section": "UI",
+                "array": "Paths\\external_content_dirs",
+                "match": "path",
+                "add": {
+                  "path": "{update_dir}"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "ryujinx",
+      "name": "Ryujinx",
+      "flatpak": "io.github.ryubing.Ryujinx",
+      "title_ids": [
+        "Ryujinx",
+        "Ryujinx.sh"
+      ],
+      "detect": [
+        "{home}/.config/Ryujinx/Config.json",
+        "{home}/Applications/publish/Ryujinx",
+        "{home}/Applications/ryujinx*.AppImage",
+        "{home}/.var/app/io.github.ryubing.Ryujinx",
+        "{home}/.local/share/flatpak/app/io.github.ryubing.Ryujinx",
+        "{fpsys}/app/io.github.ryubing.Ryujinx"
+      ],
+      "note": "Games with their updates and DLC (Ryujinx's autoload folders), keys, firmware and the saves of Ryujinx's open user. A game's save comes down once Ryujinx has run the game once.",
+      "vars": {
+        "cfg": {
+          "path": [
+            "{home}/.config/Ryujinx",
+            "{home}/.var/app/io.github.ryubing.Ryujinx/config/Ryujinx"
+          ]
+        },
+        "games": {
+          "readable": [
+            "{roms}/switch",
+            "{sandbox}/games"
+          ]
+        },
+        "updates": {
+          "path": [
+            "{edstorage}/ryujinx/patchesAndDlc",
+            "{cfg}/updates"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{games}",
+        "update_dir": "{updates}",
+        "dlc_dir": "{updates}",
+        "bios_dir": "{cfg}",
+        "state_exts": "",
+        "firmware": {
+          "by_ext": {
+            ".keys": "system",
+            ".nca": "bis/system/Contents/registered/{id}.nca/00"
+          }
+        },
+        "platforms": [
+          {
+            "romm": [
+              "switch"
+            ],
+            "dir": "switch",
+            "emulator": "ryujinx",
+            "save_layout": "ryujinx",
+            "bundle_dirs": "{cfg}/bis/user/save/{switch_user}",
+            "switch_users": "{cfg}/system/Profiles.json",
+            "config_writes": [
+              {
+                "file": "{cfg}/Config.json",
+                "format": "json",
+                "key": "game_dirs",
+                "add": "{rom_dir}"
+              },
+              {
+                "file": "{cfg}/Config.json",
+                "format": "json",
+                "key": "autoload_dirs",
+                "add": "{update_dir}"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "duckstation",
+      "name": "DuckStation",
+      "flatpak": "org.duckstation.DuckStation",
+      "title_ids": [
+        "duckstation-qt",
+        "DuckStation.App",
+        "DuckStation-x64"
+      ],
+      "detect": [
+        "{home}/.local/share/duckstation/settings.ini",
+        "{home}/Applications/DuckStation*.AppImage",
+        "{home}/.var/app/org.duckstation.DuckStation",
+        "{home}/.local/share/flatpak/app/org.duckstation.DuckStation",
+        "{fpsys}/app/org.duckstation.DuckStation"
+      ],
+      "note": "One memory card per game, named as DuckStation names it. Its folders come from DuckStation's settings.ini. Its Flathub Flatpak can't see a games folder outside its own unless you allow it (flatpak override): then its games go in ~/.var/app/org.duckstation.DuckStation/data/roms/<system>, where you point it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.local/share/duckstation",
+            "{home}/.var/app/org.duckstation.DuckStation/config/duckstation"
+          ]
+        },
+        "cards": {
+          "file": "{cfg}/settings.ini",
+          "format": "ini",
+          "section": "MemoryCards",
+          "key": "Directory",
+          "default": "memcards"
+        },
+        "shared1": {
+          "file": "{cfg}/settings.ini",
+          "format": "ini",
+          "section": "MemoryCards",
+          "key": "Card1Path",
+          "default": "shared_card_1.mcd",
+          "base": "{cards}"
+        },
+        "states": {
+          "file": "{cfg}/settings.ini",
+          "format": "ini",
+          "section": "Folders",
+          "key": "SaveStates",
+          "default": "savestates"
+        },
+        "bios": {
+          "file": "{cfg}/settings.ini",
+          "format": "ini",
+          "section": "BIOS",
+          "key": "SearchDirectory",
+          "default": "bios"
+        },
+        "duckdb": {
+          "path": [
+            "{fpsys}/app/org.duckstation.DuckStation/current/active/files/bin/resources",
+            "{home}/.local/share/flatpak/app/org.duckstation.DuckStation/current/active/files/bin/resources"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{games}/psx",
+        "save_dir": "{cards}",
+        "state_dir": "{states}",
+        "bios_dir": "{bios}",
+        "save_exts": ".mcd",
+        "save_name": "{duck_card}{ext}",
+        "save_stems": "{duck_card}",
+        "state_exts": "",
+        "firmware": {
+          "names": {
+            "8dd7d5296a650fac7319bce665a6a53c": "scph5500.bin",
+            "490f666e1afb15b7362b406ed1cea246": "scph5501.bin",
+            "32736f17079d0b2b7024407c39bd3050": "scph5502.bin"
+          }
+        },
+        "platforms": [
+          {
+            "romm": [
+              "psx",
+              "ps1",
+              "playstation"
+            ],
+            "dir": "psx",
+            "emulator": "duckstation",
+            "save_format": "psx-card",
+            "cards": {
+              "default": "per_game",
+              "modes": "per_game,shared",
+              "change": "Set DuckStation's Memory Card 1 to a separate card per game",
+              "setting": {
+                "file": "{cfg}/settings.ini",
+                "key": "Card1Type",
+                "per_game": "PerGame,PerGameTitle,PerGameFileTitle",
+                "shared": "Shared"
+              }
+            },
+            "config_writes": [
+              {
+                "file": "{cfg}/settings.ini",
+                "section": "GameList",
+                "key": "RecursivePaths",
+                "add": "{rom_dir}"
+              }
+            ],
+            "memcards": "{shared1}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "pcsx2",
+      "name": "PCSX2",
+      "flatpak": "net.pcsx2.PCSX2",
+      "title_ids": [
+        "pcsx2-qt",
+        "pcsx2-Qt.AppIma"
+      ],
+      "detect": [
+        "{home}/.config/PCSX2/inis/PCSX2.ini",
+        "{home}/Applications/pcsx2*.AppImage",
+        "{home}/.var/app/net.pcsx2.PCSX2",
+        "{home}/.local/share/flatpak/app/net.pcsx2.PCSX2",
+        "{fpsys}/app/net.pcsx2.PCSX2"
+      ],
+      "note": "Shared memory cards by default (Mcd001.ps2, Mcd002.ps2). A game set to its own card in PCSX2's game properties gets <game>.ps2. Its folders come from PCSX2.ini.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.config/PCSX2",
+            "{home}/.var/app/net.pcsx2.PCSX2/config/PCSX2"
+          ]
+        },
+        "cards": {
+          "file": "{cfg}/inis/PCSX2.ini",
+          "format": "ini",
+          "section": "Folders",
+          "key": "MemoryCards",
+          "default": "memcards",
+          "base": "{cfg}"
+        },
+        "bios": {
+          "file": "{cfg}/inis/PCSX2.ini",
+          "format": "ini",
+          "section": "Folders",
+          "key": "Bios",
+          "default": "bios",
+          "base": "{cfg}"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{games}/ps2",
+        "bios_dir": "{bios}",
+        "memcards": "{card_dir}/Mcd001.ps2,{card_dir}/Mcd002.ps2",
+        "save_layout": "ps2",
+        "state_exts": "",
+        "pcsx2_cards": {
+          "dir": "{cards}",
+          "game_ini": "{cfg}/gamesettings/{serial}_{crc}.ini",
+          "global_ini": "{cfg}/inis/PCSX2.ini",
+          "format": "ini",
+          "own_card": "{rom_stem}.ps2"
+        },
+        "firmware": {
+          "pick_one": [
+            "21038400dc633070a78ad53090c53017",
+            "dc69f0643a3030aaa4797501b483d6c4",
+            "80ac46fa7e77b8ab4366e86948e54f83",
+            "93ea3bcee4252627919175ff1b16a1d9",
+            "d3e81e95db25f5a86a7b7474550a2155"
+          ]
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ps2"
+            ],
+            "dir": "ps2",
+            "emulator": "pcsx2",
+            "cards": {
+              "default": "shared",
+              "modes": "per_game,shared"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "dolphin",
+      "name": "Dolphin",
+      "flatpak": "org.DolphinEmu.dolphin-emu",
+      "title_ids": [
+        "dolphin-emu"
+      ],
+      "detect": [
+        "{home}/.var/app/org.DolphinEmu.dolphin-emu",
+        "{home}/.local/share/flatpak/app/org.DolphinEmu.dolphin-emu",
+        "{fpsys}/app/org.DolphinEmu.dolphin-emu",
+        "{home}/.config/dolphin-emu/Dolphin.ini",
+        "{home}/.local/share/dolphin-emu"
+      ],
+      "note": "GameCube saves as files per game (GCI folders, USA/EUR/JAP). Wii saves from its NAND, wherever Dolphin.ini puts it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "user": {
+          "path": [
+            "{home}/.var/app/org.DolphinEmu.dolphin-emu/data/dolphin-emu",
+            "{home}/.local/share/dolphin-emu",
+            "{home}/.dolphin-emu"
+          ]
+        },
+        "conf": {
+          "path": [
+            "{home}/.var/app/org.DolphinEmu.dolphin-emu/config/dolphin-emu",
+            "{home}/.config/dolphin-emu",
+            "{home}/.dolphin-emu/Config"
+          ]
+        },
+        "nand": {
+          "file": "{conf}/Dolphin.ini",
+          "format": "ini",
+          "section": "General",
+          "key": "NANDRootPath",
+          "default": "{user}/Wii"
+        }
+      },
+      "profile": {
+        "root": "{user}",
+        "bios_dir": "{user}/Sys",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ngc",
+              "gamecube"
+            ],
+            "dir": "gc",
+            "emulator": "dolphin",
+            "rom_dir": "{games}/gc",
+            "save_layout": "gci",
+            "bundle_dirs": "{user}/GC",
+            "cards": {
+              "default": "per_game",
+              "modes": "per_game"
+            }
+          },
+          {
+            "romm": [
+              "wii"
+            ],
+            "dir": "wii",
+            "emulator": "dolphin",
+            "rom_dir": "{games}/wii",
+            "save_layout": "wii",
+            "bundle_dirs": "{nand}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "primehack",
+      "name": "PrimeHack",
+      "flatpak": "io.github.shiiion.primehack",
+      "title_ids": [
+        "primehack-wrapp"
+      ],
+      "detect": [
+        "{home}/.var/app/io.github.shiiion.primehack",
+        "{home}/.local/share/flatpak/app/io.github.shiiion.primehack",
+        "{fpsys}/app/io.github.shiiion.primehack"
+      ],
+      "note": "Metroid Prime Trilogy. Wii saves from its NAND, and GameCube ones as files per game, kept the way Dolphin keeps them.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "user": {
+          "path": [
+            "{home}/.var/app/io.github.shiiion.primehack/data/dolphin-emu"
+          ]
+        },
+        "conf": {
+          "path": [
+            "{home}/.var/app/io.github.shiiion.primehack/config/dolphin-emu"
+          ]
+        },
+        "nand": {
+          "file": "{conf}/Dolphin.ini",
+          "format": "ini",
+          "section": "General",
+          "key": "NANDRootPath",
+          "default": "{user}/Wii"
+        },
+        "phgames": {
+          "file": "{conf}/Dolphin.ini",
+          "format": "ini",
+          "section": "General",
+          "key": "ISOPath0",
+          "exists": true,
+          "default": "{games}/wii"
+        }
+      },
+      "profile": {
+        "root": "{user}",
+        "bios_dir": "{user}/Sys",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ngc",
+              "gamecube"
+            ],
+            "dir": "gc",
+            "emulator": "dolphin",
+            "rom_dir": "{phgames}",
+            "save_layout": "gci",
+            "bundle_dirs": "{user}/GC",
+            "cards": {
+              "default": "per_game",
+              "modes": "per_game"
+            }
+          },
+          {
+            "romm": [
+              "wii"
+            ],
+            "dir": "wii",
+            "emulator": "dolphin",
+            "rom_dir": "{phgames}",
+            "save_layout": "wii",
+            "bundle_dirs": "{nand}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ppsspp",
+      "name": "PPSSPP",
+      "flatpak": "org.ppsspp.PPSSPP",
+      "title_ids": [
+        "PPSSPPSDL",
+        "PPSSPPQt",
+        "PPSSPP"
+      ],
+      "detect": [
+        "{home}/.config/ppsspp/PSP/SYSTEM/ppsspp.ini",
+        "{home}/Applications/PPSSPP*.AppImage",
+        "{home}/.var/app/org.ppsspp.PPSSPP",
+        "{home}/.local/share/flatpak/app/org.ppsspp.PPSSPP",
+        "{fpsys}/app/org.ppsspp.PPSSPP"
+      ],
+      "note": "Each game's save folders, from PPSSPP's SAVEDATA.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "mem": {
+          "path": [
+            "{home}/.var/app/org.ppsspp.PPSSPP/config/ppsspp",
+            "{home}/.config/ppsspp"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{mem}",
+        "rom_dir": "{games}/psp",
+        "bios_dir": "{mem}",
+        "state_exts": "",
+        "save_layout": "psp",
+        "bundle_dirs": "{mem}/PSP/SAVEDATA",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "psp"
+            ],
+            "dir": "psp",
+            "emulator": "ppsspp"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rpcs3",
+      "name": "RPCS3",
+      "flatpak": "net.rpcs3.RPCS3",
+      "title_ids": [
+        "rpcs3",
+        "rpcs3.AppImage"
+      ],
+      "detect": [
+        "{home}/.config/rpcs3/vfs.yml",
+        "{home}/.config/rpcs3/config.yml",
+        "{home}/Applications/rpcs3*.AppImage",
+        "{home}/.var/app/net.rpcs3.RPCS3",
+        "{home}/.local/share/flatpak/app/net.rpcs3.RPCS3",
+        "{fpsys}/app/net.rpcs3.RPCS3"
+      ],
+      "note": "Each game's save folders, from RPCS3's savedata, wherever vfs.yml puts dev_hdd0. RomM's PS3UPDAT.PUP comes down to install in RPCS3.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.config/rpcs3",
+            "{home}/.var/app/net.rpcs3.RPCS3/config/rpcs3"
+          ]
+        },
+        "emudir": {
+          "file": "{cfg}/vfs.yml",
+          "format": "yaml",
+          "key": "$(EmulatorDir)",
+          "default": "{cfg}"
+        },
+        "hdd0": {
+          "file": "{cfg}/vfs.yml",
+          "format": "yaml",
+          "key": "/dev_hdd0/",
+          "subst": {
+            "$(EmulatorDir)": "{emudir}/"
+          },
+          "default": "{emudir}/dev_hdd0"
+        },
+        "flash": {
+          "file": "{cfg}/vfs.yml",
+          "format": "yaml",
+          "key": "/dev_flash/",
+          "subst": {
+            "$(EmulatorDir)": "{emudir}/"
+          },
+          "default": "{emudir}/dev_flash"
+        },
+        "bios": {
+          "path": [
+            "{edbios}"
+          ],
+          "default": "{cfg}"
+        },
+        "gamedir": {
+          "file": "{cfg}/vfs.yml",
+          "format": "yaml",
+          "key": "/games/",
+          "subst": {
+            "$(EmulatorDir)": "{emudir}/"
+          },
+          "default": "{games}/ps3",
+          "exists": true
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{gamedir}",
+        "bios_dir": "{bios}",
+        "state_exts": "",
+        "save_layout": "ps3",
+        "bundle_dirs": "{hdd0}/home/00000001/savedata",
+        "firmware": {
+          "dir": "{bios}/ps3",
+          "by_ext": {
+            ".pup": ""
+          },
+          "installed": "{flash}/vsh/etc/version.txt",
+          "install": "In RPCS3: File, Install Firmware, then pick {file}",
+          "install_without": "Add PS3UPDAT.PUP to RomM's PS3 firmware: it comes down to install in RPCS3"
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ps3"
+            ],
+            "dir": "ps3",
+            "emulator": "rpcs3"
+          }
+        ]
+      }
+    },
+    {
+      "id": "xenia",
+      "name": "Xenia",
+      "title_ids": [
+        "xenia_canary",
+        "xenia_edge",
+        "xenia_canary_li",
+        "xenia_edge_linu",
+        "Xenia.AppImage"
+      ],
+      "detect": [
+        "{home}/.local/share/Xenia",
+        "{home}/Applications/xenia*.AppImage"
+      ],
+      "note": "Xbox 360 (Xenia Canary or Edge, the Linux build). Saves sync for the player signed in first, from Xenia's content folder.",
+      "vars": {
+        "games": {
+          "path": [
+            "{edroms}/xbox360/roms"
+          ],
+          "default": "{roms}/xbox360"
+        },
+        "xroot": {
+          "path": [
+            "{home}/.local/share/Xenia"
+          ]
+        },
+        "content": {
+          "file": [
+            "{xroot}/xenia-canary.config.toml",
+            "{xroot}/xenia-edge.config.toml"
+          ],
+          "format": "toml",
+          "section": "Storage",
+          "key": "content_root",
+          "default": "{xroot}/content",
+          "base": "{xroot}"
+        }
+      },
+      "profile": {
+        "root": "{xroot}",
+        "rom_dir": "{games}",
+        "bios_dir": "{xroot}",
+        "sync_saves": true,
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "xbox360"
+            ],
+            "dir": "xbox360",
+            "emulator": "xenia",
+            "save_layout": "x360",
+            "bundle_dirs": "{content}/{xuid}",
+            "x360_users": "{xroot}/xenia-canary.config.toml,{xroot}/xenia-edge.config.toml"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ed-xenia",
+      "name": "Xenia (EmuDeck, Proton)",
+      "title_ids": [
+        "xenia_canary.ex",
+        "xenia_edge.exe",
+        "xenia.exe"
+      ],
+      "detect": [
+        "{edroms}/xbox360/xenia*.exe"
+      ],
+      "note": "Xbox 360 (Xenia for Windows, which EmuDeck runs through Proton, portable beside its .exe). Saves sync for the player signed in first, from its content folder.",
+      "vars": {
+        "xroot": {
+          "path": [
+            "{edroms}/xbox360"
+          ]
+        },
+        "content": {
+          "file": [
+            "{xroot}/xenia-canary.config.toml",
+            "{xroot}/xenia-edge.config.toml"
+          ],
+          "format": "toml",
+          "section": "Storage",
+          "key": "content_root",
+          "default": "{xroot}/content",
+          "base": "{xroot}"
+        }
+      },
+      "profile": {
+        "root": "{xroot}",
+        "rom_dir": "{xroot}/roms",
+        "bios_dir": "{xroot}",
+        "sync_saves": true,
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "xbox360"
+            ],
+            "dir": "xbox360",
+            "emulator": "xenia",
+            "save_layout": "x360",
+            "bundle_dirs": "{content}/{xuid}",
+            "x360_users": "{xroot}/xenia-canary.config.toml,{xroot}/xenia-edge.config.toml"
+          }
+        ]
+      }
+    },
+    {
+      "id": "vita3k",
+      "name": "Vita3K",
+      "title_ids": [
+        "Vita3K",
+        "Vita3K-x86_64.A"
+      ],
+      "detect": [
+        "{home}/.config/Vita3K/config.yml",
+        "{home}/Applications/Vita3K/Vita3K",
+        "{home}/Applications/Vita3K*.AppImage"
+      ],
+      "note": "Games come down as RomM has them, to install in Vita3K; ES-DE lists each by a .psvita file. Saves are those of the user Vita3K signs in (config.yml's user-id), one folder per game, wherever its pref-path is. RomM's PSVUPDAT.PUP and PSP2UPDAT.PUP come down to install in Vita3K.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.config/Vita3K"
+          ]
+        },
+        "pref": {
+          "file": "{cfg}/config.yml",
+          "format": "yaml",
+          "key": "pref-path",
+          "default": "{home}/.local/share/Vita3K/Vita3K"
+        },
+        "user_id": {
+          "file": "{cfg}/config.yml",
+          "format": "yaml",
+          "key": "user-id",
+          "default": "00",
+          "plain": true
+        },
+        "bios": {
+          "path": [
+            "{edbios}"
+          ],
+          "default": "{cfg}"
+        }
+      },
+      "profile": {
+        "root": "{pref}",
+        "rom_dir": "{games}/psvita",
+        "bios_dir": "{bios}",
+        "state_exts": "",
+        "save_layout": "psvita",
+        "bundle_dirs": "{pref}/ux0/user/{user_id}/savedata",
+        "firmware": {
+          "dir": "{bios}/psvita",
+          "by_ext": {
+            ".pup": ""
+          },
+          "installed": "{pref}/vs0/sys/external",
+          "install": "In Vita3K: File, Install Firmware, then pick {file} (and the other .pup beside it)",
+          "install_without": "Add PSVUPDAT.PUP to RomM's PS Vita firmware: it comes down to install in Vita3K"
+        },
+        "platforms": [
+          {
+            "romm": [
+              "psvita",
+              "vita"
+            ],
+            "dir": "psvita",
+            "emulator": "vita3k",
+            "vita_install": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "cemu",
+      "name": "Cemu",
+      "flatpak": "info.cemu.Cemu",
+      "title_ids": [
+        "Cemu",
+        "Cemu_relwithdeb",
+        "Cemu.AppImage"
+      ],
+      "detect": [
+        "{home}/.config/Cemu/settings.xml",
+        "{home}/Applications/Cemu*.AppImage",
+        "{home}/.var/app/info.cemu.Cemu",
+        "{home}/.local/share/flatpak/app/info.cemu.Cemu",
+        "{fpsys}/app/info.cemu.Cemu"
+      ],
+      "note": "Each game's saves from Cemu's mlc01, wherever settings.xml puts it. Games go to Cemu's first game folder.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.config/Cemu",
+            "{home}/.var/app/info.cemu.Cemu/config/Cemu"
+          ]
+        },
+        "data": {
+          "path": [
+            "{home}/.local/share/Cemu",
+            "{home}/.var/app/info.cemu.Cemu/data/Cemu"
+          ]
+        },
+        "mlc": {
+          "file": "{cfg}/settings.xml",
+          "format": "xml",
+          "key": "content/mlc_path",
+          "default": "{data}/mlc01"
+        },
+        "wiiuroms": {
+          "path": [
+            "{games}/wiiu/roms"
+          ],
+          "default": "{games}/wiiu"
+        },
+        "gamedir": {
+          "file": "{cfg}/settings.xml",
+          "format": "xml",
+          "key": "content/GamePaths/Entry",
+          "exists": true,
+          "default": "{wiiuroms}"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{gamedir}",
+        "bios_dir": "{data}",
+        "state_exts": "",
+        "firmware": {
+          "only_files": [
+            "keys.txt"
+          ]
+        },
+        "platforms": [
+          {
+            "romm": [
+              "wiiu"
+            ],
+            "dir": "wiiu",
+            "emulator": "cemu",
+            "save_layout": "wiiu",
+            "bundle_dirs": "{mlc}/usr/save"
+          }
+        ]
+      }
+    },
+    {
+      "id": "xemu",
+      "name": "xemu",
+      "flatpak": "app.xemu.xemu",
+      "title_ids": [
+        "xemu"
+      ],
+      "detect": [
+        "{home}/.local/share/xemu/xemu/xemu.toml",
+        "{home}/Applications/xemu*.AppImage",
+        "{home}/.var/app/app.xemu.xemu",
+        "{home}/.local/share/flatpak/app/app.xemu.xemu",
+        "{fpsys}/app/app.xemu.xemu"
+      ],
+      "note": "Saves from xemu's hard disk image, wherever xemu.toml puts it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "xdir": {
+          "path": [
+            "{home}/.var/app/app.xemu.xemu/data/xemu/xemu",
+            "{home}/.local/share/xemu/xemu"
+          ]
+        },
+        "bios": {
+          "file": "{xdir}/xemu.toml",
+          "format": "toml",
+          "section": "sys.files",
+          "key": "bootrom_path",
+          "dirname": true,
+          "default": "{xdir}"
+        }
+      },
+      "profile": {
+        "root": "{xdir}",
+        "rom_dir": "{games}/xbox",
+        "bios_dir": "{bios}",
+        "sync_saves": true,
+        "state_exts": "",
+        "firmware": {
+          "only_files": [
+            "mcpx_1.0.bin",
+            "Complex_4627.bin",
+            "Complex_4627v1.03.bin"
+          ]
+        },
+        "platforms": [
+          {
+            "romm": [
+              "xbox"
+            ],
+            "dir": "xbox",
+            "emulator": "xemu",
+            "save_layout": "xbox"
+          }
+        ]
+      }
+    },
+    {
+      "id": "melonds",
+      "name": "melonDS",
+      "flatpak": "net.kuribo64.melonDS",
+      "title_ids": [
+        "melonDS"
+      ],
+      "detect": [
+        "{home}/.config/melonDS/melonDS.toml",
+        "{home}/.config/melonDS/melonDS.ini",
+        "{home}/Applications/melonDS*.AppImage",
+        "{home}/.var/app/net.kuribo64.melonDS",
+        "{home}/.local/share/flatpak/app/net.kuribo64.melonDS",
+        "{fpsys}/app/net.kuribo64.melonDS"
+      ],
+      "note": "Each game's save (.sav), in melonDS's save folder or next to the game. Its Flathub Flatpak sees only your home folder, not the SD card unless you allow it (flatpak override): then its games go in ~/.var/app/net.kuribo64.melonDS/data/roms/<system>, where you point it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.var/app/net.kuribo64.melonDS/config/melonDS",
+            "{home}/.config/melonDS"
+          ]
+        },
+        "saves_ini": {
+          "file": "{cfg}/melonDS.ini",
+          "format": "ini",
+          "key": "SaveFilePath",
+          "default": "{games}/nds"
+        },
+        "saves": {
+          "file": "{cfg}/melonDS.toml",
+          "format": "toml",
+          "section": "Instance0",
+          "key": "SaveFilePath",
+          "default": "{saves_ini}"
+        },
+        "bios_ini": {
+          "file": "{cfg}/melonDS.ini",
+          "format": "ini",
+          "key": "BIOS9Path",
+          "dirname": true,
+          "default": "{cfg}"
+        },
+        "bios": {
+          "file": "{cfg}/melonDS.toml",
+          "format": "toml",
+          "section": "DS",
+          "key": "BIOS9Path",
+          "dirname": true,
+          "default": "{bios_ini}"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{games}/nds",
+        "save_dir": "{saves}",
+        "bios_dir": "{bios}",
+        "save_exts": ".sav",
+        "state_exts": "",
+        "sync_saves": true,
+        "firmware": {
+          "only_files": [
+            "bios7.bin",
+            "bios9.bin",
+            "firmware.bin"
+          ]
+        },
+        "platforms": [
+          {
+            "romm": [
+              "nds"
+            ],
+            "dir": "nds",
+            "emulator": "melonds",
+            "save_format": "nds-raw",
+            "config_writes": [
+              {
+                "file": "{cfg}/melonDS.toml",
+                "section": "",
+                "key": "LastROMFolder",
+                "set": "{rom_dir}",
+                "quote": true,
+                "if_unset": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "azahar",
+      "name": "Azahar",
+      "flatpak": "org.azahar_emu.Azahar",
+      "title_ids": [
+        "azahar",
+        "azahar.AppImage",
+        "azahar-qt"
+      ],
+      "detect": [
+        "{home}/.config/azahar-emu/qt-config.ini",
+        "{home}/Applications/azahar*.AppImage",
+        "{home}/.var/app/org.azahar_emu.Azahar",
+        "{home}/.local/share/flatpak/app/org.azahar_emu.Azahar",
+        "{fpsys}/app/org.azahar_emu.Azahar"
+      ],
+      "note": "Each game's saves from Azahar's SD card folder, wherever qt-config.ini puts it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.config/azahar-emu",
+            "{home}/.var/app/org.azahar_emu.Azahar/config/azahar-emu"
+          ]
+        },
+        "data": {
+          "path": [
+            "{home}/.local/share/azahar-emu",
+            "{home}/.var/app/org.azahar_emu.Azahar/data/azahar-emu"
+          ]
+        },
+        "sdmc": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "sdmc_directory",
+          "default": "{data}/sdmc"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{games}/n3ds",
+        "bios_dir": "{data}/sysdata",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "3ds"
+            ],
+            "dir": "n3ds",
+            "emulator": "azahar",
+            "save_layout": "3ds",
+            "bundle_dirs": "{sdmc}/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/title"
+          }
+        ]
+      }
+    },
+    {
+      "id": "citra",
+      "name": "Citra / Lime3DS",
+      "flatpak": [
+        "io.github.lime3ds.Lime3DS",
+        "org.citra_emu.citra"
+      ],
+      "title_ids": [
+        "lime3ds",
+        "lime3ds-gui",
+        "citra-qt",
+        "citra"
+      ],
+      "detect": [
+        "{home}/.config/lime3ds-emu/qt-config.ini",
+        "{home}/.config/citra-emu/qt-config.ini",
+        "{home}/Applications/lime3ds*.AppImage",
+        "{home}/Applications/citra*.AppImage",
+        "{home}/.var/app/io.github.lime3ds.Lime3DS",
+        "{home}/.local/share/flatpak/app/io.github.lime3ds.Lime3DS",
+        "{fpsys}/app/io.github.lime3ds.Lime3DS",
+        "{home}/.var/app/org.citra_emu.citra",
+        "{home}/.local/share/flatpak/app/org.citra_emu.citra",
+        "{fpsys}/app/org.citra_emu.citra"
+      ],
+      "note": "Azahar's predecessors: each game's saves from the SD card folder, the same as Azahar's.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.config/lime3ds-emu",
+            "{home}/.var/app/io.github.lime3ds.Lime3DS/config/lime3ds-emu",
+            "{home}/.config/citra-emu",
+            "{home}/.var/app/org.citra_emu.citra/config/citra-emu"
+          ]
+        },
+        "data": {
+          "path": [
+            "{home}/.local/share/lime3ds-emu",
+            "{home}/.var/app/io.github.lime3ds.Lime3DS/data/lime3ds-emu",
+            "{home}/.local/share/citra-emu",
+            "{home}/.var/app/org.citra_emu.citra/data/citra-emu"
+          ]
+        },
+        "sdmc": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "sdmc_directory",
+          "default": "{data}/sdmc"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{games}/n3ds",
+        "bios_dir": "{data}/sysdata",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "3ds"
+            ],
+            "dir": "n3ds",
+            "emulator": "citra",
+            "save_layout": "3ds",
+            "bundle_dirs": "{sdmc}/Nintendo 3DS/00000000000000000000000000000000/00000000000000000000000000000000/title"
+          }
+        ]
+      }
+    },
+    {
+      "id": "flycast",
+      "name": "Flycast",
+      "flatpak": "org.flycast.Flycast",
+      "title_ids": [
+        "flycast"
+      ],
+      "detect": [
+        "{home}/.config/flycast/emu.cfg",
+        "{home}/Applications/flycast*.AppImage",
+        "{home}/.var/app/org.flycast.Flycast",
+        "{home}/.local/share/flatpak/app/org.flycast.Flycast",
+        "{fpsys}/app/org.flycast.Flycast"
+      ],
+      "note": "Each game's own memory card syncs as its save (Flycast's default); shared ones are backed up as RomM memory cards. Save states don't sync yet.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.var/app/org.flycast.Flycast/config/flycast",
+            "{home}/.config/flycast"
+          ]
+        },
+        "data": {
+          "path": [
+            "{home}/.var/app/org.flycast.Flycast/data/flycast",
+            "{home}/.local/share/flycast"
+          ]
+        },
+        "fcgames": {
+          "file": "{cfg}/emu.cfg",
+          "format": "ini",
+          "section": "config",
+          "key": "Dreamcast.ContentPath",
+          "split": ";",
+          "exists": true,
+          "default": "{games}/dreamcast"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "rom_dir": "{fcgames}",
+        "save_dir": "{data}",
+        "state_dir": "{data}",
+        "bios_dir": "{data}",
+        "save_exts": ".bin",
+        "state_exts": "",
+        "disc_id": "dreamcast",
+        "save_stems": "{game_id}_vmu_save_A1",
+        "save_name": "{game_id}_vmu_save_A1{ext}",
+        "memcards": "{data}/vmu_save_A1.bin,{data}/vmu_save_B1.bin,{data}/vmu_save_C1.bin,{data}/vmu_save_D1.bin",
+        "firmware": {
+          "names": {
+            "e10c53c2f8b90bab96ead2d368858623": "dc_boot.bin",
+            "0a93f7940c455905bea6e392dfde92a4": "dc_flash.bin"
+          }
+        },
+        "platforms": [
+          {
+            "romm": [
+              "dc",
+              "dreamcast"
+            ],
+            "dir": "dc",
+            "emulator": "flycast",
+            "save_format": "dc-vmu",
+            "cards": {
+              "default": "per_game",
+              "modes": "per_game,shared",
+              "change": "Turn on Own memory card for each game in its settings (players 2 to 4 always share theirs)",
+              "setting": {
+                "file": "{root}/emu.cfg",
+                "key": "PerGameVmu",
+                "per_game": "yes,true",
+                "shared": "no,false"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "mgba",
+      "name": "mGBA",
+      "flatpak": "io.mgba.mGBA",
+      "title_ids": [
+        "mgba-qt",
+        "mGBA.AppImage"
+      ],
+      "detect": [
+        "{home}/.config/mgba/config.ini",
+        "{home}/Applications/mGBA*.AppImage",
+        "{home}/.var/app/io.mgba.mGBA",
+        "{home}/.local/share/flatpak/app/io.mgba.mGBA",
+        "{fpsys}/app/io.mgba.mGBA"
+      ],
+      "note": "Each game's save (.sav), in mGBA's save folder or next to the game.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.config/mgba",
+            "{home}/.var/app/io.mgba.mGBA/config/mgba"
+          ]
+        },
+        "saves": {
+          "file": "{cfg}/config.ini",
+          "format": "ini",
+          "section": "ports.qt",
+          "key": "savegamePath",
+          "default": "{rom_dir}"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "save_dir": "{saves}",
+        "save_exts": ".sav",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "gba"
+            ],
+            "dir": "gba",
+            "emulator": "mgba",
+            "rom_dir": "{games}/gba"
+          },
+          {
+            "romm": [
+              "gbc"
+            ],
+            "dir": "gbc",
+            "emulator": "mgba",
+            "rom_dir": "{games}/gbc"
+          },
+          {
+            "romm": [
+              "gb"
+            ],
+            "dir": "gb",
+            "emulator": "mgba",
+            "rom_dir": "{games}/gb"
+          }
+        ]
+      }
+    },
+    {
+      "id": "mame",
+      "name": "MAME",
+      "flatpak": "org.mamedev.MAME",
+      "title_ids": [
+        "mame"
+      ],
+      "detect": [
+        "{home}/.mame/mame.ini",
+        "{home}/.var/app/org.mamedev.MAME",
+        "{home}/.local/share/flatpak/app/org.mamedev.MAME",
+        "{fpsys}/app/org.mamedev.MAME"
+      ],
+      "note": "Each game's NVRAM, MAME's nvram/<set>/ folder, synced as a zip of it (<set>.zip, its files under <set>/).",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "mroms": {
+          "file": "{home}/.mame/mame.ini",
+          "format": "space",
+          "key": "rompath",
+          "split": ";",
+          "ignore": "/app/",
+          "exists": true,
+          "default": "{games}/arcade"
+        },
+        "nvram": {
+          "file": "{home}/.mame/mame.ini",
+          "format": "space",
+          "key": "nvram_directory",
+          "default": "{home}/.mame/nvram"
+        },
+        "mstates": {
+          "file": "{home}/.mame/mame.ini",
+          "format": "space",
+          "key": "state_directory",
+          "default": "{home}/.mame/sta"
+        }
+      },
+      "profile": {
+        "root": "{home}/.mame",
+        "sync_saves": true,
+        "save_dir": "{nvram}",
+        "state_dir": "{mstates}",
+        "state_exts": "",
+        "save_layout": "folder",
+        "bundle_dirs": "{nvram}",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "arcade",
+              "mame"
+            ],
+            "dir": "arcade",
+            "emulator": "mame",
+            "rom_dir": "{mroms}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "scummvm",
+      "name": "ScummVM",
+      "flatpak": "org.scummvm.ScummVM",
+      "title_ids": [
+        "scummvm"
+      ],
+      "detect": [
+        "{home}/.config/scummvm/scummvm.ini",
+        "{home}/.var/app/org.scummvm.ScummVM",
+        "{home}/.local/share/flatpak/app/org.scummvm.ScummVM",
+        "{fpsys}/app/org.scummvm.ScummVM"
+      ],
+      "note": "Saves by ScummVM's id for the game (its target): <target>.000 or <target>.s00 in its save folder, synced as <target>.zip. The target comes from ES-DE's .scummvm file in the game's folder, else from scummvm.ini's entry for that folder.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.var/app/org.scummvm.ScummVM/config/scummvm",
+            "{home}/.config/scummvm"
+          ]
+        },
+        "ssaves": {
+          "file": "{cfg}/scummvm.ini",
+          "format": "ini",
+          "section": "scummvm",
+          "key": "savepath",
+          "default": "{sandbox}/scummvm/saves"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "sync_saves": true,
+        "save_dir": "{ssaves}",
+        "state_exts": "",
+        "save_layout": "scummvm",
+        "bundle_dirs": "{ssaves}",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "scummvm"
+            ],
+            "dir": "scummvm",
+            "emulator": "scummvm",
+            "rom_dir": "{games}/scummvm"
+          }
+        ]
+      }
+    },
+    {
+      "id": "rmg",
+      "name": "RMG (Rosalie's Mupen GUI)",
+      "flatpak": "com.github.Rosalie241.RMG",
+      "title_ids": [
+        "RMG"
+      ],
+      "detect": [
+        "{home}/.config/RMG/mupen64plus.cfg",
+        "{home}/.var/app/com.github.Rosalie241.RMG",
+        "{home}/.local/share/flatpak/app/com.github.Rosalie241.RMG",
+        "{fpsys}/app/com.github.Rosalie241.RMG"
+      ],
+      "note": "N64 saves: its .eep/.sra/.fla/.mpk files (named by mupen64plus's database) joined into one .srm for RomM, the same as RetroArch's and Mupen64Plus PS5's. Its Flathub Flatpak can't see a games folder outside its own unless you allow it (flatpak override): then its games go in ~/.var/app/com.github.Rosalie241.RMG/data/roms/<system>, where you point it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.var/app/com.github.Rosalie241.RMG/config/RMG",
+            "{home}/.config/RMG"
+          ]
+        },
+        "udata": {
+          "path": [
+            "{home}/.var/app/com.github.Rosalie241.RMG/data/RMG",
+            "{home}/.local/share/RMG"
+          ]
+        },
+        "sram": {
+          "file": "{cfg}/mupen64plus.cfg",
+          "format": "ini",
+          "section": "Core",
+          "key": "SaveSRAMPath",
+          "default": "{udata}/Save/Game"
+        },
+        "ini": {
+          "path": [
+            "{home}/.local/share/flatpak/app/com.github.Rosalie241.RMG/current/active/files/share/RMG/mupen64plus.ini",
+            "{fpsys}/app/com.github.Rosalie241.RMG/current/active/files/share/RMG/mupen64plus.ini"
+          ],
+          "default": "{cfg}/mupen64plus.ini"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "save_dir": "{data}/n64/rmg",
+        "save_exts": ".srm",
+        "save_format": "n64-srm",
+        "n64_split_dir": "{sram}",
+        "n64_ini": "{ini}",
+        "state_exts": "",
+        "fixed": [
+          "save_dir"
+        ],
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "n64"
+            ],
+            "dir": "n64",
+            "emulator": "mupen64plus",
+            "rom_dir": "{games}/n64",
+            "config_writes": [
+              {
+                "file": "{root}/mupen64plus.cfg",
+                "section": "Rosalie's Mupen GUI RomBrowser",
+                "key": "Directory",
+                "set": "{rom_dir}",
+                "quote": true,
+                "if_unset": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "simple64",
+      "name": "simple64",
+      "flatpak": "io.github.simple64.simple64",
+      "title_ids": [
+        "simple64-gui"
+      ],
+      "detect": [
+        "{home}/.config/simple64/mupen64plus.cfg",
+        "{home}/.var/app/io.github.simple64.simple64",
+        "{home}/.local/share/flatpak/app/io.github.simple64.simple64",
+        "{fpsys}/app/io.github.simple64.simple64"
+      ],
+      "note": "N64 saves: its .eep/.sra/.fla/.mpk files (named by mupen64plus's database) joined into one .srm for RomM, the same as RetroArch's and Mupen64Plus PS5's. Its Flathub Flatpak can't see a games folder outside its own unless you allow it (flatpak override): then its games go in ~/.var/app/io.github.simple64.simple64/data/roms/<system>, where you point it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.var/app/io.github.simple64.simple64/config/simple64",
+            "{home}/.config/simple64"
+          ]
+        },
+        "udata": {
+          "path": [
+            "{home}/.var/app/io.github.simple64.simple64/data/simple64",
+            "{home}/.local/share/simple64"
+          ]
+        },
+        "sram": {
+          "file": "{cfg}/mupen64plus.cfg",
+          "format": "ini",
+          "section": "Core",
+          "key": "SaveSRAMPath",
+          "default": "{udata}/Save/Game"
+        },
+        "ini": {
+          "path": [
+            "{home}/.local/share/flatpak/app/io.github.simple64.simple64/current/active/files/share/simple64/mupen64plus.ini",
+            "{fpsys}/app/io.github.simple64.simple64/current/active/files/share/simple64/mupen64plus.ini"
+          ],
+          "default": "{cfg}/mupen64plus.ini"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "save_dir": "{data}/n64/simple64",
+        "save_exts": ".srm",
+        "save_format": "n64-srm",
+        "n64_split_dir": "{sram}",
+        "n64_ini": "{ini}",
+        "state_exts": "",
+        "fixed": [
+          "save_dir"
+        ],
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "n64"
+            ],
+            "dir": "n64",
+            "emulator": "mupen64plus",
+            "rom_dir": "{games}/n64"
+          }
+        ]
+      }
+    },
+    {
+      "id": "gopher64",
+      "name": "gopher64",
+      "flatpak": "io.github.gopher64.gopher64",
+      "title_ids": [
+        "gopher64"
+      ],
+      "detect": [
+        "{home}/.var/app/io.github.gopher64.gopher64",
+        "{home}/.local/share/flatpak/app/io.github.gopher64.gopher64",
+        "{fpsys}/app/io.github.gopher64.gopher64"
+      ],
+      "note": "N64 saves: its <game>-<SHA-256>.eep/.sra/.fla/.mpk files joined into one .srm for RomM, the same as RetroArch's, Mupen64Plus PS5's and RMG's. Its Flathub Flatpak can't see a games folder outside its own unless you allow it (flatpak override): then its games go in ~/.var/app/io.github.gopher64.gopher64/data/roms/<system>, where you point it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "gdata": {
+          "path": [
+            "{home}/.var/app/io.github.gopher64.gopher64/data/gopher64",
+            "{home}/.local/share/gopher64"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{gdata}",
+        "sync_saves": true,
+        "save_dir": "{data}/n64/gopher64",
+        "save_exts": ".srm",
+        "save_format": "n64-srm",
+        "n64_split_dir": "{gdata}/saves",
+        "state_exts": "",
+        "fixed": [
+          "save_dir"
+        ],
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "n64"
+            ],
+            "dir": "n64",
+            "emulator": "gopher64",
+            "rom_dir": "{games}/n64"
+          }
+        ]
+      }
+    },
+    {
+      "id": "ares",
+      "name": "ares",
+      "flatpak": "dev.ares.ares",
+      "title_ids": [
+        "ares"
+      ],
+      "detect": [
+        "{home}/.local/share/ares/settings.bml",
+        "{home}/.var/app/dev.ares.ares",
+        "{home}/.local/share/flatpak/app/dev.ares.ares",
+        "{fpsys}/app/dev.ares.ares"
+      ],
+      "note": "Each game's save files (.ram, and .eeprom, .flash or .rtc where the cartridge has them), beside the game or in ares's Saves folder.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "acfg": {
+          "path": [
+            "{home}/.var/app/dev.ares.ares/data/ares",
+            "{home}/.local/share/ares"
+          ]
+        },
+        "s_nes": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Famicom",
+          "default": "{rom_dir}"
+        },
+        "s_snes": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Super Famicom",
+          "default": "{rom_dir}"
+        },
+        "s_n64": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Nintendo 64",
+          "default": "{rom_dir}"
+        },
+        "s_gb": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Game Boy",
+          "default": "{rom_dir}"
+        },
+        "s_gbc": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Game Boy",
+          "default": "{rom_dir}"
+        },
+        "s_gba": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Game Boy Advance",
+          "default": "{rom_dir}"
+        },
+        "s_genesis": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Mega Drive",
+          "default": "{rom_dir}"
+        },
+        "s_mastersystem": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Master System",
+          "default": "{rom_dir}"
+        },
+        "s_gamegear": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Game Gear",
+          "default": "{rom_dir}"
+        },
+        "s_sg1000": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/SG-1000",
+          "default": "{rom_dir}"
+        },
+        "s_pcengine": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/PC Engine",
+          "default": "{rom_dir}"
+        },
+        "s_supergrafx": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/SuperGrafx",
+          "default": "{rom_dir}"
+        },
+        "s_ngp": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Neo Geo Pocket",
+          "default": "{rom_dir}"
+        },
+        "s_ngpc": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/Neo Geo Pocket Color",
+          "default": "{rom_dir}"
+        },
+        "s_wonderswan": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/WonderSwan",
+          "default": "{rom_dir}"
+        },
+        "s_wonderswancolor": {
+          "file": "{acfg}/settings.bml",
+          "format": "yaml",
+          "section": "Paths",
+          "key": "Saves",
+          "then": "{value}/WonderSwan Color",
+          "default": "{rom_dir}"
+        }
+      },
+      "profile": {
+        "root": "{acfg}",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "nes",
+              "famicom"
+            ],
+            "dir": "nes",
+            "emulator": "ares",
+            "rom_dir": "{games}/nes",
+            "save_dir": "{s_nes}",
+            "save_exts": ".ram,.eeprom"
+          },
+          {
+            "romm": [
+              "snes",
+              "sfam"
+            ],
+            "dir": "snes",
+            "emulator": "ares",
+            "rom_dir": "{games}/snes",
+            "save_dir": "{s_snes}",
+            "save_exts": ".ram,.rtc,.bsx"
+          },
+          {
+            "romm": [
+              "n64"
+            ],
+            "dir": "n64",
+            "emulator": "ares",
+            "rom_dir": "{games}/n64",
+            "save_dir": "{s_n64}",
+            "save_exts": ".ram,.eeprom,.flash,.pak"
+          },
+          {
+            "romm": [
+              "gb"
+            ],
+            "dir": "gb",
+            "emulator": "ares",
+            "rom_dir": "{games}/gb",
+            "save_dir": "{s_gb}",
+            "save_exts": ".ram,.rtc"
+          },
+          {
+            "romm": [
+              "gbc"
+            ],
+            "dir": "gbc",
+            "emulator": "ares",
+            "rom_dir": "{games}/gbc",
+            "save_dir": "{s_gbc}",
+            "save_exts": ".ram,.rtc"
+          },
+          {
+            "romm": [
+              "gba"
+            ],
+            "dir": "gba",
+            "emulator": "ares",
+            "rom_dir": "{games}/gba",
+            "save_dir": "{s_gba}",
+            "save_exts": ".ram,.eeprom,.flash,.rtc"
+          },
+          {
+            "romm": [
+              "genesis",
+              "genesis-slash-megadrive",
+              "megadrive"
+            ],
+            "dir": "genesis",
+            "emulator": "ares",
+            "rom_dir": "{games}/genesis",
+            "save_dir": "{s_genesis}",
+            "save_exts": ".ram,.eeprom"
+          },
+          {
+            "romm": [
+              "sms",
+              "mastersystem"
+            ],
+            "dir": "mastersystem",
+            "emulator": "ares",
+            "rom_dir": "{games}/mastersystem",
+            "save_dir": "{s_mastersystem}",
+            "save_exts": ".ram"
+          },
+          {
+            "romm": [
+              "gamegear",
+              "gg"
+            ],
+            "dir": "gamegear",
+            "emulator": "ares",
+            "rom_dir": "{games}/gamegear",
+            "save_dir": "{s_gamegear}",
+            "save_exts": ".ram"
+          },
+          {
+            "romm": [
+              "sg1000"
+            ],
+            "dir": "sg-1000",
+            "emulator": "ares",
+            "rom_dir": "{games}/sg-1000",
+            "save_dir": "{s_sg1000}",
+            "save_exts": ".ram"
+          },
+          {
+            "romm": [
+              "tg16",
+              "turbografx16--1",
+              "pce",
+              "pcengine"
+            ],
+            "dir": "pcengine",
+            "emulator": "ares",
+            "rom_dir": "{games}/pcengine",
+            "save_dir": "{s_pcengine}",
+            "save_exts": ".ram"
+          },
+          {
+            "romm": [
+              "supergrafx"
+            ],
+            "dir": "supergrafx",
+            "emulator": "ares",
+            "rom_dir": "{games}/supergrafx",
+            "save_dir": "{s_supergrafx}",
+            "save_exts": ".ram"
+          },
+          {
+            "romm": [
+              "neo-geo-pocket",
+              "ngp"
+            ],
+            "dir": "ngp",
+            "emulator": "ares",
+            "rom_dir": "{games}/ngp",
+            "save_dir": "{s_ngp}",
+            "save_exts": ".ram"
+          },
+          {
+            "romm": [
+              "neo-geo-pocket-color",
+              "ngpc"
+            ],
+            "dir": "ngpc",
+            "emulator": "ares",
+            "rom_dir": "{games}/ngpc",
+            "save_dir": "{s_ngpc}",
+            "save_exts": ".ram"
+          },
+          {
+            "romm": [
+              "wonderswan",
+              "ws"
+            ],
+            "dir": "wonderswan",
+            "emulator": "ares",
+            "rom_dir": "{games}/wonderswan",
+            "save_dir": "{s_wonderswan}",
+            "save_exts": ".ram,.eeprom,.rtc"
+          },
+          {
+            "romm": [
+              "wonderswan-color",
+              "wsc"
+            ],
+            "dir": "wonderswancolor",
+            "emulator": "ares",
+            "rom_dir": "{games}/wonderswancolor",
+            "save_dir": "{s_wonderswancolor}",
+            "save_exts": ".ram,.eeprom,.rtc"
+          }
+        ]
+      }
+    },
+    {
+      "id": "snes9x",
+      "name": "Snes9x",
+      "flatpak": "com.snes9x.Snes9x",
+      "title_ids": [
+        "snes9x-gtk"
+      ],
+      "detect": [
+        "{home}/.config/snes9x/snes9x.conf",
+        "{home}/.var/app/com.snes9x.Snes9x",
+        "{home}/.local/share/flatpak/app/com.snes9x.Snes9x",
+        "{fpsys}/app/com.snes9x.Snes9x"
+      ],
+      "note": "Each game's save (.srm, the same as RetroArch's Snes9x), beside the game or in its SRAM folder. Its Flathub Flatpak sees only your home folder, not the SD card unless you allow it (flatpak override): then its games go in ~/.var/app/com.snes9x.Snes9x/data/roms/<system>, where you point it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.var/app/com.snes9x.Snes9x/config/snes9x",
+            "{home}/.config/snes9x"
+          ]
+        },
+        "sram": {
+          "file": "{cfg}/snes9x.conf",
+          "format": "ini",
+          "section": "Files",
+          "key": "SRAMDirectory",
+          "default": "{rom_dir}"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "save_dir": "{sram}",
+        "save_exts": ".srm",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "snes",
+              "sfam"
+            ],
+            "dir": "snes",
+            "emulator": "snes9x",
+            "rom_dir": "{games}/snes",
+            "config_writes": [
+              {
+                "file": "{root}/snes9x.conf",
+                "section": "Files",
+                "key": "LastDirectory",
+                "set": "{rom_dir}",
+                "if_unset": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "bsnes",
+      "name": "bsnes",
+      "flatpak": "dev.bsnes.bsnes",
+      "title_ids": [
+        "bsnes"
+      ],
+      "detect": [
+        "{home}/.config/bsnes/settings.bml",
+        "{home}/.local/share/bsnes/settings.bml",
+        "{home}/.var/app/dev.bsnes.bsnes",
+        "{home}/.local/share/flatpak/app/dev.bsnes.bsnes",
+        "{fpsys}/app/dev.bsnes.bsnes"
+      ],
+      "note": "Each game's save (.srm, and .rtc for clock carts), beside the game or in its Saves folder.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.var/app/dev.bsnes.bsnes/config/bsnes",
+            "{home}/.var/app/dev.bsnes.bsnes/data/bsnes",
+            "{home}/.config/bsnes",
+            "{home}/.local/share/bsnes"
+          ]
+        },
+        "bsaves": {
+          "file": "{cfg}/settings.bml",
+          "format": "yaml",
+          "section": "Path",
+          "key": "Saves",
+          "exists": true,
+          "default": "{rom_dir}"
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "save_dir": "{bsaves}",
+        "save_exts": ".srm,.rtc",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "snes",
+              "sfam"
+            ],
+            "dir": "snes",
+            "emulator": "bsnes",
+            "rom_dir": "{games}/snes"
+          }
+        ]
+      }
+    },
+    {
+      "id": "desmume",
+      "name": "DeSmuME",
+      "flatpak": "org.desmume.DeSmuME",
+      "title_ids": [
+        "desmume"
+      ],
+      "detect": [
+        "{home}/.var/app/org.desmume.DeSmuME",
+        "{home}/.local/share/flatpak/app/org.desmume.DeSmuME",
+        "{fpsys}/app/org.desmume.DeSmuME",
+        "{home}/.config/desmume"
+      ],
+      "note": "Each game's save (.dsv) in DeSmuME's folder: the cartridge save goes to RomM without DeSmuME's footer, shared with melonDS. Its Flathub Flatpak can't see a games folder outside its own unless you allow it (flatpak override): then its games go in ~/.var/app/org.desmume.DeSmuME/data/roms/<system>, where you point it.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "cfg": {
+          "path": [
+            "{home}/.var/app/org.desmume.DeSmuME/config/desmume",
+            "{home}/.config/desmume"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{cfg}",
+        "save_dir": "{cfg}",
+        "save_exts": ".dsv",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "nds"
+            ],
+            "dir": "nds",
+            "emulator": "desmume",
+            "rom_dir": "{games}/nds",
+            "save_format": "nds-dsv"
+          }
+        ]
+      }
+    },
+    {
+      "id": "stella",
+      "name": "Stella",
+      "flatpak": "io.github.stella_emu.Stella",
+      "title_ids": [
+        "stella"
+      ],
+      "detect": [
+        "{home}/.var/app/io.github.stella_emu.Stella",
+        "{home}/.local/share/flatpak/app/io.github.stella_emu.Stella",
+        "{fpsys}/app/io.github.stella_emu.Stella"
+      ],
+      "note": "Games only: Atari 2600 cartridges keep no saves.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{home}/.var/app/io.github.stella_emu.Stella",
+        "sync_saves": false,
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "atari2600"
+            ],
+            "dir": "atari2600",
+            "emulator": "stella",
+            "rom_dir": "{games}/atari2600"
+          }
+        ]
+      }
+    },
+    {
+      "id": "dosbox-staging",
+      "name": "DOSBox Staging",
+      "flatpak": "io.github.dosbox-staging",
+      "title_ids": [
+        "dosbox"
+      ],
+      "detect": [
+        "{home}/.var/app/io.github.dosbox-staging",
+        "{home}/.local/share/flatpak/app/io.github.dosbox-staging",
+        "{fpsys}/app/io.github.dosbox-staging"
+      ],
+      "note": "Games only: a DOS game writes its saves inside its own folder, with no file of its own to sync.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{home}/.var/app/io.github.dosbox-staging/config/dosbox",
+        "sync_saves": false,
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "dos"
+            ],
+            "dir": "dos",
+            "emulator": "dosbox",
+            "rom_dir": "{games}/dos"
+          }
+        ]
+      }
+    },
+    {
+      "id": "shadps4",
+      "name": "shadPS4",
+      "flatpak": "net.shadps4.shadPS4",
+      "title_ids": [
+        "shadps4",
+        "Shadps4-qt.AppI",
+        "shadPS4"
+      ],
+      "detect": [
+        "{home}/.local/share/shadPS4/config.toml",
+        "{home}/Applications/Shadps4*.AppImage",
+        "{home}/.var/app/net.shadps4.shadPS4",
+        "{home}/.local/share/flatpak/app/net.shadps4.shadPS4",
+        "{fpsys}/app/net.shadps4.shadPS4"
+      ],
+      "note": "Each game's save folders, shadPS4's savedata/<title id>/ (user 1000's in home/1000/savedata since its user accounts, savedata/1 before), synced as <title id>.zip. The title id comes from the .pkg or the installed game's param.sfo.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "sdir": {
+          "path": [
+            "{home}/.local/share/shadPS4",
+            "{home}/.var/app/net.shadps4.shadPS4/data/shadPS4"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{sdir}",
+        "sync_saves": true,
+        "state_exts": "",
+        "save_layout": "ps4",
+        "bundle_dirs": "{sdir}/home/1000/savedata,{sdir}/savedata/1",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "ps4"
+            ],
+            "dir": "ps4",
+            "emulator": "shadps4",
+            "rom_dir": "{games}/ps4"
+          }
+        ]
+      }
+    },
+    {
+      "id": "supermodel",
+      "name": "Supermodel",
+      "flatpak": "com.supermodel3.Supermodel",
+      "title_ids": [
+        "supermodel"
+      ],
+      "detect": [
+        "{home}/.supermodel/Config/Supermodel.ini",
+        "{home}/.var/app/com.supermodel3.Supermodel",
+        "{home}/.local/share/flatpak/app/com.supermodel3.Supermodel",
+        "{fpsys}/app/com.supermodel3.Supermodel"
+      ],
+      "note": "Sega Model 3. Each game's NVRAM (<game>.nv). EmuDeck puts a starting one there for every game: it goes to RomM like a save.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "sdir": {
+          "path": [
+            "{home}/.supermodel",
+            "{home}/.var/app/com.supermodel3.Supermodel/data/supermodel",
+            "{home}/.local/share/supermodel"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{sdir}",
+        "save_dir": "{sdir}/NVRAM",
+        "save_exts": ".nv",
+        "state_dir": "{sdir}/Saves",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "model3"
+            ],
+            "dir": "model3",
+            "emulator": "supermodel",
+            "rom_dir": "{games}/model3"
+          }
+        ]
+      }
+    },
+    {
+      "id": "model2",
+      "name": "Model 2 Emulator",
+      "title_ids": [
+        "emulator_multic",
+        "EMULATOR.EXE"
+      ],
+      "detect": [
+        "{edroms}/model2/emulator_multicpu.exe",
+        "{edroms}/model2/EMULATOR.EXE"
+      ],
+      "note": "Sega Model 2, EmuDeck's Windows build (Proton). Each game's NVRAM (NVDATA/<game>.DAT); games in roms/model2/roms.",
+      "profile": {
+        "root": "{edroms}/model2",
+        "save_dir": "{edroms}/model2/NVDATA",
+        "save_exts": ".DAT",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "model2"
+            ],
+            "dir": "model2",
+            "emulator": "model2",
+            "rom_dir": "{edroms}/model2/roms"
+          }
+        ]
+      }
+    },
+    {
+      "id": "bigpemu",
+      "name": "BigPEmu",
+      "title_ids": [
+        "bigpemu"
+      ],
+      "detect": [
+        "{home}/Applications/BigPEmu/bigpemu",
+        "{home}/Applications/BigPEmu/UserData"
+      ],
+      "note": "Atari Jaguar. A cartridge's EEPROM, game<FNV-1a of the game file, in capitals>_eeprom.bigpeep in BigPEmu's UserData. The Jaguar CD's memory track isn't synced.",
+      "vars": {
+        "games": {
+          "readable": [
+            "{roms}",
+            "{sandbox}/roms"
+          ]
+        },
+        "udata": {
+          "path": [
+            "{home}/Applications/BigPEmu/UserData",
+            "{home}/.local/share/BigPEmu/UserData"
+          ]
+        }
+      },
+      "profile": {
+        "root": "{udata}",
+        "sync_saves": true,
+        "save_dir": "{udata}",
+        "save_exts": ".bigpeep",
+        "save_name": "game{rom_fnv64_uc}_eeprom{ext}",
+        "save_stems": "game{rom_fnv64_uc}_eeprom",
+        "state_exts": "",
+        "firmware": {
+          "skip": true
+        },
+        "platforms": [
+          {
+            "romm": [
+              "jaguar"
+            ],
+            "dir": "atarijaguar",
+            "emulator": "bigpemu",
+            "rom_dir": "{games}/atarijaguar"
           }
         ]
       }

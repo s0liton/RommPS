@@ -52,8 +52,8 @@ def record(name, lba, size, is_dir):
     return bytes([len(rec)]) + rec[1:]
 
 
-def psp_iso(disc_id):
-    param = sfo({"DISC_ID": disc_id, "TITLE": "Test Game"})
+def psp_iso(disc_id, folder=b"PSP_GAME", param=None):
+    param = param or sfo({"DISC_ID": disc_id, "TITLE": "Test Game"})
     img = bytearray(SECTOR * 21)
     pvd = bytearray(SECTOR)
     pvd[0] = 1
@@ -62,12 +62,18 @@ def psp_iso(disc_id):
     pvd[156:156 + 34] = record(b"\0", 18, SECTOR, True)
     img[16 * SECTOR:17 * SECTOR] = pvd
     img[17 * SECTOR:17 * SECTOR + 7] = b"\xffCD001\x01"
-    root = record(b"\0", 18, SECTOR, True) + record(b"\1", 18, SECTOR, True) + record(b"PSP_GAME", 19, SECTOR, True)
+    root = record(b"\0", 18, SECTOR, True) + record(b"\1", 18, SECTOR, True) + record(folder, 19, SECTOR, True)
     img[18 * SECTOR:18 * SECTOR + len(root)] = root
     game = record(b"\0", 19, SECTOR, True) + record(b"\1", 18, SECTOR, True) + record(b"PARAM.SFO;1", 20, len(param), False)
     img[19 * SECTOR:19 * SECTOR + len(game)] = game
     img[20 * SECTOR:20 * SECTOR + len(param)] = param
     return bytes(img)
+
+
+def ps3_iso(title_id):
+    """A PS3 disc's ISO 9660 part: PS3_GAME/PARAM.SFO, as unencrypted dumps
+    and the clear start of encrypted ones have it."""
+    return psp_iso(None, b"PS3_GAME", sfo({"CATEGORY": "DG", "TITLE_ID": title_id, "TITLE": "Test Game"}))
 
 
 def psx_iso(boot):
@@ -184,10 +190,43 @@ def xiso(title_id, boot=b"default.xbe", exe=None):
     return bytes(disc) + exe
 
 
+def vita_zip(title_id, save_dir="", prefix="", zip64=False):
+    """A Vita dump as a .vpk or NoNpDrm .zip: the game's sce_sys/param.sfo
+    (deflated) under prefix ("app/PCSE00001/"), and a save's param.sfo
+    further in that has no TITLE_ID. zip64 writes every size and offset the
+    zip64 way, end record included."""
+    import io, zipfile
+    values = {"TITLE_ID": title_id, "TITLE": "Vita Game", "CATEGORY": "gd"}
+    if save_dir:
+        values["INSTALL_DIR_SAVEDATA"] = save_dir
+    limit = zipfile.ZIP64_LIMIT
+    if zip64:
+        zipfile.ZIP64_LIMIT = 0
+    try:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr(prefix + "eboot.bin", b"SCE\0" + bytes(64))
+            z.writestr(prefix + "savedata/sce_sys/param.sfo", sfo({"SAVEDATA_DIRECTORY": "X"}))
+            z.writestr(prefix + "sce_sys/param.sfo", sfo(values))
+        return buf.getvalue()
+    finally:
+        zipfile.ZIP64_LIMIT = limit
+
+
+def vita_pkg(content_id):
+    """A Vita .pkg's header: the magic, then the content id at 0x30."""
+    h = bytearray(0x400)
+    h[0:4] = b"\x7fPKG"
+    h[0x30:0x30 + len(content_id)] = content_id.encode()
+    return bytes(h)
+
+
 if __name__ == "__main__":
     kind, out = sys.argv[1], sys.argv[2]
     if kind == "psp":
         data = psp_iso(sys.argv[3])
+    elif kind == "ps3":
+        data = ps3_iso(sys.argv[3])
     elif kind == "cso":
         data = cso(psp_iso(sys.argv[3]))
     elif kind == "sfo":
@@ -215,6 +254,16 @@ if __name__ == "__main__":
         data = bytes(h)
     elif kind == "xex":
         data = xex(int(sys.argv[3], 16))
+    elif kind in ("vpk", "vpk64"):  # vpk <out> <TITLE_ID> [INSTALL_DIR_SAVEDATA] [prefix]
+        data = vita_zip(sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else "", sys.argv[5] if len(sys.argv) > 5 else "",
+                        kind == "vpk64")
+    elif kind == "pkg":
+        data = vita_pkg(sys.argv[3])
+    elif kind == "ps4pkg":  # a PS4 .pkg's header: "\x7fCNT", the content id at 0x40
+        h = bytearray(0x1000)
+        h[0:4] = b"\x7fCNT"
+        h[0x40:0x40 + len(sys.argv[3])] = sys.argv[3].encode()
+        data = bytes(h)
     else:
         sys.exit("unknown kind")
     open(out, "wb").write(data)

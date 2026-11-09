@@ -1,0 +1,78 @@
+# Builds RommDeck, the Steam Deck app, and RomM Sync for the Deck, in the image
+# tools/deck-build.sh uses (platform/steamdeck/app/docker), then tests and
+# packages them (linting is lint.yml's job):
+#
+#   tests/steamdeck*.sh  the Deck's sync service on RetroDECK, EmuDeck and standalone layouts, against the mock RomM
+#   package.sh           rommdeck-<version>-x86_64.tar.gz and RommDeck-<version>-x86_64.AppImage,
+#                        plus romm-sync-steamdeck (the service alone, for in-app updates)
+#
+# The packages end up as the artifact "steamdeck"; this workflow never touches
+# a release. ci.yml runs it on pushes and pull requests, rommdeck-release.yml
+# before publishing to s0liton/RommDeck.
+name: RommDeck
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: "Commit to build"
+        type: string
+        required: true
+      version:
+        description: "Version baked in and in the file names: 1.5.0 (a leading v is dropped)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ inputs.version }}
+      # The tag tools/deck-build.sh runs; keep the two in step.
+      DECK_IMAGE: romm-sync-deck:4
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The cache only saves time, so failing to write it must not fail the build.
+      - uses: docker/build-push-action@v6
+        with:
+          context: platform/steamdeck/app/docker
+          tags: ${{ env.DECK_IMAGE }}
+          load: true
+          cache-from: type=gha,scope=steamdeck
+          cache-to: type=gha,mode=max,scope=steamdeck,ignore-error=true
+
+      - name: Build
+        run: |
+          tools/deck-build.sh make steamdeck VERSION="${VERSION#v}"
+          tools/deck-build.sh bash -c 'cmake -S platform/steamdeck/app -B build/steamdeck/app -G Ninja \
+            && cmake --build build/steamdeck/app'
+
+      # RetroDECK, EmuDeck and standalone layouts, each against the mock RomM.
+      - name: Test the sync service on the Deck's layouts
+        run: |
+          for t in steamdeck steamdeck_emus steamdeck_x360_vita steamdeck_saves2 steamdeck_duckstation; do
+            echo "::group::$t"
+            tools/deck-build.sh "tests/$t.sh" || { echo "::error::tests/$t.sh failed"; exit 1; }
+            echo "::endgroup::"
+          done
+
+      - name: Package
+        run: |
+          tools/deck-build.sh platform/steamdeck/package.sh "${VERSION#v}" build/steamdeck/release
+          # The service on its own too, for its in-app updates (src/update.c).
+          cp build/steamdeck/romm-sync build/steamdeck/release/romm-sync-steamdeck
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: steamdeck
+          path: build/steamdeck/release/
+          if-no-files-found: error

@@ -15,7 +15,9 @@
 #include <unistd.h>
 
 #include "config.h"
+#include "duckcard.h"
 #include "memcard.h"
+#include "platform.h"
 #include "profiles.h"
 #include "state.h"
 #include "sync.h"
@@ -52,6 +54,18 @@ static watched *find_file(const char *path) {
     return NULL;
 }
 
+/* Room for one more folder in dirs; 0 when memory runs out (that folder
+ * isn't watched, and the list so far stays). */
+static int room_for_one(watch_dir **dirs, int cnt, int *cap) {
+    if (cnt < *cap) return 1;
+    const int want = *cap ? *cap * 2 : 8;
+    watch_dir *grown = realloc(*dirs, sizeof **dirs * (size_t)want);
+    if (!grown) return 0;
+    *dirs = grown;
+    *cap = want;
+    return 1;
+}
+
 static int load_dirs(watch_dir **out) {
     profile_map *maps = NULL;
     config_lock();
@@ -77,10 +91,7 @@ static int load_dirs(watch_dir **out) {
             for (int j = 0; j < cnt; j++)
                 if (!strcmp(dirs[j].dir, d)) w = &dirs[j];
             if (!w) {
-                if (cnt == cap) {
-                    cap = cap ? cap * 2 : 8;
-                    dirs = realloc(dirs, sizeof *dirs * (size_t)cap);
-                }
+                if (!room_for_one(&dirs, cnt, &cap)) continue;
                 w = &dirs[cnt++];
                 str_copy(w->dir, sizeof w->dir, d);
                 w->exts[0] = 0;
@@ -109,11 +120,7 @@ static int load_dirs(watch_dir **out) {
         int dup = 0;
         for (int j = 0; j < cnt; j++)
             if (!strcmp(dirs[j].dir, scanned[i])) dup = 1;
-        if (dup) continue;
-        if (cnt == cap) {
-            cap = cap ? cap * 2 : 8;
-            dirs = realloc(dirs, sizeof *dirs * (size_t)cap);
-        }
+        if (dup || !room_for_one(&dirs, cnt, &cap)) continue;
         str_copy(dirs[cnt].dir, sizeof dirs[cnt].dir, scanned[i]);
         str_copy(dirs[cnt].exts, sizeof dirs[cnt].exts, any_file[i] ? "*" : all_exts);
         cnt++;
@@ -122,10 +129,7 @@ static int load_dirs(watch_dir **out) {
     char cards[2][1024];
     int nc = memcard_dirs(cards, 2);
     for (int i = 0; i < nc; i++) {
-        if (cnt == cap) {
-            cap = cap ? cap * 2 : 8;
-            dirs = realloc(dirs, sizeof *dirs * (size_t)cap);
-        }
+        if (!room_for_one(&dirs, cnt, &cap)) continue;
         str_copy(dirs[cnt].dir, sizeof dirs[cnt].dir, cards[i]);
         str_copy(dirs[cnt].exts, sizeof dirs[cnt].exts, ".ps2");
         cnt++;
@@ -154,8 +158,11 @@ static void scan(const char *dir, const char *exts, int depth, int baseline, tim
         watched *w = find_file(path);
         if (!w) {
             if (g_nfiles == g_capfiles) {
-                g_capfiles = g_capfiles ? g_capfiles * 2 : 128;
-                g_files = realloc(g_files, sizeof *g_files * (size_t)g_capfiles);
+                const int want = g_capfiles ? g_capfiles * 2 : 128;
+                watched *grown = realloc(g_files, sizeof *g_files * (size_t)want);
+                if (!grown) continue; /* out of memory: this file waits for the next pass */
+                g_files = grown;
+                g_capfiles = want;
             }
             w = &g_files[g_nfiles++];
             memset(w, 0, sizeof *w);
@@ -189,6 +196,16 @@ static int written_by_sync(const watched *w) {
     return same;
 }
 
+/* Whether DuckStation (not RetroDECK's, whose database is in its Flatpak) is set up. */
+static int uses_duckstation(void) {
+    int yes = 0;
+    const cJSON *p;
+    config_lock();
+    cJSON_ArrayForEach(p, g_cfg.profiles) yes |= !strcmp(jget_str(p, "id", ""), "duckstation");
+    config_unlock();
+    return yes;
+}
+
 static void *watch_thread(void *arg) {
     (void)arg;
     watch_dir *dirs = NULL;
@@ -206,6 +223,14 @@ static void *watch_thread(void *arg) {
             g_nfiles = 0;
             sleep(POLL_SEC);
             continue;
+        }
+        /* DuckStation's AppImage shows its game database only while it runs:
+         * copied then, for its memory card names (src/duckcard.h). */
+        if (uses_duckstation()) {
+            char copies[1024];
+            const char *proc = getenv("ROMM_SYNC_PROC");
+            path_join(copies, sizeof copies, plat_data_dir(), "duckstation");
+            duck_probe_running(proc && *proc ? proc : "/proc", copies);
         }
         /* A folder new to the list (an emulator set up, a sync that found
          * another save folder): what's in it is where things stand, not a

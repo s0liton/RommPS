@@ -17,6 +17,8 @@
 #include <string>
 #include <thread>
 
+#include "rommps_words.hpp"
+
 struct cJSON;
 
 namespace rommps {
@@ -36,6 +38,10 @@ struct Response {
 // directly where blocking is fine (start-up, tests).
 Response http_request(const std::string &host, int port, const std::string &method, const std::string &path,
                       const std::string &body = "", int timeout_ms = 15000);
+
+// Where RomM Sync keeps its config.json and its lock: /data/romm-sync on the
+// PS5, ~/.local/share/romm-sync (XDG) on the Steam Deck.
+const std::string &service_dir();
 
 // The port RomM Sync's API is on: web_port in its config.json, 8780 by default.
 int payload_port();

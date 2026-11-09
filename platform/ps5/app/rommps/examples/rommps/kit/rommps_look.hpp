@@ -11,6 +11,12 @@
 #include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 
+// The canvas the screens are laid out on: 1920x1080 on the PS5, 1920x1200
+// (the Steam Deck's 16:10) in RommDeck. Whatever sits against the bottom or
+// the middle of the screen is placed from these.
+inline constexpr float kScreenW = hui::gfx::kVirtualWidth;
+inline constexpr float kScreenH = hui::gfx::kVirtualHeight;
+
 namespace rommps
 {
 

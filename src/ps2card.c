@@ -617,11 +617,13 @@ int ps2card_db_card(const char *db, const char *serial, char *out, size_t n) {
                 if (ha != hb && list_add(&group, ha ? g_db.edges[i].b : g_db.edges[i].a) == 0) grew = 1;
             }
         }
-        const char *least = group.items[0];
-        for (size_t j = 1; j < group.n; j++)
-            if (strcmp(group.items[j], least) < 0) least = group.items[j];
-        snprintf(out, n, "%s.ps2", least);
-        rc = 0;
+        if (group.n) { /* empty only when memory ran out */
+            const char *least = group.items[0];
+            for (size_t j = 1; j < group.n; j++)
+                if (strcmp(group.items[j], least) < 0) least = group.items[j];
+            snprintf(out, n, "%s.ps2", least);
+            rc = 0;
+        }
         list_free(&group);
     }
     pthread_mutex_unlock(&g_db.lock);

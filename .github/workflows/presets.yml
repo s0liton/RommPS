@@ -1,5 +1,6 @@
-# The presets side channel: a new emulator preset reaches every console
-# without waiting for a release. RomM Sync looks for presets-<console>.json
+# The presets side channel: a new emulator preset reaches every console (and
+# the Steam Deck, whose RommDeck releases live elsewhere but whose presets
+# live here, next to the catalog) without waiting for a release. RomM Sync looks for presets-<console>.json
 # and its .sig on this repository's "presets" branch (src/presets.c), checks
 # the signature against the release keys, and takes a file whose version is
 # newer than what it has built in.
@@ -15,6 +16,7 @@ on:
     paths:
       - platform/ps5/emulators.json
       - platform/ps4/emulators.json
+      - platform/steamdeck/emulators.json
   workflow_dispatch:
 
 permissions:
@@ -47,7 +49,7 @@ jobs:
             git worktree add -q --orphan -b presets published
           fi
           sign=""
-          for console in ps5 ps4; do
+          for console in ps5 ps4 steamdeck; do
             src="platform/$console/emulators.json"
             jq -e --arg c "$console" '.console == $c and .format >= 1 and (.emulators | type) == "array"' "$src" >/dev/null \
               || { echo "::error::$src isn't a $console presets file"; exit 1; }
