@@ -4,6 +4,7 @@
 #include <pthread.h>
 
 #include <curl/curl.h>
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -661,6 +662,242 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ul
 /* Downloads read and write in bigger blocks than curl's 16 KB. */
 #define DOWNLOAD_BUFFER (256 * 1024)
 
+/* One connection carries at most its receive window per round trip, and the
+ * PS5 holds that window to 512 KB: about 12 MB/s from a server 40 ms away,
+ * a fifth of what the line can do (issue #39; measured on such a line, six
+ * connections of 512 KB carried its full 62 MB/s). So a big download goes
+ * over several connections at once, PAR_PIECE at a time, each piece written
+ * in its place in "<dest>.par.part". That file has holes until it's whole: one
+ * that stops halfway is cut back to where it's whole and becomes the .part a
+ * resume carries on from; one a crash leaves is never taken for <dest>.part,
+ * yet ends in .part, so it is skipped and cleared like any other.
+ * Small files stay on one connection, with no request more. Not on the PS4,
+ * its memory being tight. */
+#define PAR_CONNS 6
+#define PAR_PIECE ((int64_t)16 * 1024 * 1024)
+
+static int par_conns(void) { return strcmp(plat_info()->name, "ps4") ? PAR_CONNS : 1; }
+
+typedef struct {
+    const char *url, *auth;
+    int verify, client, fd;
+    int64_t base, total; /* where the pieces start (what the .part had), the file's size */
+    int npieces, next;   /* next: the first piece no connection took yet */
+    int64_t *written;    /* bytes in place per piece, each filled from its start */
+    int64_t got;         /* all of them, for the progress */
+    int stop, failed, running; /* stop: the user's, at once; failed: no new piece */
+    int cut;                   /* the first failed piece: the ones after it would be cut away */
+    http_resp err; /* the first failure's */
+    pthread_mutex_t lock;
+} par_dl;
+
+typedef struct {
+    par_dl *d;
+    CURL *c;
+    int piece;
+    int64_t at, end; /* the next byte's place in the file, the piece's end */
+} par_conn;
+
+static int64_t piece_len(const par_dl *d, int i) {
+    const int64_t left = d->total - d->base - (int64_t)i * PAR_PIECE;
+    return left < PAR_PIECE ? left : PAR_PIECE;
+}
+
+static size_t par_write(char *ptr, size_t size, size_t n, void *ud) {
+    par_conn *w = ud;
+    const size_t len = size * n;
+    long st = 0;
+    curl_easy_getinfo(w->c, CURLINFO_RESPONSE_CODE, &st);
+    /* The piece asked for and no more: a whole file sent instead would land
+     * on the pieces after it. */
+    if (st != 206 || w->at + (int64_t)len > w->end) return 0;
+    if (pwrite(w->d->fd, ptr, len, (off_t)w->at) != (ssize_t)len) return 0;
+    w->at += (int64_t)len;
+    pthread_mutex_lock(&w->d->lock);
+    w->d->written[w->piece] += (int64_t)len;
+    w->d->got += (int64_t)len;
+    pthread_mutex_unlock(&w->d->lock);
+    return len;
+}
+
+static int par_xfer(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+    (void)dltotal, (void)dlnow, (void)ultotal, (void)ulnow;
+    const par_conn *w = ud;
+    return __atomic_load_n(&w->d->stop, __ATOMIC_RELAXED) || w->piece > __atomic_load_n(&w->d->cut, __ATOMIC_RELAXED);
+}
+
+static void *par_conn_run(void *arg) {
+    par_conn *w = arg;
+    par_dl *d = w->d;
+    struct curl_slist *hdrs = NULL;
+    char errbuf[CURL_ERROR_SIZE];
+    w->c = easy_new(d->url, &hdrs, d->auth, d->verify, d->client, errbuf);
+    if (w->c) {
+        curl_easy_setopt(w->c, CURLOPT_HTTPHEADER, hdrs);
+        curl_easy_setopt(w->c, CURLOPT_WRITEFUNCTION, par_write);
+        curl_easy_setopt(w->c, CURLOPT_WRITEDATA, w);
+        curl_easy_setopt(w->c, CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(w->c, CURLOPT_BUFFERSIZE, (long)DOWNLOAD_BUFFER);
+        curl_easy_setopt(w->c, CURLOPT_XFERINFOFUNCTION, par_xfer);
+        curl_easy_setopt(w->c, CURLOPT_XFERINFODATA, w);
+        curl_easy_setopt(w->c, CURLOPT_NOPROGRESS, 0L);
+    }
+    while (w->c) {
+        pthread_mutex_lock(&d->lock);
+        /* After a failure, no new piece: the ones under way before it finish,
+         * so the file gets further; the ones after it stop (par_xfer), being
+         * cut away anyway. */
+        const int i = __atomic_load_n(&d->stop, __ATOMIC_RELAXED) || d->failed ? d->npieces : d->next++;
+        pthread_mutex_unlock(&d->lock);
+        if (i >= d->npieces) break;
+        w->piece = i;
+        w->at = d->base + (int64_t)i * PAR_PIECE;
+        w->end = w->at + piece_len(d, i);
+        char range[48];
+        snprintf(range, sizeof range, "%lld-%lld", (long long)w->at, (long long)w->end - 1);
+        curl_easy_setopt(w->c, CURLOPT_RANGE, range);
+        CURLcode rc = curl_easy_perform(w->c);
+        if (rc == CURLE_OK && w->at == w->end) continue;
+        if (rc == CURLE_OK) rc = CURLE_PARTIAL_FILE; /* the server stopped short */
+        if (!__atomic_load_n(&d->stop, __ATOMIC_RELAXED)) { /* not the user's stop */
+            pthread_mutex_lock(&d->lock);
+            const int first = !d->failed;
+            d->failed = 1;
+            if (i < d->cut) __atomic_store_n(&d->cut, i, __ATOMIC_RELAXED);
+            pthread_mutex_unlock(&d->lock);
+            if (first) finish(w->c, rc, NULL, &d->err, d->url, errbuf, 0, d->client);
+        }
+        break;
+    }
+    curl_slist_free_all(hdrs);
+    if (w->c) handle_give(w->c);
+    pthread_mutex_lock(&d->lock);
+    d->running--;
+    pthread_mutex_unlock(&d->lock);
+    return NULL;
+}
+
+/* What a download's first answer says (Content-Range: bytes <from>-<to>/<size>),
+ * and where its bytes go until the file turns out big: then it's handed over
+ * to par_download before a byte is written. */
+typedef struct {
+    FILE *f;
+    int64_t offset, total; /* total: -1 until a Content-Range says it */
+    int par, handed;       /* par: big ones may go over several connections */
+} dl_ctx;
+
+static size_t dl_header(char *b, size_t size, size_t n, void *ud) {
+    const size_t len = size * n;
+    char h[128];
+    long long a, z, total;
+    if (len < sizeof h) {
+        memcpy(h, b, len);
+        h[len] = 0;
+        /* A 416 gives the size alone, after a star. */
+        if (!strncasecmp(h, "content-range:", 14) && (sscanf(h + 14, " bytes %lld-%lld/%lld", &a, &z, &total) == 3 ||
+                                                      sscanf(h + 14, " bytes */%lld", &total) == 1))
+            ((dl_ctx *)ud)->total = total;
+    }
+    return len;
+}
+
+static size_t dl_write(char *p, size_t size, size_t n, void *ud) {
+    dl_ctx *k = ud;
+    if (k->par && k->total - k->offset > PAR_PIECE) {
+        k->handed = 1;
+        return 0; /* stops this transfer */
+    }
+    return fwrite(p, size, n, k->f);
+}
+
+/* The rest of a file from offset (what its .part has) on, total bytes in all. */
+static int par_download(const char *url, const char *auth, const char *dest, const char *part, int64_t offset,
+                        int64_t total, int verify, int client, http_progress_fn progress, void *ud, http_resp *out) {
+    char par[PATH_MAX_LEN];
+    snprintf(par, sizeof par, "%s.par.part", dest);
+    const int fd = rename(part, par) == 0 ? open(par, O_WRONLY) : -1;
+    par_dl d = {.url = url, .auth = auth, .verify = verify, .client = client, .fd = fd, .base = offset,
+                .total = total};
+    d.npieces = d.cut = (int)((total - offset + PAR_PIECE - 1) / PAR_PIECE);
+    d.written = fd >= 0 ? calloc((size_t)d.npieces, sizeof *d.written) : NULL;
+    if (!d.written) {
+        if (fd >= 0) close(fd);
+        rename(par, part);
+        memset(out, 0, sizeof *out);
+        snprintf(out->error, sizeof out->error, "cannot open %s", par);
+        return -1;
+    }
+    pthread_mutex_init(&d.lock, NULL);
+    par_conn w[PAR_CONNS] = {{0}};
+    pthread_t t[PAR_CONNS];
+    pthread_attr_t a;
+    pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a, 1024 * 1024);
+    int n = 0;
+    const double started = mono_sec();
+    /* Held while they start: one that ends at once can't count down before it's counted. */
+    pthread_mutex_lock(&d.lock);
+    for (int i = 0; i < par_conns() && i < d.npieces; i++) {
+        w[n].d = &d;
+        if (pthread_create(&t[n], &a, par_conn_run, &w[n]) == 0) n++;
+    }
+    d.running = n;
+    pthread_mutex_unlock(&d.lock);
+    pthread_attr_destroy(&a);
+    int aborted = 0;
+    for (;;) {
+        pthread_mutex_lock(&d.lock);
+        const int running = d.running, stop = __atomic_load_n(&d.stop, __ATOMIC_RELAXED);
+        const int64_t got = d.got;
+        pthread_mutex_unlock(&d.lock);
+        if (!running) break;
+        if (!stop && progress && progress(ud, offset + got, total)) {
+            aborted = 1;
+            __atomic_store_n(&d.stop, 1, __ATOMIC_RELAXED);
+        }
+        usleep(200 * 1000);
+    }
+    for (int i = 0; i < n; i++) pthread_join(t[i], NULL);
+    pthread_mutex_destroy(&d.lock);
+
+    int64_t whole = offset; /* from the start, without a gap */
+    for (int i = 0; i < d.npieces; i++) {
+        whole += d.written[i];
+        if (d.written[i] < piece_len(&d, i)) break;
+    }
+    free(d.written);
+    if (whole == total) {
+        close(fd);
+        const double secs = mono_sec() - started;
+        const double mb = (double)(total - offset) / 1048576.0;
+        LOGI("downloaded %.1f MB in %.1fs (%.2f MB/s) over %d connections", mb, secs, secs > 0 ? mb / secs : 0, n);
+        memset(out, 0, sizeof *out);
+        out->status = 200;
+        if (move_file(par, dest) == 0) return 0;
+        snprintf(out->error, sizeof out->error, "cannot move into %s", dest);
+        return -1;
+    }
+    /* Kept up to where it's whole, for the next go to carry on from; not
+     * after the server refused it (a 404). */
+    if (d.failed && !aborted && d.err.status >= 400) {
+        close(fd);
+        unlink(par);
+    } else {
+        const int kept = whole > 0 && ftruncate(fd, (off_t)whole) == 0;
+        close(fd);
+        if (!kept || rename(par, part) != 0) unlink(par);
+    }
+    if (d.failed && !aborted) {
+        *out = d.err;
+    } else {
+        memset(out, 0, sizeof *out);
+        out->aborted = aborted;
+        snprintf(out->error, sizeof out->error, "%s",
+                 aborted ? curl_easy_strerror(CURLE_ABORTED_BY_CALLBACK) : "download stopped");
+    }
+    return -1;
+}
+
 static int download_impl(const char *url, const char *auth, const char *dest, int resume, int verify, int client,
                          http_progress_fn progress, void *ud, http_resp *out) {
     int probe;
@@ -689,10 +926,15 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
         return -1;
     }
     progress_ctx pc = {progress, ud, offset};
+    dl_ctx k = {f, offset, -1, client && par_conns() > 1, 0};
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
+    curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dl_header);
+    curl_easy_setopt(c, CURLOPT_HEADERDATA, &k);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dl_write);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &k);
     curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
     if (offset > 0) curl_easy_setopt(c, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)offset);
+    else if (k.par) curl_easy_setopt(c, CURLOPT_RANGE, "0-"); /* so the answer says the file's size */
     curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, xfer_cb);
     curl_easy_setopt(c, CURLOPT_XFERINFODATA, &pc);
     curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
@@ -700,13 +942,25 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
     double started = mono_sec();
     CURLcode rc = curl_easy_perform(c);
     fclose(f);
+    if (k.handed) {
+        finish(c, CURLE_OK, NULL, out, url, errbuf, probe, client); /* it answered */
+        curl_slist_free_all(hdrs);
+        handle_give(c);
+        return par_download(url, auth, dest, part, offset, k.total, verify, client, progress, ud, out);
+    }
     double secs = mono_sec() - started;
     curl_off_t got = 0;
     curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD_T, &got);
     if (rc == CURLE_OK && got > 1024 * 1024 && secs > 0)
         LOGI("downloaded %.1f MB in %.1fs (%.2f MB/s)", got / 1048576.0, secs, got / 1048576.0 / secs);
 
-    int r = finish(c, rc, NULL, out, url, errbuf, probe, client);
+    /* "0-" can't be satisfied for an empty file: the answer is that file. */
+    const int empty = rc == CURLE_HTTP_RETURNED_ERROR && k.par && offset == 0 && k.total == 0;
+    int r = finish(c, empty ? CURLE_OK : rc, NULL, out, url, errbuf, probe, client);
+    if (empty) {
+        out->status = 200;
+        out->error[0] = 0;
+    }
     if (r == 0 && out->status == 200 && offset > 0) {
         /* The server ignored Range, so start over. */
         LOGW("server ignored Range for %s; restarting download", url);

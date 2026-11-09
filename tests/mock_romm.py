@@ -240,17 +240,21 @@ class H(BaseHTTPRequestHandler):
     def send_rom(self, data, ctype):
         """A game's file, honouring Range as RomM does; after _admin/cut, the
         next one stops halfway with the connection dropped."""
-        rng, start = self.headers.get("Range", ""), 0
+        rng, start, end = self.headers.get("Range", ""), 0, len(data) - 1
         if rng.startswith("bytes="):
-            start = int(rng[6:].split("-")[0] or 0)
-        body = data[start:]
-        self.send_response(206 if start else 200)
+            a, b = rng[6:].split("-")
+            start, end = int(a or 0), min(int(b), end) if b else end
+        body = data[start:end + 1]
+        self.send_response(206 if rng else 200)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
-        if start:
-            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, len(data) - 1, len(data)))
+        if rng:
+            self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, len(data)))
         self.end_headers()
         cut = DB.pop("cut_next", None)
+        if cut is not None and DB.get("cut_after"):  # this one goes whole, a later one is cut
+            DB["cut_after"] -= 1
+            DB["cut_next"], cut = cut, None
         if cut is not None and cut < len(body):
             import socket
             self.wfile.write(body[:cut])
@@ -377,7 +381,8 @@ class H(BaseHTTPRequestHandler):
                                             "missing_from_fs": False, "content": buf.getvalue()})
                 return self.reply(200, {"ok": True})
             if p == "/_admin/cut" and method == "POST":
-                DB["cut_next"] = int(self.json_body()["bytes"])
+                b = self.json_body()
+                DB["cut_next"], DB["cut_after"] = int(b["bytes"]), int(b.get("after", 0))
                 return self.reply(200, {"ok": True})
             if p == "/_admin/collections_scope" and method == "POST":
                 # A token from a pairing that didn't ask for collections.read.
