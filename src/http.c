@@ -347,6 +347,41 @@ static int curl_trace(CURL *c, curl_infotype type, char *data, size_t size, void
 }
 #endif
 
+#if defined(__FreeBSD__)
+/* The socket's receive buffer is the TCP window, and the window caps a
+ * download at window / round trip, whatever the line can do. The consoles grow
+ * it by themselves only from 64 KB to 128 KB: about 2.4 MB/s from a server
+ * 40 ms away (issue #39). So it's set by hand, on every connection: a download
+ * usually goes over the one the API call before it left open, and setting it
+ * on download connections alone missed nearly all of them. The PS5 quietly
+ * hands out 512 KB at most for anything up to 4 MB and refuses 8 MB outright,
+ * so ask big and step down until one is taken; the PS4 stops at 1 MB, its
+ * memory being tight. Buffer memory is only used by data waiting to be read,
+ * so the API's connections cost nothing for it. Linux grows the buffer by
+ * itself as far as it's needed and stops once it's set by hand, so there it's
+ * left alone. */
+static int g_rcvbuf; /* the size the kernel took, once known */
+
+static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
+    (void)ud;
+    if (purpose != CURLSOCKTYPE_IPCXN) return CURL_SOCKOPT_OK;
+    int size = __atomic_load_n(&g_rcvbuf, __ATOMIC_RELAXED);
+    if (size) {
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
+        return CURL_SOCKOPT_OK;
+    }
+    for (size = strcmp(plat_info()->name, "ps4") ? 8 * 1024 * 1024 : 1024 * 1024; size >= 128 * 1024; size /= 2)
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size) == 0) break;
+    if (size < 128 * 1024) return CURL_SOCKOPT_OK; /* none taken: the default stays, and the next one asks again */
+    int got = 0;
+    socklen_t gl = sizeof got;
+    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &got, &gl);
+    if (!__atomic_exchange_n(&g_rcvbuf, size, __ATOMIC_RELAXED))
+        LOGI("receive window: %d KB (%d KB asked)", got / 1024, size / 1024);
+    return CURL_SOCKOPT_OK;
+}
+#endif
+
 /* errbuf, CURL_ERROR_SIZE bytes or NULL, gets curl's own account of a
  * failure: which host, which phase, how long it waited. client: a request to
  * the RomM server, which gets the client certificate, if there is one. */
@@ -358,6 +393,9 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
         curl_easy_setopt(c, CURLOPT_ERRORBUFFER, errbuf);
     }
     if (g_share) curl_easy_setopt(c, CURLOPT_SHARE, g_share);
+#if defined(__FreeBSD__)
+    curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, big_rcvbuf);
+#endif
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_USERAGENT, g_user_agent);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
@@ -620,18 +658,8 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ul
     return p->fn(p->ud, p->offset + dlnow, dltotal ? p->offset + dltotal : 0);
 }
 
-/* Downloads read and write in bigger blocks than curl's 16 KB, and ask for a
- * bigger socket buffer, which keeps a slow or bursty link (PS4 Wi-Fi) busier.
- * Kept modest: memory is tight for the PS4 payload. */
+/* Downloads read and write in bigger blocks than curl's 16 KB. */
 #define DOWNLOAD_BUFFER (256 * 1024)
-#define DOWNLOAD_SOCKET_BUFFER (1024 * 1024)
-
-static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
-    int size = DOWNLOAD_SOCKET_BUFFER;
-    (void)ud;
-    if (purpose == CURLSOCKTYPE_IPCXN) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
-    return CURL_SOCKOPT_OK;
-}
 
 static int download_impl(const char *url, const char *auth, const char *dest, int resume, int verify, int client,
                          http_progress_fn progress, void *ud, http_resp *out) {
@@ -669,7 +697,6 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
     curl_easy_setopt(c, CURLOPT_XFERINFODATA, &pc);
     curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)DOWNLOAD_BUFFER);
-    curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, big_rcvbuf);
     double started = mono_sec();
     CURLcode rc = curl_easy_perform(c);
     fclose(f);
