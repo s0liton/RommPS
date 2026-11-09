@@ -8,7 +8,7 @@
 
 #define APP_NAME    "romm-sync"
 #ifndef APP_VERSION
-#define APP_VERSION "1.4.0"
+#define APP_VERSION "1.4.1"
 #endif
 #ifndef APP_BUILD /* git describe of the build, from the Makefile */
 #define APP_BUILD "unknown"

@@ -4,3 +4,4 @@ host-data/
 .DS_Store
 .vscode/
 *.elf
+__pycache__/
