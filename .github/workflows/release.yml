@@ -40,7 +40,8 @@ jobs:
     if: >-
       github.event_name == 'push' ||
       (github.event.pull_request.merged &&
-       contains(github.event.pull_request.head.ref, 'v'))
+       contains(github.event.pull_request.head.ref, 'v') &&
+       !startsWith(github.event.pull_request.head.ref, 'rommdeck'))
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}

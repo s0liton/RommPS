@@ -11,6 +11,9 @@
  *   states     rom_id, hash, mtime, mtime_ns, size, state_id, server_updated_at, synced_at
  *   memcards   card_id, hash, version_id, backed_up_at
  *   conflicts  rom_id, save_id, slot, reason, server_updated_at, server_hash, local_mtime
+ *   save_ids   by game id: also, the other title ids its saves go by (bundle.also)
+ *   unplaced   by bundle: save, "<save id>|<content hash>" of RomM's version
+ *              that came down and turned out not to be the game's
  *   history    recent sync summaries, newest last */
 int state_load(void);
 int state_save(void);

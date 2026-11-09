@@ -26,6 +26,15 @@ TLS_PORT=8898
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=127.0.0.1 -keyout "$T/tls.pem" -out "$T/tls.crt" 2>/dev/null
 cat "$T/tls.crt" >> "$T/tls.pem"
 python3 "$ROOT/tests/mock_romm.py" $TLS_PORT "$T/tls.pem" 2>"$T/mock-tls.log" &
+# And once more behind mTLS: a client certificate from its own CA, as a .p12.
+MTLS_PORT=8897
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=client-ca -keyout "$T/cca.key" -out "$T/cca.crt" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj /CN=rommps-test -keyout "$T/client.key" -out "$T/client.csr" 2>/dev/null
+openssl x509 -req -in "$T/client.csr" -CA "$T/cca.crt" -CAkey "$T/cca.key" -CAcreateserial -days 1 -out "$T/client.crt" 2>/dev/null
+openssl pkcs12 -export -inkey "$T/client.key" -in "$T/client.crt" -passout pass:s3cret -out "$T/client.p12"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=stranger -keyout "$T/other.key" -out "$T/other.crt" 2>/dev/null
+openssl pkcs12 -export -inkey "$T/other.key" -in "$T/other.crt" -passout pass: -out "$T/other.p12"
+MOCK_CLIENT_CA="$T/cca.crt" python3 "$ROOT/tests/mock_romm.py" $MTLS_PORT "$T/tls.pem" 2>"$T/mock-mtls.log" &
 RA="$T/RetroArch"; mkdir -p "$RA/roms/snes" "$RA/saves/Snes9x" "$T/data"
 # RetroArch defaults: saves sorted into a folder per core name.
 printf 'savefile_directory = ":/saves"\nsort_savefiles_enable = "true"\n' > "$RA/retroarch.cfg"
@@ -79,7 +88,30 @@ r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"127.0.0.1:$TLS_P
 post /api/config '{"tls_verify":false}' >/dev/null
 r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$TLS_PORT\"}")
 [[ "$r" == *pending* ]] || fail "pairing with checks off failed: $r"
-post /api/pair/forget >/dev/null; post /api/config '{"tls_verify":true}' >/dev/null
+post /api/pair/forget >/dev/null
+
+echo "0b. a server behind mTLS takes a client certificate (.p12)"
+cert() { curl -s -X POST "$API/api/client-cert" -d "{\"p12\":\"$(base64 -w0 "$1")\",\"password\":\"$2\"}"; }
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *"asks for a client certificate"* ]] || fail "missing client certificate not reported: $r"
+r=$(cert "$T/client.p12" wrong); [[ "$r" == *"wrong password"* ]] || fail "wrong password not reported: $r"
+r=$(cert "$T/tls.crt" ""); [[ "$r" == *"not a PKCS#12"* ]] || fail "a file that isn't a .p12 was taken: $r"
+r=$(curl -sf "$API/api/client-cert"); [[ "$r" == *'"active":false'* && "$r" == *'"file":""'* ]] || fail "a refused upload changed the certificate: $r"
+r=$(cert "$T/other.p12" ""); [[ "$r" == *'"active":true'* && "$r" == *"CN=stranger"* ]] || fail "a .p12 without a password wasn't taken: $r"
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *"didn't accept"* ]] || fail "a certificate the server won't take not reported: $r"
+r=$(cert "$T/client.p12" s3cret); [[ "$r" == *'"active":true'* && "$r" == *"CN=rommps-test"* && "$r" == *"valid until"* ]] || fail "certificate upload: $r"
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *pending* ]] || fail "pairing through mTLS failed: $r"
+[[ -f "$T/data/client.p12" ]] || fail "the certificate wasn't saved in the data folder"
+python3 -c "import json,sys; c=json.load(open(sys.argv[1])); assert c['client_cert']=='client.p12' and c['client_cert_password']=='s3cret', c" "$T/data/config.json" \
+  || fail "the certificate isn't in config.json"
+r=$(curl -sf "$API/api/config"); [[ "$r" != *s3cret* && "$r" == *'"client_cert":"client.p12"'* ]] || fail "the web UI's config shows the certificate's password: $r"
+post /api/pair/forget >/dev/null
+r=$(curl -sf -X POST "$API/api/client-cert/remove"); [[ "$r" == *'"active":false'* ]] || fail "certificate not removed: $r"
+[[ ! -f "$T/data/client.p12" ]] || fail "client.p12 left behind"
+grep -q s3cret "$T/data/config.json" && fail "the password stayed in config.json"
+post /api/config '{"tls_verify":true}' >/dev/null
 
 echo "1. setup: pair, detect emulators, preview, first sync"
 post /api/pair/start "{\"server_url\":\"http://127.0.0.1:$MOCK_PORT\"}" >/dev/null
@@ -394,6 +426,10 @@ echo "special-save" > "$RA/special/EarthBound (USA).srm"
 syncnow
 n=$(dump | python3 -c "import json,sys; print(sum(1 for x in json.load(sys.stdin)['saves'] if x['rom_id']==21))")
 [[ "$n" == 0 ]] || fail "game with shared cards in its own options must not sync"
+# The per-game folder's file was never synced and RomM already has EarthBound's
+# save: that's a conflict, not a quiet replacement. Keeping this one sends it up.
+[[ "$(last conflicts)" == 1 ]] || fail "a never-synced save against RomM's must be a conflict (got $(last conflicts))"
+post /api/conflicts/resolve "{\"path\":\"$RA/special/EarthBound (USA).srm\",\"keep\":\"local\"}" >/dev/null || fail "resolve failed"
 c=$(dump | python3 -c "import json,sys; s=sorted([x for x in json.load(sys.stdin)['saves'] if x['rom_id']==12], key=lambda x: x['updated_at']); print(s[-1]['content'].strip())")
 [[ "$c" == "special-save" ]] || fail "per-game save folder not used (got $c)"
 
@@ -670,6 +706,9 @@ syncnow
 # With Beetle the card is named after the game file: still the game's card.
 sleep 1; printf 'card-beetle' > "$T/psxemu/saves/Test Quest (USA)_1.mcd"
 syncnow
+# A card this console never synced, against the one RomM has: asked, not assumed.
+[[ "$(last conflicts)" == 1 ]] || fail "Beetle's never-synced card against RomM's must be a conflict (got $(last conflicts))"
+post /api/conflicts/resolve "{\"path\":\"$T/psxemu/saves/Test Quest (USA)_1.mcd\",\"keep\":\"local\"}" >/dev/null || fail "resolve failed"
 card=$(dump | python3 -c "import json,sys; s=sorted([x for x in json.load(sys.stdin)['saves'] if x['rom_id']==50], key=lambda x: x['updated_at']); print(s[-1]['content'])")
 [[ "$card" == "card-beetle" ]] || fail "the card Beetle names after the game file must sync: $card"
 # A blank card an emulator just made under the other name never beats one with a save on it.
@@ -1269,7 +1308,9 @@ echo "21. one-file folder games: saves named after the file sync; old extensionl
 curl -sfk -X POST "$TM/_admin/rom" -d '{"id":70,"platform_id":1,"name":"Folder Game","fs_name":"Folder Game",
   "files":[{"id":701,"file_name":"Folder Game (USA).sfc","content":"ROM:Folder Game (USA).sfc"}]}' >/dev/null
 post /api/download '{"rom_id":70}' >/dev/null
-for _ in $(seq 1 20); do got=$(find "$T" -path "*/Folder Game/Folder Game (USA).sfc" -not -path '*/data/*' | head -1); [[ -n "$got" ]] && break; sleep 0.25; done
+# The main emulator's copy: RomM's saves come down to it, and the extra's copy
+# would only be picked when find happens to list it first (it did, on CI).
+for _ in $(seq 1 20); do got=$(find "$T/homebrew" -path "*/Folder Game/Folder Game (USA).sfc" | head -1); [[ -n "$got" ]] && break; sleep 0.25; done
 [[ -n "$got" ]] || fail "a one-file folder game must download into its folder"
 gdir=$(dirname "$(dirname "$got")")
 sdir=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print([m['save_dir'] for m in json.load(sys.stdin) if m['rom_dir']=='$gdir'][0])")
@@ -1762,6 +1803,21 @@ python3 "$ROOT/tests/xboxhdd.py" get "$XB/hdd/disk.qcow2" 4D530004 "$T/xbout" >/
 [[ ! -e "$XB/hdd/disk.qcow2.romm" ]] || fail "no copy of the image may be left behind"
 syncnow
 [[ "$(xbunits)" == "$units" ]] || fail "a save just placed must not go up again: $(xbunits)"
+
+echo "28c1. An Xbox image cut short on the server: its save can't be placed, said once, not a failure every sync"
+python3 "$ROOT/tests/make_disc.py" xiso "$T/whole.xiso.iso" 4D530099
+head -c $((41 * 2048)) "$T/whole.xiso.iso" > "$XB/games/Cut (USA).xiso.iso"   # stops where its default.xbe starts
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":962,"platform_id":96,"name":"Cut","fs_name":"Cut (USA).xiso.iso"}' >/dev/null
+b64=$(python3 -c "import base64,io,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('4D530099/SLOT0/cut.sav','cut'); z.close(); print(base64.b64encode(b.getvalue()).decode())")
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":962,\"slot\":\"autosave\",\"file_name\":\"4D530099.zip\",\"emulator\":\"xemu\",\"content_b64\":\"$b64\"}" >/dev/null
+syncnow
+told() { grep -c "Its saves can't sync: the game file is incomplete" "$T/daemon.log"; }
+[[ "$(told)" == 1 ]] || fail "a game file cut short must be said, once: $(told) times"
+[[ "$(last failed)" == 0 ]] || fail "a game file cut short isn't a failed sync: $(last failed) failed"
+syncnow
+[[ "$(told)" == 1 && "$(last failed)" == 0 ]] || fail "said again or failed again on the next sync: $(told) times, $(last failed) failed"
+[[ "$(python3 "$ROOT/tests/xboxhdd.py" get "$XB/hdd/disk.qcow2" 4D530099 "$T/xbout")" == none ]] || fail "a save went onto the disk for a game with no id"
+rm "$XB/games/Cut (USA).xiso.iso"
 
 echo "28c2. DS saves: melonDS's .sav and the melonDS DS core's .srm are one raw save, shared between a main emulator and an extra"
 curl -skf -X POST "$SV/_admin/platform" -d '{"id":98,"slug":"nds","name":"Nintendo DS"}' >/dev/null

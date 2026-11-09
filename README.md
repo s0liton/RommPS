@@ -90,6 +90,32 @@ The setup wizard walks you through five steps:
 
 **Back up your saves before the first sync.** Copy your emulator save folders to a computer or USB drive. RommPS keeps a local copy before replacing any file, but your own backup is the safest option.
 
+### Client certificate (mTLS)
+
+If your RomM server sits behind a reverse proxy that asks for a client certificate (mutual TLS: Traefik, Pangolin, nginx, Caddy), give RommPS that certificate as a PKCS#12 file (`.p12` or `.pfx`) **before** you connect:
+
+- **Web UI:** in the setup's first step, open *Client certificate (mTLS)*, pick the file, enter its password and choose *Use this certificate*. Later it's under Settings, Server. RommPS checks the file and the password right away and shows whose certificate it is and until when it's valid.
+- **By hand:** copy the file into `/data/romm-sync/` and add it to `/data/romm-sync/config.json`, then restart the payload. The path is relative to `/data/romm-sync/`, or absolute:
+
+  ```json
+  "client_cert": "client.p12",
+  "client_cert_password": "your password"
+  ```
+
+The certificate is only shown to your RomM server, never to GitHub (updates). The password is kept in `config.json` like RomM's token, and never shown by the web UI or put in diagnostics.
+
+If the server turns the connection down, RommPS says so: that it wants a certificate, or that it didn't accept this one (wrong CA, expired, revoked).
+
+Older `.p12` files encrypted with RC2 (OpenSSL 1.x's default, older Windows exports) can't be read on the PS5. Export yours again with AES:
+
+```sh
+openssl pkcs12 -in old.p12 -nodes -legacy -out cert.pem   # OpenSSL 1.1: without -legacy
+openssl pkcs12 -export -in cert.pem -out client.p12 -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256
+rm cert.pem   # it holds the unencrypted key
+```
+
+**Pangolin:** its own login for a resource (SSO, PIN, password) happens in a browser, which RommPS can't do. Turn authentication off for the RomM resource, or add a rule that lets it through, and let the client certificate (checked by Traefik) and RomM's own login guard it.
+
 ## Emulators
 RommPS has built-in profiles for most known emulators on the PS5, and will set the correct default game, save/save state, and bios directories for them. Since there is a huge influx of new emulators popping up, I will be doing my very best to keep up with them and add profiles accordingly.  
 

@@ -41,6 +41,11 @@ int gameid_ps2_crc(const char *path, uint32_t *crc);
  * game's folder. */
 int gameid_xbox(const char *path, char *out, size_t n);
 
+/* An Xbox disc image cut short: its root directory has files ending past the
+ * end of the file (a copy that stopped part way). 1 then, with the bytes the
+ * image needs at least and the bytes it has; 0 for a whole one or no image. */
+int gameid_xbox_short(const char *path, uint64_t *need, uint64_t *have);
+
 /* An Xbox 360 game's title id, "4D5307E6", as its save folder is named: the
  * XEX's execution info, from a disc image (.iso, .xiso), a default.xex or the
  * game's folder; a GOD folder or an STFS package (Xbox Live Arcade), from its

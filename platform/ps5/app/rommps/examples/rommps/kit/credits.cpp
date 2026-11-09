@@ -103,7 +103,11 @@ float hold_for(const char *text)
 // A cheap hash for the static.
 float noise(int x, int y, int frame)
 {
-    std::uint32_t h = static_cast<std::uint32_t>(x * 374761393 + y * 668265263 + frame * 2147483647);
+    // Unsigned, so it wraps: signed overflow is undefined, and an optimiser
+    // that assumes it can't happen may turn the loops around this into
+    // endless ones (RommDeck ran out of memory drawing the static).
+    std::uint32_t h = static_cast<std::uint32_t>(x) * 374761393u + static_cast<std::uint32_t>(y) * 668265263u +
+                      static_cast<std::uint32_t>(frame) * 2147483647u;
     h = (h ^ (h >> 13)) * 1274126177u;
     return static_cast<float>((h ^ (h >> 16)) & 0xffff) / 65535.0f;
 }

@@ -17,9 +17,19 @@
 #include "util.h"
 #ifdef ROMM_EMBED_CA
 #include "cacert_pem.h" /* generated from the SDK's Mozilla CA bundle */
+#endif
+/* The consoles' libcurl is built on OpenSSL, and host builds use it when
+ * it's there (the Makefile defines ROMM_OPENSSL): CA store, client certificates. */
+#if defined(ROMM_EMBED_CA) || defined(ROMM_OPENSSL)
+#define HAVE_OPENSSL 1
+#include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/pkcs12.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/provider.h>
+#endif
 #endif
 
 static char g_ca_bundle[PATH_MAX_LEN];
@@ -35,6 +45,20 @@ static X509_STORE *g_ca_store;
 #endif
 static int g_tls_verify = 1;
 static char g_user_agent[64];
+
+/* mTLS: the client certificate (and its chain) and key from the user's .p12,
+ * as PEM, handed to the RomM server's connections when it asks for one. Never
+ * to the verified requests (GitHub). The key is kept in memory only. */
+static pthread_mutex_t g_cc_lock = PTHREAD_MUTEX_INITIALIZER;
+static char *g_cc_cert, *g_cc_key;
+static size_t g_cc_cert_len, g_cc_key_len;
+static char g_cc_info[192];
+/* Why the server last turned the handshake down over the certificate, "" once it accepts one. */
+static char g_cc_refused[256], g_cc_refused_origin[200];
+/* The last TLS 1.2 check (cert_probe): which server, when. Forgotten when
+ * the certificate changes, so the next refusal is told at once. */
+static char g_probe_origin[200];
+static double g_probe_at;
 
 /* DNS answers and TLS sessions shared by every request, from any thread, so a
  * cover, a list page or a save skips the lookup and the full TLS handshake.
@@ -323,9 +347,45 @@ static int curl_trace(CURL *c, curl_infotype type, char *data, size_t size, void
 }
 #endif
 
+#if defined(__FreeBSD__)
+/* The socket's receive buffer is the TCP window, and the window caps a
+ * download at window / round trip, whatever the line can do. The consoles grow
+ * it by themselves only from 64 KB to 128 KB: about 2.4 MB/s from a server
+ * 40 ms away (issue #39). So it's set by hand, on every connection: a download
+ * usually goes over the one the API call before it left open, and setting it
+ * on download connections alone missed nearly all of them. The PS5 quietly
+ * hands out 512 KB at most for anything up to 4 MB and refuses 8 MB outright,
+ * so ask big and step down until one is taken; the PS4 stops at 1 MB, its
+ * memory being tight. Buffer memory is only used by data waiting to be read,
+ * so the API's connections cost nothing for it. Linux grows the buffer by
+ * itself as far as it's needed and stops once it's set by hand, so there it's
+ * left alone. */
+static int g_rcvbuf; /* the size the kernel took, once known */
+
+static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
+    (void)ud;
+    if (purpose != CURLSOCKTYPE_IPCXN) return CURL_SOCKOPT_OK;
+    int size = __atomic_load_n(&g_rcvbuf, __ATOMIC_RELAXED);
+    if (size) {
+        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
+        return CURL_SOCKOPT_OK;
+    }
+    for (size = strcmp(plat_info()->name, "ps4") ? 8 * 1024 * 1024 : 1024 * 1024; size >= 128 * 1024; size /= 2)
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size) == 0) break;
+    if (size < 128 * 1024) return CURL_SOCKOPT_OK; /* none taken: the default stays, and the next one asks again */
+    int got = 0;
+    socklen_t gl = sizeof got;
+    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &got, &gl);
+    if (!__atomic_exchange_n(&g_rcvbuf, size, __ATOMIC_RELAXED))
+        LOGI("receive window: %d KB (%d KB asked)", got / 1024, size / 1024);
+    return CURL_SOCKOPT_OK;
+}
+#endif
+
 /* errbuf, CURL_ERROR_SIZE bytes or NULL, gets curl's own account of a
- * failure: which host, which phase, how long it waited. */
-static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *auth, int verify, char *errbuf) {
+ * failure: which host, which phase, how long it waited. client: a request to
+ * the RomM server, which gets the client certificate, if there is one. */
+static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *auth, int verify, int client, char *errbuf) {
     CURL *c = handle_take();
     if (!c) return NULL;
     if (errbuf) {
@@ -333,6 +393,9 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
         curl_easy_setopt(c, CURLOPT_ERRORBUFFER, errbuf);
     }
     if (g_share) curl_easy_setopt(c, CURLOPT_SHARE, g_share);
+#if defined(__FreeBSD__)
+    curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, big_rcvbuf);
+#endif
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_USERAGENT, g_user_agent);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
@@ -365,6 +428,26 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
     }
+    if (client) {
+        pthread_mutex_lock(&g_cc_lock);
+        if (g_cc_cert) {
+            /* Copied into the handle: the certificate can change meanwhile. */
+            struct curl_blob cert = {g_cc_cert, g_cc_cert_len, CURL_BLOB_COPY};
+            struct curl_blob key = {g_cc_key, g_cc_key_len, CURL_BLOB_COPY};
+            curl_easy_setopt(c, CURLOPT_SSLCERTTYPE, "PEM");
+            curl_easy_setopt(c, CURLOPT_SSLKEYTYPE, "PEM");
+            CURLcode e = curl_easy_setopt(c, CURLOPT_SSLCERT_BLOB, &cert);
+            if (e == CURLE_OK) e = curl_easy_setopt(c, CURLOPT_SSLKEY_BLOB, &key);
+            /* A libcurl whose TLS library can't take them from memory (GnuTLS
+             * builds on a computer; never the consoles') would go without. */
+            static int told;
+            if (e != CURLE_OK && !told) {
+                told = 1;
+                LOGE("this libcurl can't send the client certificate: %s", curl_easy_strerror(e));
+            }
+        }
+        pthread_mutex_unlock(&g_cc_lock);
+    }
     *hdrs = curl_slist_append(*hdrs, "Accept: application/json");
     if (auth && *auth) {
         char h[1024];
@@ -374,8 +457,31 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
     return c;
 }
 
-static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *url, const char *errbuf, int probe) {
+static void cert_note(const char *url, CURLcode rc, const char *errbuf, int may_probe);
+static void cert_forget(const char *url);
+
+static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *url, const char *errbuf, int probe,
+                  int client) {
     memset(out, 0, sizeof *out);
+    /* Where a refused client certificate shows: in the handshake, or right
+     * after it (TLS 1.3), before any answer. */
+    const int tls_err = rc == CURLE_SSL_CONNECT_ERROR || rc == CURLE_SEND_ERROR || rc == CURLE_RECV_ERROR;
+    if (client) {
+        /* nginx finishes the handshake without a certificate and says so in a
+         * 400 page instead: taken as the alert it didn't send. */
+        long st = 0;
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &st);
+        const char *page = rc == CURLE_OK && st == 400 && m && m->buf ? m->buf : "";
+        const char *alert = strstr(page, "No required SSL certificate was sent") ? "alert certificate required"
+                            : strstr(page, "The SSL certificate error")          ? "alert bad certificate"
+                                                                                 : NULL;
+        if (alert) cert_note(url, CURLE_SSL_CONNECT_ERROR, alert, 0);
+        /* Not there at all: an older refusal no longer says what's wrong. */
+        else if (rc != CURLE_OK && no_answer(c, rc)) cert_forget(url);
+        /* Asked again only when it broke before any answer: a connection lost
+         * halfway through a download isn't the certificate's doing. */
+        else cert_note(url, rc, errbuf, st == 0);
+    }
     out->no_answer = rc != CURLE_OK && no_answer(c, rc);
     out->aborted = rc == CURLE_ABORTED_BY_CALLBACK;
     down_note(url, out->no_answer, probe);
@@ -397,6 +503,7 @@ static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *u
         long os_err = 0;
         curl_easy_getinfo(c, CURLINFO_OS_ERRNO, &os_err);
         const char *detail = errbuf && errbuf[0] ? errbuf : out->error;
+        if (client && tls_err) http_client_cert_refused(url, out->error, sizeof out->error); /* in plain words */
         /* curl's words for a reply we had no room for don't say so. */
         const char *oom = out_of_memory(rc, m != NULL) && rc != CURLE_OUT_OF_MEMORY ? " (out of memory)" : "";
         if (os_err) LOGW("HTTP %s: %s%s (errno %ld: %s)", url, detail, oom, os_err, strerror((int)os_err));
@@ -432,14 +539,15 @@ static size_t lean_write(char *ptr, size_t size, size_t nmemb, void *ud) {
 }
 
 static int request_impl(const char *method, const char *url, const char *auth, const char *content_type,
-                        const void *body, size_t body_len, int verify, const char *const *drop, http_resp *out) {
+                        const void *body, size_t body_len, int verify, int client, const char *const *drop,
+                        http_resp *out) {
     memset(out, 0, sizeof *out);
     int probe;
     if (down_gate(url, &probe, out)) return -1;
     struct curl_slist *hdrs = NULL;
     membuf m = {0};
     char errbuf[CURL_ERROR_SIZE];
-    CURL *c = easy_new(url, &hdrs, auth, verify, errbuf);
+    CURL *c = easy_new(url, &hdrs, auth, verify, client, errbuf);
     if (!c) {
         down_note(url, 0, probe);
         return -1;
@@ -471,7 +579,7 @@ static int request_impl(const char *method, const char *url, const char *auth, c
     }
     CURLcode rc = curl_easy_perform(c);
     if (drop) m = lean.m;
-    int r = finish(c, rc, &m, out, url, errbuf, probe);
+    int r = finish(c, rc, &m, out, url, errbuf, probe, client);
     curl_slist_free_all(hdrs);
     handle_give(c);
     return r;
@@ -479,20 +587,20 @@ static int request_impl(const char *method, const char *url, const char *auth, c
 
 int http_request(const char *method, const char *url, const char *auth, const char *content_type,
                  const void *body, size_t body_len, http_resp *out) {
-    return request_impl(method, url, auth, content_type, body, body_len, g_tls_verify, NULL, out);
+    return request_impl(method, url, auth, content_type, body, body_len, g_tls_verify, 1, NULL, out);
 }
 
 int http_get_lean(const char *url, const char *auth, const char *const *drop, http_resp *out) {
-    return request_impl("GET", url, auth, NULL, NULL, 0, g_tls_verify, drop, out);
+    return request_impl("GET", url, auth, NULL, NULL, 0, g_tls_verify, 1, drop, out);
 }
 
 int http_get_verified(const char *url, http_resp *out) {
-    return request_impl("GET", url, NULL, NULL, NULL, 0, 1, NULL, out);
+    return request_impl("GET", url, NULL, NULL, NULL, 0, 1, 0, NULL, out);
 }
 
 int http_tls_untrusted(const char *url) {
     struct curl_slist *hdrs = NULL;
-    CURL *c = easy_new(url, &hdrs, NULL, 1, NULL);
+    CURL *c = easy_new(url, &hdrs, NULL, 1, 1, NULL);
     if (!c) return 0;
     curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
@@ -509,7 +617,7 @@ int http_upload_file(const char *method, const char *url, const char *auth, cons
     struct curl_slist *hdrs = NULL;
     membuf m = {0};
     char errbuf[CURL_ERROR_SIZE];
-    CURL *c = easy_new(url, &hdrs, auth, g_tls_verify, errbuf);
+    CURL *c = easy_new(url, &hdrs, auth, g_tls_verify, 1, errbuf);
     if (!c) {
         down_note(url, 0, probe);
         return -1;
@@ -528,7 +636,7 @@ int http_upload_file(const char *method, const char *url, const char *auth, cons
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, mem_write);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &m);
     CURLcode rc = curl_easy_perform(c);
-    int r = finish(c, rc, &m, out, url, errbuf, probe);
+    int r = finish(c, rc, &m, out, url, errbuf, probe, 1);
     curl_mime_free(mime);
     curl_slist_free_all(hdrs);
     handle_give(c);
@@ -550,20 +658,10 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ul
     return p->fn(p->ud, p->offset + dlnow, dltotal ? p->offset + dltotal : 0);
 }
 
-/* Downloads read and write in bigger blocks than curl's 16 KB, and ask for a
- * bigger socket buffer, which keeps a slow or bursty link (PS4 Wi-Fi) busier.
- * Kept modest: memory is tight for the PS4 payload. */
+/* Downloads read and write in bigger blocks than curl's 16 KB. */
 #define DOWNLOAD_BUFFER (256 * 1024)
-#define DOWNLOAD_SOCKET_BUFFER (1024 * 1024)
 
-static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
-    int size = DOWNLOAD_SOCKET_BUFFER;
-    (void)ud;
-    if (purpose == CURLSOCKTYPE_IPCXN) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
-    return CURL_SOCKOPT_OK;
-}
-
-static int download_impl(const char *url, const char *auth, const char *dest, int resume, int verify,
+static int download_impl(const char *url, const char *auth, const char *dest, int resume, int verify, int client,
                          http_progress_fn progress, void *ud, http_resp *out) {
     int probe;
     if (down_gate(url, &probe, out)) return -1;
@@ -584,7 +682,7 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
 
     struct curl_slist *hdrs = NULL;
     char errbuf[CURL_ERROR_SIZE];
-    CURL *c = easy_new(url, &hdrs, auth, verify, errbuf);
+    CURL *c = easy_new(url, &hdrs, auth, verify, client, errbuf);
     if (!c) {
         down_note(url, 0, probe);
         fclose(f);
@@ -599,7 +697,6 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
     curl_easy_setopt(c, CURLOPT_XFERINFODATA, &pc);
     curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)DOWNLOAD_BUFFER);
-    curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, big_rcvbuf);
     double started = mono_sec();
     CURLcode rc = curl_easy_perform(c);
     fclose(f);
@@ -609,14 +706,14 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
     if (rc == CURLE_OK && got > 1024 * 1024 && secs > 0)
         LOGI("downloaded %.1f MB in %.1fs (%.2f MB/s)", got / 1048576.0, secs, got / 1048576.0 / secs);
 
-    int r = finish(c, rc, NULL, out, url, errbuf, probe);
+    int r = finish(c, rc, NULL, out, url, errbuf, probe, client);
     if (r == 0 && out->status == 200 && offset > 0) {
         /* The server ignored Range, so start over. */
         LOGW("server ignored Range for %s; restarting download", url);
         curl_slist_free_all(hdrs);
         handle_give(c);
         unlink(part);
-        return download_impl(url, auth, dest, 0, verify, progress, ud, out);
+        return download_impl(url, auth, dest, 0, verify, client, progress, ud, out);
     }
     if (r == 0 && out->status >= 200 && out->status < 300) {
         if (move_file(part, dest) != 0) {
@@ -634,12 +731,12 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
 
 int http_download(const char *url, const char *auth, const char *dest, int resume,
                   http_progress_fn progress, void *ud, http_resp *out) {
-    return download_impl(url, auth, dest, resume, g_tls_verify, progress, ud, out);
+    return download_impl(url, auth, dest, resume, g_tls_verify, 1, progress, ud, out);
 }
 
 int http_download_verified(const char *url, const char *dest, http_progress_fn progress, void *ud,
                            http_resp *out) {
-    return download_impl(url, NULL, dest, 0, 1, progress, ud, out);
+    return download_impl(url, NULL, dest, 0, 1, 0, progress, ud, out);
 }
 
 char *http_escape(const char *s) {
@@ -647,4 +744,267 @@ char *http_escape(const char *s) {
     char *r = e ? strdup(e) : strdup("");
     curl_free(e);
     return r;
+}
+
+/* ---- mTLS client certificate ---- */
+
+/* The TLS alert a server sends when it wants a client certificate, or won't
+ * take the one it got (OpenSSL's words, in curl's error): NULL if not one. */
+static const char *cert_alert(const char *errbuf) {
+    static const char *const alerts[] = {"certificate required", "bad certificate",   "unknown ca",
+                                         "certificate expired",  "certificate revoked", "certificate unknown",
+                                         "unsupported certificate", "access denied"};
+    const char *a = errbuf ? strstr(errbuf, "alert ") : NULL;
+    if (!a) return NULL;
+    for (size_t i = 0; i < sizeof alerts / sizeof alerts[0]; i++)
+        if (!strncasecmp(a + 6, alerts[i], strlen(alerts[i]))) return alerts[i];
+    return NULL;
+}
+
+/* With TLS 1.3 a server checks the client certificate after the handshake,
+ * and its alert often comes when the request is already on its way: curl
+ * sees only a broken pipe or a reset. With TLS 1.2 the alert ends the
+ * handshake itself, so a connection like that tells what went wrong. At most
+ * every 30 s per server. */
+static void cert_probe(const char *url) {
+    char o[200];
+    url_origin(url, o, sizeof o);
+    pthread_mutex_lock(&g_cc_lock);
+    const int skip = !strcmp(o, g_probe_origin) && mono_sec() - g_probe_at < 30;
+    if (!skip) {
+        str_copy(g_probe_origin, sizeof g_probe_origin, o);
+        g_probe_at = mono_sec();
+    }
+    pthread_mutex_unlock(&g_cc_lock);
+    if (skip) return;
+    struct curl_slist *hdrs = NULL;
+    char errbuf[CURL_ERROR_SIZE];
+    CURL *c = easy_new(url, &hdrs, NULL, g_tls_verify, 1, errbuf);
+    if (!c) return;
+    curl_easy_setopt(c, CURLOPT_SSLVERSION, (long)(CURL_SSLVERSION_TLSv1_2 | CURL_SSLVERSION_MAX_TLSv1_2));
+    curl_easy_setopt(c, CURLOPT_FRESH_CONNECT, 1L);
+    curl_easy_setopt(c, CURLOPT_FORBID_REUSE, 1L);
+    curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
+    CURLcode rc = curl_easy_perform(c);
+    cert_note(url, rc, errbuf, 0);
+    curl_slist_free_all(hdrs);
+    handle_give(c);
+}
+
+static void cert_note(const char *url, CURLcode rc, const char *errbuf, int may_probe) {
+    const char *alert = rc == CURLE_OK ? NULL : cert_alert(errbuf);
+    if (rc != CURLE_OK && !alert) {
+        /* The connection broke without a word: perhaps a TLS 1.3 alert lost. */
+        if (may_probe && !strncmp(url, "https://", 8) &&
+            (rc == CURLE_SEND_ERROR || rc == CURLE_RECV_ERROR || rc == CURLE_SSL_CONNECT_ERROR))
+            cert_probe(url);
+        return;
+    }
+    char o[200];
+    url_origin(url, o, sizeof o);
+    pthread_mutex_lock(&g_cc_lock);
+    char was[sizeof g_cc_refused];
+    str_copy(was, sizeof was, g_cc_refused);
+    if (!alert && strcmp(o, g_cc_refused_origin) != 0) {
+        pthread_mutex_unlock(&g_cc_lock);
+        return; /* another server's answer says nothing about this one */
+    }
+    str_copy(g_cc_refused_origin, sizeof g_cc_refused_origin, alert ? o : "");
+    if (!alert) g_cc_refused[0] = 0;
+    else if (g_cc_cert)
+        snprintf(g_cc_refused, sizeof g_cc_refused, "%s didn't accept this console's client certificate (%s)", o, alert);
+    else
+        snprintf(g_cc_refused, sizeof g_cc_refused,
+                 "%s asks for a client certificate (mTLS): add one under Client certificate in the web UI", o);
+    int changed = strcmp(was, g_cc_refused) != 0;
+    if (changed && g_cc_refused[0]) LOGW("%s", g_cc_refused);
+    else if (changed) LOGI("%s accepts the connection again", o);
+    pthread_mutex_unlock(&g_cc_lock);
+}
+
+/* url's server didn't answer at all: its refusal, if any, is forgotten (quietly). */
+static void cert_forget(const char *url) {
+    char o[200];
+    url_origin(url, o, sizeof o);
+    pthread_mutex_lock(&g_cc_lock);
+    if (!strcmp(o, g_cc_refused_origin)) g_cc_refused[0] = g_cc_refused_origin[0] = 0;
+    pthread_mutex_unlock(&g_cc_lock);
+}
+
+int http_client_cert_refused(const char *url, char *msg, size_t n) {
+    char o[200] = "";
+    if (url) url_origin(url, o, sizeof o);
+    pthread_mutex_lock(&g_cc_lock);
+    int r = g_cc_refused[0] != 0 && (!url || !strcmp(o, g_cc_refused_origin));
+    if (r && msg) str_copy(msg, n, g_cc_refused);
+    pthread_mutex_unlock(&g_cc_lock);
+    return r;
+}
+
+int http_client_cert_info(char *info, size_t n) {
+    pthread_mutex_lock(&g_cc_lock);
+    int r = g_cc_cert != NULL;
+    if (info) str_copy(info, n, r ? g_cc_info : "");
+    pthread_mutex_unlock(&g_cc_lock);
+    return r;
+}
+
+static void secret_free(char *p, size_t len) {
+    if (!p) return;
+    volatile char *v = p;
+    while (len--) *v++ = 0;
+    free(p);
+}
+
+#ifdef HAVE_OPENSSL
+static char *bio_take(BIO *b, size_t *len) {
+    char *data = NULL;
+    long n = BIO_get_mem_data(b, &data);
+    char *out = n > 0 ? malloc((size_t)n + 1) : NULL;
+    if (out) {
+        memcpy(out, data, (size_t)n);
+        out[n] = 0;
+        *len = (size_t)n;
+    }
+    return out;
+}
+
+/* OpenSSL's words for its last error, or "" */
+static void ssl_error(char *out, size_t n) {
+    const char *why = ERR_reason_error_string(ERR_peek_last_error());
+    str_copy(out, n, why ? why : "");
+}
+
+static int p12_parse(const void *data, size_t len, const char *password, EVP_PKEY **key, X509 **cert,
+                     STACK_OF(X509) **chain, char *err, size_t en) {
+    ERR_clear_error();
+    BIO *b = len <= 0x7fffffff ? BIO_new_mem_buf(data, (int)len) : NULL;
+    PKCS12 *p12 = b ? d2i_PKCS12_bio(b, NULL) : NULL;
+    BIO_free(b);
+    if (!p12) {
+        snprintf(err, en, "not a PKCS#12 (.p12 / .pfx) file");
+        return -1;
+    }
+    const char *pw = password ? password : "";
+    if (PKCS12_mac_present(p12) && !PKCS12_verify_mac(p12, pw, -1) && !(!pw[0] && PKCS12_verify_mac(p12, NULL, 0))) {
+        PKCS12_free(p12);
+        snprintf(err, en, "wrong password for the certificate file");
+        return -1;
+    }
+    int ok = PKCS12_parse(p12, pw, key, cert, chain);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+    /* Older exports (RC2) need OpenSSL 3's legacy provider, where it can be had (not on the PS5). */
+    if (!ok && OSSL_PROVIDER_try_load(NULL, "legacy", 1)) {
+        ERR_clear_error();
+        ok = PKCS12_parse(p12, pw, key, cert, chain);
+    }
+#endif
+    PKCS12_free(p12);
+    if (!ok || !*cert || !*key) {
+        char why[160];
+        ssl_error(why, sizeof why);
+        snprintf(err, en,
+                 "can't read the certificate file%s%s. Files exported with old encryption (RC2) aren't supported: "
+                 "export it again with AES (see the README, Client certificate)",
+                 why[0] ? ": " : "", why);
+        if (*cert) X509_free(*cert);
+        if (*key) EVP_PKEY_free(*key);
+        sk_X509_pop_free(*chain, X509_free);
+        *cert = NULL, *key = NULL, *chain = NULL;
+        return -1;
+    }
+    if (!X509_check_private_key(*cert, *key)) {
+        snprintf(err, en, "the key in the certificate file doesn't belong to its certificate");
+        X509_free(*cert);
+        EVP_PKEY_free(*key);
+        sk_X509_pop_free(*chain, X509_free);
+        *cert = NULL, *key = NULL, *chain = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+/* "CN=name, valid until 2027-05-01" ("expired 2027-05-01" if it is,
+ * "not valid before 2026-01-01" if it isn't yet) */
+static void describe_cert(X509 *cert, char *out, size_t n) {
+    char cn[96] = "";
+    X509_NAME_get_text_by_NID(X509_get_subject_name(cert), NID_commonName, cn, sizeof cn);
+    struct tm tm;
+    char until[32] = "?";
+    const ASN1_TIME *na = X509_get0_notAfter(cert);
+    memset(&tm, 0, sizeof tm);
+    if (ASN1_TIME_to_tm(na, &tm)) strftime(until, sizeof until, "%Y-%m-%d", &tm);
+    const ASN1_TIME *nb = X509_get0_notBefore(cert);
+    if (X509_cmp_current_time(nb) > 0) {
+        memset(&tm, 0, sizeof tm);
+        if (ASN1_TIME_to_tm(nb, &tm)) strftime(until, sizeof until, "%Y-%m-%d", &tm);
+        snprintf(out, n, "CN=%s, not valid before %s", cn[0] ? cn : "(none)", until);
+        return;
+    }
+    int expired = X509_cmp_current_time(na) < 0;
+    snprintf(out, n, "CN=%s, %s %s", cn[0] ? cn : "(none)", expired ? "expired" : "valid until", until);
+}
+#endif
+
+int http_client_cert_load(const void *p12, size_t len, const char *password, int use, char *info, size_t in,
+                          char *err, size_t en) {
+    if (info && in) info[0] = 0;
+    if (!p12) {
+        if (!use) return 0;
+        pthread_mutex_lock(&g_cc_lock);
+        secret_free(g_cc_key, g_cc_key_len);
+        free(g_cc_cert);
+        g_cc_cert = g_cc_key = NULL;
+        g_cc_cert_len = g_cc_key_len = 0;
+        g_cc_info[0] = 0;
+        g_cc_refused[0] = g_cc_refused_origin[0] = 0;
+        g_probe_origin[0] = 0;
+        pthread_mutex_unlock(&g_cc_lock);
+        return 0;
+    }
+#ifdef HAVE_OPENSSL
+    EVP_PKEY *key = NULL;
+    X509 *cert = NULL;
+    STACK_OF(X509) *chain = NULL;
+    if (p12_parse(p12, len, password, &key, &cert, &chain, err, en)) return -1;
+    char desc[sizeof g_cc_info];
+    describe_cert(cert, desc, sizeof desc);
+    if (info) str_copy(info, in, desc);
+    int rc = 0;
+    if (use) {
+        BIO *cb = BIO_new(BIO_s_mem()), *kb = BIO_new(BIO_s_mem());
+        int ok = cb && kb && PEM_write_bio_X509(cb, cert);
+        for (int i = 0; ok && i < sk_X509_num(chain); i++) ok = PEM_write_bio_X509(cb, sk_X509_value(chain, i));
+        ok = ok && PEM_write_bio_PrivateKey(kb, key, NULL, NULL, 0, NULL, NULL);
+        size_t cl = 0, kl = 0;
+        char *c = ok ? bio_take(cb, &cl) : NULL, *k = ok ? bio_take(kb, &kl) : NULL;
+        BIO_free(cb);
+        BIO_free(kb); /* OpenSSL clears a memory BIO's buffer as it frees it */
+        if (!c || !k) {
+            free(c);
+            secret_free(k, kl);
+            snprintf(err, en, "out of memory reading the certificate");
+            rc = -1;
+        } else {
+            pthread_mutex_lock(&g_cc_lock);
+            secret_free(g_cc_key, g_cc_key_len);
+            free(g_cc_cert);
+            g_cc_cert = c, g_cc_cert_len = cl;
+            g_cc_key = k, g_cc_key_len = kl;
+            str_copy(g_cc_info, sizeof g_cc_info, desc);
+            g_cc_refused[0] = g_cc_refused_origin[0] = 0;
+            g_probe_origin[0] = 0;
+            pthread_mutex_unlock(&g_cc_lock);
+        }
+    }
+    X509_free(cert);
+    EVP_PKEY_free(key);
+    sk_X509_pop_free(chain, X509_free);
+    return rc;
+#else
+    (void)len, (void)password, (void)use;
+    snprintf(err, en, "this build can't read client certificates (no OpenSSL)");
+    return -1;
+#endif
 }

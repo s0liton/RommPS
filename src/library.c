@@ -621,9 +621,14 @@ static void record_file(int rom_id, const cJSON *rom, const profile_map *m, cons
 }
 
 /* After a game is down: the platform's BIOS files, then its saves, before it
- * shows as ready so it isn't started without them. */
-static void finish_download(job *j, const profile_map *maps, int n, const cJSON *rom) {
+ * shows as ready so it isn't started without them. game and m: the file and
+ * its emulator, checked for a copy cut short on the server (NULL: not). */
+static void finish_download(job *j, const profile_map *maps, int n, const cJSON *rom, const profile_map *m,
+                            const char *game) {
     firmware_sync(maps, n, NULL, (int)jget_num(rom, "platform_id", 0), NULL);
+    char problem[256] = "";
+    if (m && game && game_file_problem(game, m->save_layout, problem, sizeof problem))
+        LOGE("%s: %s", path_basename(game), problem);
     pthread_mutex_lock(&g_q_lock);
     j->status = JOB_SYNCING;
     pthread_mutex_unlock(&g_q_lock);
@@ -631,12 +636,14 @@ static void finish_download(job *j, const profile_map *maps, int n, const cJSON 
     str_copy(name, sizeof name, j->name);
     str_copy(system, sizeof system, j->platform);
     sync_game_result saves;
-    if (sync_game(j->target_id, name, system, &saves) != 0) { /* save sync off: just the game */
+    if (sync_game(j->target_id, name, system, problem[0] ? problem : NULL, &saves) != 0) {
+        /* save sync off: just the game */
         config_lock();
         const int notify = g_cfg.notify;
         config_unlock();
         download_notice(head, sizeof head, name, system);
-        if (notify) plat_notify("RommPS: %s", head);
+        if (notify && problem[0]) plat_notify("RommPS: %s, but %s", head, problem);
+        else if (notify) plat_notify("RommPS: %s", head);
     }
     pthread_mutex_lock(&g_q_lock);
     j->saves = saves;
@@ -774,7 +781,7 @@ static void run_switch_job(job *j, const cJSON *rom, const profile_map *maps, in
                 else LOGW("could not put %s in %s", files[i].name, nx_dir(x, files[i].kind));
             }
         }
-        finish_download(j, maps, n, rom);
+        finish_download(j, maps, n, rom, NULL, NULL);
     } else {
         /* Cancelled: what this download brought goes; what was there stays. */
         for (int i = 0; i < nf; i++) {
@@ -953,7 +960,7 @@ static void run_rom_job(job *j) {
                 LOGW("could not put %s in %s", j->name, x->rom_dir);
             }
         }
-        finish_download(j, maps, n, rom);
+        finish_download(j, maps, n, rom, m, game);
     } else {
         if (cancelled(j) && !(multi && had)) discard_partial(dest, multi);
         if (wrap && !had) rmdir(game); /* only when empty */

@@ -49,6 +49,7 @@ typedef struct {
 } local_rom;
 
 static int rom_game_id(const local_rom *r, char *out, size_t n);
+static const char *emu_name(const profile_map *m);
 
 typedef struct {
     char path[PATH_MAX_LEN];
@@ -1165,6 +1166,7 @@ static void record_save(const local_file *f, int save_id, const char *hash) {
     if (save_id) jset_num(e, "save_id", save_id);
     jset_num(e, "synced_at", (double)time(NULL));
     state_entry_remove("conflicts", f->path);
+    state_entry_remove("unplaced", f->path);
     state_unlock();
 }
 
@@ -1400,15 +1402,50 @@ static int bundle_bases(const local_rom *r, char bases[][PATH_MAX_LEN], int max)
 /* An Xbox disk skipped because xemu still ran, during this sync. */
 static int g_disk_busy;
 
+/* psp, ps3: the other title ids a game's saves came down from RomM under
+ * (bundle.also). One that's another game's own id here stays that game's:
+ * with both releases around, the original keeps its folders. */
+static void save_ids_of(const char *game_id, char *out, size_t n) {
+    char list[64], *save = NULL;
+    size_t o = 0;
+    out[0] = 0;
+    state_lock();
+    str_copy(list, sizeof list, jget_str(state_entry("save_ids", game_id), "also", ""));
+    for (char *t = strtok_r(list, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+        int owned = 0;
+        const cJSON *e;
+        cJSON_ArrayForEach(e, state_section("roms")) owned |= !strcasecmp(jget_str(e, "game_id", ""), t);
+        if (!owned && o + strlen(t) + 2 <= n) o += (size_t)snprintf(out + o, n - o, "%s%s", o ? "," : "", t);
+    }
+    state_unlock();
+}
+
+static void save_ids_learn(const char *game_id, const char *ids) {
+    char all[64], list[64], *save = NULL;
+    state_lock();
+    cJSON *e = state_entry_ensure("save_ids", game_id);
+    str_copy(all, sizeof all, jget_str(e, "also", ""));
+    str_copy(list, sizeof list, ids);
+    for (char *t = strtok_r(list, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+        const size_t o = strlen(all);
+        if (strstr(all, t) || o + strlen(t) + 2 > sizeof all) continue;
+        snprintf(all + o, sizeof all - o, "%s%s", o ? "," : "", t);
+        LOGI("%s: its saves also go by %s", game_id, t);
+    }
+    jset_str(e, "also", all);
+    state_unlock();
+}
+
 static int bundle_for_rom(const local_rom *r, const char *game_id, bundle *b) {
-    char bases[6][PATH_MAX_LEN];
+    char bases[6][PATH_MAX_LEN], also[64] = "";
     int n = bundle_bases(r, bases, 6);
     /* xemu writes its disk as it goes: while it runs, the copy made last. */
     if (n && !strcmp(r->map->save_layout, "xbox") && !emulator_closed(r->map)) {
         bases[0][0] = 0;
         g_disk_busy = 1;
     }
-    return n ? bundle_open(b, r->map->save_layout, game_id, bases, n) : -1;
+    if (!strcmp(r->map->save_layout, "psp") || !strcmp(r->map->save_layout, "ps3")) save_ids_of(game_id, also, sizeof also);
+    return n ? bundle_open(b, r->map->save_layout, game_id, also, bases, n) : -1;
 }
 
 static int bundle_reopen(const local_file *f, bundle *b) { return bundle_for_rom(f->rom, f->game_id, b); }
@@ -2019,6 +2056,57 @@ static void game_name(const local_rom *r, char *out, size_t n) {
     if (!out[0]) path_stem(out, n, r->path);
 }
 
+/* ---- game files a save can't be placed for ----
+ * A game whose id can't be read from its file (a copy cut short on the RomM
+ * server, a damaged image) can't have its save put where the emulator looks
+ * for it. Syncing again won't mend that, a whole copy will: it's said once
+ * for the file as it is, then the game's save is skipped quietly. */
+
+static void size_text(char *out, size_t n, uint64_t bytes) {
+    if (bytes >= 1000000000ull) snprintf(out, n, "%.1f GB", (double)bytes / 1e9);
+    else snprintf(out, n, "%d MB", (int)(bytes / 1000000ull));
+}
+
+/* Whether the file's trouble was said already, as it is now; it is from here on. */
+static int said_unreadable(const char *path) {
+    char now[48];
+    snprintf(now, sizeof now, "%lld:%lld", (long long)file_size(path), (long long)file_mtime(path));
+    state_lock();
+    cJSON *e = state_entry("roms", path);
+    const int said = e && !strcmp(jget_str(e, "unreadable", ""), now);
+    if (e && !said) {
+        jset_str(e, "unreadable", now);
+        state_save();
+    }
+    state_unlock();
+    return said;
+}
+
+int game_file_problem(const char *path, const char *layout, char *out, size_t n) {
+    uint64_t need = 0, have = 0;
+    out[0] = 0;
+    if (strcmp(layout, "xbox") != 0 || dir_exists(path) || gameid_xbox_short(path, &need, &have) != 1) return 0;
+    char got[24], all[24];
+    size_text(got, sizeof got, have);
+    size_text(all, sizeof all, need);
+    snprintf(out, n, "the game file is incomplete (%s of %s): replace it on your RomM server, then download it again", got,
+             all);
+    said_unreadable(path);
+    return 1;
+}
+
+static void say_unreadable(const local_rom *r) {
+    if (said_unreadable(r->path)) return;
+    char why[256], name[256];
+    if (!game_file_problem(r->path, r->map->save_layout, why, sizeof why))
+        str_copy(why, sizeof why, "its game id can't be read from its file");
+    LOGE("%s: its save can't sync, %s", path_basename(r->path), why);
+    events_add("save", "failed", r->rom_id, r->path, emu_name(r->map), "Game file unreadable");
+    if (!notify_on()) return;
+    game_name(r, name, sizeof name);
+    plat_notify("RommPS: %s\nIts saves can't sync: %s", name, why);
+}
+
 /* A newer save that can't go onto an emulator while it's open: said once a
  * game and emulator (again after 15 minutes), so nobody plays on the old one
  * without knowing. */
@@ -2114,7 +2202,9 @@ static int ps2_place(const local_rom *r, bundle *b, const char *file) {
 }
 
 /* Downloads a save zip and unpacks it over the game's current files. With
- * record set, the result counts as synced; a manual restore leaves it to upload. */
+ * record set, the result counts as synced; a manual restore leaves it to upload.
+ * -2: it came down, but none of it is the game's here (state "unplaced");
+ * -3: that version did so before, and isn't tried again. A newer one is. */
 static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r, const char *slot, int session_id,
                               const char *server_hash, int record) {
     char id[24], api[256], zip[PATH_MAX_LEN], tmpdir[PATH_MAX_LEN];
@@ -2127,6 +2217,18 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
     if (rom_game_id(r, id, sizeof id) != 0 || bundle_for_rom(r, id, &b) != 0) {
         LOGE("no game id for %s, cannot place its save", path_basename(r->path));
         return -1;
+    }
+    char unplaced[PATH_MAX_LEN + 32], version[64];
+    snprintf(unplaced, sizeof unplaced, "%s#%s", b.dir, id);
+    snprintf(version, sizeof version, "%d|%s", save_id, server_hash ? server_hash : "");
+    if (record) {
+        state_lock();
+        const int tried = !strcmp(jget_str(state_entry("unplaced", unplaced), "save", ""), version);
+        state_unlock();
+        if (tried) {
+            bundle_free(&b);
+            return -3;
+        }
     }
     char *dev = url_q(c->device_id);
     if (record) {
@@ -2146,6 +2248,14 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
         LOGE("download of save %d failed: %s", save_id, resp.error);
         goto out;
     }
+    char other[64];
+    if (bundle_other_ids(&b, zip, tmpdir, other, sizeof other) == 0 && other[0]) {
+        /* Folders under another title id: the game's too, from now on. Listed
+         * again first, so what's here under that id is backed up below. */
+        save_ids_learn(id, other);
+        bundle_free(&b);
+        if (bundle_for_rom(r, id, &b) != 0) goto out;
+    }
     if (b.n > 0) { /* keep a copy of what's there now */
         char cur[PATH_MAX_LEN];
         snprintf(cur, sizeof cur, "%s/tmp/%s.zip", plat_data_dir(), id);
@@ -2156,8 +2266,21 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
                : !strcmp(r->map->save_layout, "ps2") ? ps2_place(r, &b, zip)
                                                      : 0;
     if (placed < 0) goto out;
-    if (!placed && bundle_replace(&b, zip, tmpdir) != 0) {
+    const int replaced = placed ? 0 : bundle_replace(&b, zip, tmpdir);
+    if (replaced == -1) {
         LOGE("save %d is not a usable zip", save_id);
+        goto out;
+    }
+    if (b.n == 0 || replaced == -2) {
+        /* Unpacked, and still none of it counts as the game's: synced as is,
+         * it'd come down again as "missing" on every sync. Forever. */
+        LOGE("save %d came down, but none of its files are %s's here (%s)", save_id, id, b.dir);
+        if (record) {
+            state_lock();
+            jset_str(state_entry_ensure("unplaced", unplaced), "save", version);
+            state_unlock();
+        }
+        rc = -2;
         goto out;
     }
     rc = 0;
@@ -2725,9 +2848,13 @@ static int restore_missing_bundles(scan_ctx *c, int only_rom) {
                 mine = s;
         }
         const cJSON *pick = mine ? mine : any;
-        if (pick && do_download_bundle(c, (int)jget_num(pick, "id", 0), r, c->slot, 0, jget_str(pick, "content_hash", ""), 1) == 0) {
+        if (!pick) continue;
+        const int rc = do_download_bundle(c, (int)jget_num(pick, "id", 0), r, c->slot, 0, jget_str(pick, "content_hash", ""), 1);
+        if (rc == 0) {
             n++;
             events_add("save", "downloaded", r->rom_id, b.dir, emu_name(r->map), "Missing here");
+        } else if (rc == -2) {
+            events_add("save", "failed", r->rom_id, b.dir, emu_name(r->map), "RomM's save doesn't match this game here");
         }
     }
     return n;
@@ -3517,6 +3644,20 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                 want_down = 0;
             }
         }
+        if (want_up && f && save_id > 0 && server_hash[0] && strcmp(server_hash, f->hash) != 0) {
+            /* The same trap the other way round: a file this device never synced,
+             * against a save RomM already has. Its timestamp says nothing (a fresh
+             * install, or an emulator's starter NVRAM, is "newer" than years of
+             * progress), so it doesn't get to replace the server's on a hunch.
+             * One saved while we watched its emulator run is progress: it goes. */
+            state_lock();
+            const int unknown = state_entry("saves", f->path) == NULL;
+            state_unlock();
+            if (unknown && !saved_in_last_run(f->map, f->mtime)) {
+                is_conflict = 1;
+                want_up = 0;
+            }
+        }
         if (is_conflict && f) {
             conflict_policy p = c.policy;
             if (p == CONFLICT_NEWEST) {
@@ -3562,10 +3703,23 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                 res->deferred++; /* not onto a disk xemu has open */
                 continue;
             }
+            char gid[24];
+            if (r->map->save_layout[0] && rom_game_id(r, gid, sizeof gid) != 0) {
+                say_unreadable(r); /* once; failing again every sync mends nothing */
+                res->skipped++;
+                continue;
+            }
             char dest[PATH_MAX_LEN];
             int ok;
+            const char *why = "Download failed";
             if (r->map->save_layout[0]) {
-                ok = do_download_bundle(&c, save_id, r, slot, session_id, jget_str(op, "server_content_hash", ""), 1) == 0;
+                const int rc = do_download_bundle(&c, save_id, r, slot, session_id, jget_str(op, "server_content_hash", ""), 1);
+                if (rc == -3) {
+                    res->skipped++; /* came down before and wasn't the game's (said then) */
+                    continue;
+                }
+                if (rc == -2) why = "RomM's save doesn't match this game here";
+                ok = rc == 0;
             } else {
                 if (f)
                     str_copy(dest, sizeof dest, f->path);
@@ -3587,7 +3741,7 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                 events_add("save", "downloaded", rom_id, where, emu_name(r->map), is_conflict ? "Kept RomM's" : NULL);
             } else {
                 res->failed++;
-                events_add("save", "failed", rom_id, where, emu_name(r->map), "Download failed");
+                events_add("save", "failed", rom_id, where, emu_name(r->map), why);
             }
         } else {
             res->skipped++;
@@ -3883,7 +4037,7 @@ void download_notice(char *out, size_t n, const char *name, const char *system) 
     else snprintf(out, n, "%s\nDownloaded", name);
 }
 
-int sync_game(int rom_id, const char *name, const char *system, sync_game_result *out) {
+int sync_game(int rom_id, const char *name, const char *system, const char *problem, sync_game_result *out) {
     memset(out, 0, sizeof *out);
     config_lock();
     int ready = g_cfg.setup_complete && g_cfg.save_sync;
@@ -3901,7 +4055,9 @@ int sync_game(int rom_id, const char *name, const char *system, sync_game_result
     if (!notify_on()) return 0;
     char head[400];
     download_notice(head, sizeof head, name, system);
-    if (out->failed) {
+    if (problem && problem[0]) {
+        plat_notify("RommPS: %s, but %s", head, problem);
+    } else if (out->failed) {
         plat_notify("RommPS: %s, but its saves couldn't sync", head);
     } else if (out->conflicts) {
         plat_notify("RommPS: %s, with a save conflict to resolve", head);
