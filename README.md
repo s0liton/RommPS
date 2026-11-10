@@ -4,6 +4,8 @@
 
 A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN or onionHEN, with kstuff) and PS4 consoles (GoldHEN). Through my insatiable need to mod everything electronic I encounter, I had my 12.70 PS5 jailbroken the minute that P2JB was out. I maintain a RomM server to centralize all my _legal_ ROMs, saves, and savestates, which all my devices sync with, and the PS5 needs similar treatment.
 
+> **RommDeck lands this week.** Your Steam Deck has been feeling left out, so it's getting the same treatment: the same sync, the same app, built for the Deck and working with RetroDECK and EmuDeck. It lives in its own repository, [s0liton/RommDeck](https://github.com/s0liton/RommDeck). Watch it if you want to know the moment it's out.
+
 - **Save and state sync**
   - Monitors save file changes in the background, and uploads them as soon as they've changed. Periodic syncs also ensure that your PS4/5 always has the latest saves and save states.
   - A game's saves come down the moment it finishes downloading, so it's ready to play.
