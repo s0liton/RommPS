@@ -6,8 +6,10 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "version.h" /* version_cmp, version_valid */
+
 #define APP_NAME    "romm-sync"
-#ifndef APP_VERSION
+#ifndef APP_VERSION /* make VERSION=; a dev build's is "1.4.3-dev.12" (src/version.h) */
 #define APP_VERSION "1.4.2"
 #endif
 #ifndef APP_BUILD /* git describe of the build, from the Makefile */
@@ -58,9 +60,6 @@ typedef int (*copy_progress_fn)(void *ud, int64_t done, int64_t total);
 int copy_file(const char *src, const char *dst);
 int copy_file_progress(const char *src, const char *dst, copy_progress_fn cb, void *ud);
 
-/* -1, 0 or 1 as a is older, the same as or newer than b ("1.2.3", a leading
- * "v" and anything after the patch ignored). Unreadable counts as 0.0.0. */
-int version_cmp(const char *a, const char *b);
 /* The version a payload ELF says it is (its ROMM_SYNC_VERSION= tag, from
  * 1.1.0 on), or "" if it has none. */
 void payload_version(const void *elf, size_t len, char *out, size_t n);

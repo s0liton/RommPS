@@ -120,11 +120,17 @@ endif()
 
 # RommPS lives in the RomM Sync repository (platform/ps5/app/rommps): its
 # client for the payload's API (platform/ps5/app/src), the repository's cJSON
-# (the same the payload uses) and its QR encoder (third_party/qrcodegen.c).
+# (the same the payload uses), its QR encoder (third_party/qrcodegen.c) and
+# the payload's version rules (src/version.c).
 get_filename_component(ROMMPS_REPO ${ROOT}/../../../.. ABSOLUTE)
 target_sources(samples PRIVATE ${ROOT}/../src/rommps_api.cpp ${ROMMPS_REPO}/third_party/cJSON.c
-	${ROMMPS_REPO}/third_party/qrcodegen.c)
+	${ROMMPS_REPO}/third_party/qrcodegen.c ${ROMMPS_REPO}/src/version.c)
 target_include_directories(samples PRIVATE ${ROOT}/../src ${ROMMPS_REPO}/third_party)
+# A dev build's payload version (tools/package-app.sh), in place of the
+# release's kMinPayload in rommps_app.hpp.
+if(DEFINED ENV{ROMMPS_PAYLOAD_VERSION} AND NOT "$ENV{ROMMPS_PAYLOAD_VERSION}" STREQUAL "")
+	target_compile_definitions(samples PRIVATE "ROMMPS_PAYLOAD_VERSION=\"$ENV{ROMMPS_PAYLOAD_VERSION}\"")
+endif()
 
 if(PS5_HOST_REFERENCE)
 	add_executable(ps5-samples-host $<TARGET_OBJECTS:samples>)

@@ -13,7 +13,7 @@ ETA="$T/etaHEN/payloads" ONION="$T/OnionHEN/payloads" PLD="$T/pldmgr/payloads/ro
 fail() { echo "FAIL: $*"; echo "--- daemon log"; tail -30 "$T/daemon.log"; exit 1; }
 # A stand-in payload: an ELF header and, from 1.1.0 on, the version tag.
 elf() { if [[ -n "$1" ]]; then printf '\177ELF payload ROMM_SYNC_VERSION=%s\n' "$1"; else printf '\177ELF payload\n'; fi; }
-ver() { [[ -f "$1" ]] && { grep -ao 'ROMM_SYNC_VERSION=[0-9.]*' "$1" | cut -d= -f2 || echo untagged; } || echo none; }
+ver() { [[ -f "$1" ]] && { grep -ao 'ROMM_SYNC_VERSION=[0-9A-Za-z.+-]*' "$1" | cut -d= -f2 || echo untagged; } || echo none; }
 on()  { [[ -f "$1/romm-sync.elf.auto_start" ]] && echo on || echo off; }
 start() {
   ROMM_SYNC_APP_INSTALLED="${APP_INSTALLED:-0}" ROMM_SYNC_APP_VERSION="${APP_VERSION:-}" ROMM_SYNC_SELF_UPDATE="${SELF_UPDATE:-1}" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_HOMEBREW="$T/none" ROMM_SYNC_AUTOSTART="$ETA,$ONION" \
@@ -108,5 +108,25 @@ stop; : > "$T/daemon.log"; SELF_UPDATE=0 APP_INSTALLED=1 APP_VERSION=1.1.0 start
 grep -q "NOTIFY.*RommPS 1.1.0 is out of date" "$T/daemon.log" || fail "no hint to update an older RommPS: $(grep NOTIFY "$T/daemon.log")"
 stop; : > "$T/daemon.log"; SELF_UPDATE=0 start; sleep 1
 grep -q "^Install the RommPS app from your homebrew store" "$T/daemon.log" || fail "no hint to install RommPS: $(grep -A1 NOTIFY "$T/daemon.log")"
+
+echo "12. dev builds: over their release, under the next one, and in order among themselves"
+stop; start
+upload upload 1.4.3-dev.2 >/dev/null
+expect "a dev build over its release" "$(ver "$ETA/romm-sync.elf")" 1.4.3-dev.2
+upload upload 1.4.3-dev.10 >/dev/null
+expect "a newer dev build (10 after 2, not before)" "$(ver "$ETA/romm-sync.elf")" 1.4.3-dev.10
+upload upload 1.4.3-dev.9 >/dev/null
+expect "an older dev build" "$(ver "$ETA/romm-sync.elf")" 1.4.3-dev.10
+upload upload 1.4.2 >/dev/null
+expect "the release before it" "$(ver "$ETA/romm-sync.elf")" 1.4.3-dev.10
+upload upload 1.4.3 >/dev/null
+for d in "$ETA" "$ONION"; do expect "$d: the release over its dev builds" "$(ver "$d/romm-sync.elf")/$(on "$d")" 1.4.3/on; done
+expect "pldmgr: the release over its dev builds" "$(ver "$PLD")" 1.4.3
+upload upload 1.4.3-dev.11 >/dev/null
+expect "a dev build of a release that's out" "$(ver "$ETA/romm-sync.elf")" 1.4.3
+# At startup the newest copy wins, numbers as numbers.
+stop; elf 1.4.4-dev.9 > "$ETA/romm-sync.elf"; elf 1.4.4-dev.10 > "$ONION/romm-sync.elf"; start
+for d in "$ETA" "$ONION"; do expect "$d at startup" "$(ver "$d/romm-sync.elf")" 1.4.4-dev.10; done
+expect "pldmgr at startup" "$(ver "$PLD")" 1.4.4-dev.10
 
 echo PASS

@@ -79,6 +79,7 @@ RommPS starts with your HEN, and setup turns this on for you. Both HENs start `p
 
 - On the PS5, just update RommPS: from ProsperoStore (or other homebrew storefronts eventually), or by copying the new zip's folder over the old one. The background service comes with it, and RommPS swaps it in the next time you open it, once nothing is syncing or downloading. An older version never replaces a newer one. 
 - On the PS4, the payload updates itself from Settings.
+- Dev builds (the `dev-build` pre-release) are for testing. The next release installs over one like any other update.
 
 ## Setup Wizard
 

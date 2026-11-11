@@ -30,6 +30,7 @@ For each one, start from the old version actually installed and set up, then upd
 | previous RommPS + payload | payload's own update first, RommPS later | "RommPS is out of date" notice |
 | any, autostart off or its flag renamed to `.off` | update, reboot | autostart is back on in every HEN folder, no `.off` left |
 | any, old copy in pldmgr's autoload | update | the pldmgr copy is updated, its autoload list untouched |
+| a dev build, RommPS and payload | store update of RommPS, open it | payload swapped once idle, no dev copy left in any HEN folder |
 
 ## Boot and rest mode
 
@@ -51,3 +52,22 @@ Every PS5 release, alone or with the PS4, ships `PPSA76677.zip`. Only a PS4-only
 - The store: the catalog bot proposes the new version within 8 hours. For sooner, open the pull request yourself on the catalog (`apps/PPSA76677.json`: `version`, `artifact_url`, `sha256`, `icon_url`), from the account that owns the repository; it's merged and live within minutes.
 - The Store workflow checks every hour and opens an issue if the latest release has no zip, or the store still lists the old version 12 hours after publishing.
 - A release that went out without the zip anyway: `git checkout <tag> && tools/release-app.sh <tag> --upload` builds it here and attaches it.
+
+## Dev builds
+
+Every push to the `dev` branch publishes a dev build (`.github/workflows/dev.yml`) as the `dev-build` pre-release, in place of the last one. Its version is the next patch after the latest release plus the run number: after 1.4.2, `1.4.3-dev.12`. That's newer than 1.4.2 and older than 1.4.3, so whichever release comes next installs over it the usual way and nobody cleans up by hand. GitHub never makes a pre-release the latest release, and the in-app update and the Store workflow only look at that one, so nothing offers it to anyone who didn't go looking.
+
+For testers:
+
+- PS5: unzip `PPSA76677-dev.zip`, copy its `PPSA76677` folder to `/data/homebrew/` over the old one and open RommPS. It swaps in its payload once nothing is syncing, autostart copies included.
+- PS4: install `romm-sync-ps4.pkg` and open RommPS, or copy `romm-sync-ps4.elf` to `/data/payloads/`. The package keeps the release's version, so if the installer won't put it over that release, copy the payload instead.
+- A newer dev build goes over an older one the same way; an older one never replaces a newer one.
+- When the release is out: ProsperoStore offers it on the PS5 (a dev RommPS keeps the last release's `contentVersion`), Settings offers it on the PS4.
+
+After a release, merge `main` into `dev` before pushing to it again: the next dev build counts as newer than that release whether or not it has its fixes.
+
+Leave alone:
+
+- The tag: ProsperoStore's catalog bot picks up pre-releases too, and only skips a tag without a digit in it. The zip's name keeps it out of RecompStore.
+- `contentVersion` on `dev` until the release is out: a dev build of 1.4.3 refuses to build with 01.004.003, since the 1.4.3 release couldn't install over it.
+- `kMinPayload` and `APP_VERSION`: the dev build sets its own.
