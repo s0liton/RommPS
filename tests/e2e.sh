@@ -2277,4 +2277,68 @@ syncnow
 [[ "$(last conflicts)" == 0 && "$(last uploaded)" == 0 ]] || fail "the conflict came back: $(last conflicts) conflicts, $(last uploaded) up"
 [[ "$(head -c 4 "$B6/saves/Boot Kart (U).srm")$(eep)" == S2BBS2BB ]] || fail "RomM's save must stay: $(head -c 4 "$B6/saves/Boot Kart (U).srm") $(eep)"
 
+echo "33. a PC game comes down whole; elsewhere loose readmes and RomM's manuals stay on RomM, a folder's files don't; keep_all_files decides either way"
+PC="$T/pcgames"; PG="$PC/win/Mina the Hollower"; SG="$PC/saturn/Disc Quest (USA)"; P3="$PC/ps3/Sky Quest [BLUS00001]"
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":99,"slug":"win","name":"Windows"}' >/dev/null
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":89,"slug":"saturn","name":"Saturn"}' >/dev/null
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":88,"slug":"ps3","name":"PlayStation 3"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":990,"platform_id":99,"name":"Mina the Hollower","fs_name":"Mina the Hollower",
+  "files":[{"id":9901,"file_name":"Mina.exe","content":"MZ-MINA"},
+           {"id":9902,"file_name":"steam_appid.txt","sub":"steam_settings","content":"1234560"},
+           {"id":9903,"file_name":"steam_interfaces.txt","sub":"steam_settings","content":"SteamClient021"},
+           {"id":9904,"file_name":"title.png","sub":"data","content":"PNG"},
+           {"id":9905,"file_name":"Soundtrack.flac","category":"soundtrack","content":"OST"}]}' >/dev/null
+# Unpacked into a folder of its own inside its folder: its readme there is as loose as any.
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":890,"platform_id":89,"name":"Disc Quest","fs_name":"Disc Quest (USA)",
+  "files":[{"id":8901,"file_name":"Disc Quest (USA).cue","sub":"Disc Quest (USA)","content":"CUE"},
+           {"id":8902,"file_name":"Disc Quest (USA).bin","sub":"Disc Quest (USA)","content":"BIN-DATA"},
+           {"id":8903,"file_name":"readme.txt","sub":"Disc Quest (USA)","content":"README"},
+           {"id":8904,"file_name":"Disc Quest Manual.html","sub":"Disc Quest (USA)","category":"manual","content":"MANUAL"}]}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":880,"platform_id":88,"name":"Sky Quest","fs_name":"Sky Quest [BLUS00001]",
+  "files":[{"id":8801,"file_name":"PS3_DISC.SFB","content":"SFB"},
+           {"id":8802,"file_name":"readme.txt","content":"README"},
+           {"id":8803,"file_name":"ICON0.PNG","sub":"PS3_GAME","content":"ICON"},
+           {"id":8804,"file_name":"PARAM.SFO","sub":"PS3_GAME","content":"SFO"},
+           {"id":8805,"file_name":"EBOOT.BIN","sub":"PS3_GAME/USRDIR","content":"EBOOT"},
+           {"id":8806,"file_name":"strings.txt","sub":"PS3_GAME/USRDIR","content":"STRINGS"}]}' >/dev/null
+pcgames() { # keep_all_files on the profile ($1) and its win, saturn and ps3 entries ($2-$4): true, false, or "" for none
+  python3 - "$API" "$PC" "$@" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, root, on = sys.argv[1], sys.argv[2], sys.argv[3:7]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+p = {"id": "pcgames", "name": "PC Games", "enabled": True, "root": root, "rom_dir": "{root}/{platform}", "sync_saves": False,
+     "platforms": [{"romm": [s], "dir": s} for s in ("win", "saturn", "ps3")]}
+for where, v in zip([p] + p["platforms"], on):
+    if v: where["keep_all_files"] = v == "true"
+profiles = [x for x in cfg["profiles"] if x.get("id") != "pcgames"] + [p]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+}
+pcget() { # downloads game $1; $total: the bytes its download counted on
+  post /api/download "{\"rom_id\":$1}" >/dev/null
+  [[ "$(waitjob "$1" done)" == done* ]] || fail "game $1 didn't download: $(job "$1")"
+  total=$(curl -sf "$API/api/downloads" | python3 -c "import json,sys; print([int(d['total']) for d in json.load(sys.stdin) if d.get('rom_id') == $1][0])")
+}
+files() { (cd "$1" && find . -type f | LC_ALL=C sort | tr '\n' ' '); }
+mina="./Mina.exe ./Soundtrack.flac ./data/title.png ./steam_settings/steam_appid.txt ./steam_settings/steam_interfaces.txt "
+dq="./Disc Quest (USA)/Disc Quest (USA).bin ./Disc Quest (USA)/Disc Quest (USA).cue "
+sky="./PS3_DISC.SFB ./PS3_GAME/ICON0.PNG ./PS3_GAME/PARAM.SFO ./PS3_GAME/USRDIR/EBOOT.BIN ./PS3_GAME/USRDIR/strings.txt "
+pcgames "" "" "" ""
+pcget 990; [[ "$(files "$PG")" == "$mina" && "$total" == 34 ]] || fail "a PC game must come down whole: $(files "$PG"), $total bytes"
+[[ "$(cat "$PG/steam_settings/steam_appid.txt")" == 1234560 ]] || fail "steam_appid.txt came down wrong"
+pcget 890; [[ "$(files "$SG")" == "$dq" && "$total" == 11 ]] || fail "a loose readme and RomM's manual must stay on RomM: $(files "$SG"), $total bytes"
+pcget 880; [[ "$(files "$P3")" == "$sky" && "$total" == 22 ]] || fail "a game's own folders come down whole, its loose readme doesn't: $(files "$P3"), $total bytes"
+# The profile's say for all its platforms, a platform entry's over it. Turned off, nothing it kept goes.
+pcgames false "" true ""
+pcget 990; [[ "$total" == 7 && "$(files "$PG")" == "$mina" ]] || fail "keep_all_files off must not remove what came before: $(files "$PG"), $total bytes"
+pcget 890; [[ "$(files "$SG")" == "$dq./Disc Quest (USA)/Disc Quest Manual.html ./Disc Quest (USA)/readme.txt " && "$total" == 23 ]] \
+  || fail "keep_all_files on a ROM platform must bring every file: $(files "$SG"), $total bytes"
+pcget 880; [[ "$total" == 11 && "$(files "$P3")" == "$sky" ]] || fail "keep_all_files false must count no readme or artwork: $(files "$P3"), $total bytes"
+for g in 990 880; do post /api/delete "{\"rom_id\":$g}" >/dev/null || fail "removing game $g refused"; done
+[[ ! -e "$PG" && ! -e "$P3" ]] || fail "removing a game must take every file it has: $(files "$PG") / $(files "$P3")"
+pcget 990; [[ "$(files "$PG")" == "./Mina.exe " ]] || fail "keep_all_files false on a PC game leaves the extras on RomM: $(files "$PG")"
+pcget 880; [[ "$(files "$P3")" == "./PS3_DISC.SFB ./PS3_GAME/PARAM.SFO ./PS3_GAME/USRDIR/EBOOT.BIN " ]] \
+  || fail "keep_all_files false leaves readmes and artwork wherever they are: $(files "$P3")"
+
 echo "PASS"
