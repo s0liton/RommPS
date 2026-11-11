@@ -877,6 +877,21 @@ for _ in $(seq 1 20); do [[ -f "$XA/games/Test Quest (USA).bin" ]] && break; sle
 [[ -f "$XA/games/Test Quest (USA).bin" ]] || fail "an extra playing from another extra's folder must get copies there"
 setup_shared; sleep 1; setup_shared; sleep 1
 [[ -f "$XA/games/Test Quest (USA).bin" ]] || fail "copies another emulator plays from must never be cleared"
+# A card in one emulator's folder is a stray of that emulator's games only:
+# named as PSX-like names them (by serial), it's nobody's, never one to move
+# over into PSX-like's folder (how SwanStationPS5 lost a card to PSXS5); in
+# the wrong folder of Swan-like's own, it goes to Swan-like's save folder,
+# though every emulator here plays that game.
+mkdir -p "$T/swanlike/saves/old"
+printf 'swan-card' > "$T/swanlike/saves/SLUS-12345_1.mcd"
+printf 'old-swan-card' > "$T/swanlike/saves/old/Test Quest (USA).mcd"
+syncnow
+st=$(curl -sf "$API/api/status" | python3 -c "import json,sys; print(sorted((s['path'], s['expected_path']) for s in json.load(sys.stdin)['sync']['strays'] if '/swanlike/' in s['path']))")
+[[ "$st" != *"SLUS-12345_1.mcd"* ]] || fail "a card in one emulator's folder must never be another emulator's stray: $st"
+[[ "$st" == "[('$T/swanlike/saves/old/Test Quest (USA).mcd', '$T/swanlike/saves/Test Quest (USA).mcd')]" ]] \
+  || fail "a card in the wrong folder of its own emulator is that emulator's stray: $st"
+[[ "$(cat "$T/swanlike/saves/SLUS-12345_1.mcd")" == swan-card ]] || fail "a card nobody's stray must be left alone"
+rm -r "$T/swanlike/saves/SLUS-12345_1.mcd" "$T/swanlike/saves/old"
 [[ ! -s "$T/data/mounts.txt" ]] || fail "a folder another emulator plays from must not get a mount"
 note=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print([m['mount_note'] for m in json.load(sys.stdin) if m['profile'] == 'PSX-mount'])")
 [[ "$note" == *"Swan-like plays the games in its folder too"* ]] || fail "why it has no mount must be said: $note"
