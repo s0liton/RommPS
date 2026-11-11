@@ -1695,6 +1695,22 @@ grep -q "Nameless.nsp: RomM no longer has game 909, looked for again" "$T/daemon
 syncnow
 [[ "$(nxid)" == 919 ]] || fail "the game wasn't matched again under its new id: $(nxid)"
 rm "$NX/roms/Nameless.nsp"
+echo "    no title id in the name (No-Intro's) nor in RomM: read from the file, with the emulator's prod.keys"
+SNAP="New Pokemon Snap (World) (En,Ja,Fr,De,Es,It,Zh,Ko).xci"
+python3 "$ROOT/tests/make_switch.py" xci "$NX/roms/$SNAP" 0100F4300BF2C000 "$T/made-up.keys"
+curl -skf -X POST "$SV/_admin/rom" -d "{\"id\":920,\"platform_id\":90,\"name\":\"New Pokemon Snap\",\"fs_name\":\"$SNAP\"}" >/dev/null
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":920,\"slot\":\"autosave\",\"file_name\":\"0100F4300BF2C000.zip\",\"content_b64\":\"$(python3 -c "
+import base64,io,zipfile
+b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('0100F4300BF2C000/SaveData.bin','snap-from-romm'); z.close()
+print(base64.b64encode(b.getvalue()).decode())")\"}" >/dev/null
+syncnow
+[[ ! -e "$NS/$U1/0100F4300BF2C000" ]] || fail "a save placed with no way to know the game's id"
+grep -q "no header_key in $NX/keys/prod.keys" "$T/daemon.log" || fail "missing keys weren't said"
+mkdir -p "$NX/keys" && cp "$T/made-up.keys" "$NX/keys/prod.keys"   # where RomM's go for this profile
+syncnow
+[[ "$(cat "$NS/$U1/0100F4300BF2C000/SaveData.bin" 2>/dev/null)" == "snap-from-romm" ]] \
+  || fail "the save of a game named without its title id must land in its folder: $(find "$NS" -type f)"
+rm -r "$NX/roms/$SNAP" "$NX/keys" "$NS/$U1/0100F4300BF2C000"
 echo "    Switch firmware is one set: RomM's goes only where there's none of the user's"
 curl -skf -X POST "$SV/_admin/firmware" -d '{"platform_id":90,"file_name":"aaaa.nca","content":"romm-fw-a"}' >/dev/null
 curl -skf -X POST "$SV/_admin/firmware" -d '{"platform_id":90,"file_name":"bbbb.cnmt.nca","content":"romm-fw-b"}' >/dev/null

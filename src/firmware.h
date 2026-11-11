@@ -36,4 +36,10 @@
  * asked. *failed (may be NULL) counts the ones that didn't come down. */
 int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int only_platform, int *failed);
 
+/* Where the emulator keeps a BIOS file of this name: where RomM's copy goes
+ * by the rules above, the user's own being there too (prod.keys in Eden's
+ * keys folder). out gets the path even when there's nothing at it; 0 when
+ * there is. */
+int firmware_find(const profile_map *m, const char *name, char *out, size_t n);
+
 #endif

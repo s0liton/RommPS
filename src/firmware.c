@@ -70,6 +70,27 @@ static void target_dir(const profile_map *m, const cJSON *rules, char *out, size
     str_template(out, n, tpl, vars);
 }
 
+int firmware_find(const profile_map *m, const char *name, char *out, size_t n) {
+    cJSON *rules = rules_for(m);
+    char dir[PATH_MAX_LEN], sub[PATH_MAX_LEN] = "";
+    target_dir(m, rules, dir, sizeof dir);
+    const cJSON *e;
+    cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(rules, "by_ext"))
+        if (cJSON_IsString(e) && str_ieq(path_ext(name), e->string)) str_copy(sub, sizeof sub, e->valuestring);
+    cJSON_Delete(rules);
+    out[0] = 0;
+    if (sub[0] == '/') { /* a folder of its own */
+        str_copy(dir, sizeof dir, sub);
+    } else if (sub[0] && !strchr(sub, '{') && !strstr(sub, "..")) {
+        char in[PATH_MAX_LEN];
+        path_join(in, sizeof in, dir, sub);
+        str_copy(dir, sizeof dir, in);
+    }
+    if (!dir[0]) return -1;
+    path_join(out, n, dir, name);
+    return file_exists(out) ? 0 : -1;
+}
+
 /* A file RomM really has, with a name that can't leave the folder. */
 static int usable(const cJSON *f) {
     const char *name = jget_str(f, "file_name", "");
