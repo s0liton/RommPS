@@ -1,10 +1,11 @@
-RommPS's interface sounds (assets/rommps/sounds)
+RommPS's and RommDeck's interface sounds (assets/rommps/sounds in RommPS,
+assets/sounds in RommDeck)
 
 Sound effects from Konami's Metal Gear Solid series, (c) Konami Digital
-Entertainment. Supplied by RommPS's author, s0liton, who uses them with
-Konami's permission under its creative artists programme, in a
-non-commercial title. They are not covered by RommPS's own licence and may
-not be reused apart from it.
+Entertainment. Supplied by RommPS's and RommDeck's author, s0liton, who uses
+them with Konami's permission under its creative artists programme, in
+non-commercial titles. They are not covered by RommPS's or RommDeck's own
+licence and may not be reused apart from them.
 
 The cursor, select, tab, switch and setting sounds are mgs1-menu-move;
 the rest come from the first set supplied.

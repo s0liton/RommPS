@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libpipewire-0.3-dev libpulse-dev libasound2-dev libudev-dev libdbus-1-dev libdrm-dev libgbm-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# Its licence texts are in platform/steamdeck/licenses/SDL3: a new tag wants them copied again.
 ARG SDL_TAG=release-3.2.10
 RUN git clone --depth 1 --branch "$SDL_TAG" https://github.com/libsdl-org/SDL.git /tmp/SDL \
     && cmake -S /tmp/SDL -B /tmp/SDL/build -G Ninja -DCMAKE_BUILD_TYPE=Release \
