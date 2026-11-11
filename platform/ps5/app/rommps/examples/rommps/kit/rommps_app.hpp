@@ -307,7 +307,13 @@ class App
     // (assets/rommps/romm-sync.elf, version kMinPayload): it starts it when
     // none is running, puts it in place of an older one (never of a newer
     // one), and keeps the copies the console starts it from up to date.
+    // A dev build carries a dev payload, whose version tools/package-app.sh
+    // hands in; the release's stays here.
+#ifdef ROMMPS_PAYLOAD_VERSION
+    static constexpr const char *kMinPayload = ROMMPS_PAYLOAD_VERSION;
+#else
     static constexpr const char *kMinPayload = "1.4.2";
+#endif
     bool payload_too_old() const;
     void start_payload(); // sends the payload to the HEN's loader
     // Sending it, or RomM Sync is running and not answering yet (starting up,

@@ -1,0 +1,102 @@
+# Builds the PS5 and PS4 payloads and the PS4 package in the consoles' SDK
+# images (tools/ps5-build.sh, tools/ps4-build.sh), into the artifact
+# "payloads". Shared by release.yml, which signs them for in-app updates, and
+# dev.yml, which doesn't. This workflow never touches a release.
+name: Payloads
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: "Commit to build"
+        type: string
+        required: true
+      version:
+        description: "Baked into the payloads, e.g. 1.4.0, or 1.4.1-dev.12 for a dev build"
+        type: string
+        required: true
+      pkg_version:
+        description: "The PS4 package's version when it isn't version's: a dev build keeps the release before it"
+        type: string
+        default: ""
+      sign:
+        description: "Add the signed manifests in-app updates need (src/update.c)"
+        type: boolean
+        default: false
+    secrets:
+      RELEASE_SIGNING_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Same images tools/ps5-build.sh and tools/ps4-build.sh use, cached between
+      # runs. The cache only saves time, so failing to write it must not fail the build.
+      - uses: docker/build-push-action@v6
+        with:
+          context: platform/ps5/docker
+          tags: romm-sync-ps5sdk:v0.43
+          load: true
+          cache-from: type=gha,scope=ps5
+          cache-to: type=gha,mode=max,scope=ps5,ignore-error=true
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: platform/ps4/docker
+          tags: romm-sync-ps4sdk:v0.9-crt1352-oo0.5.4
+          load: true
+          cache-from: type=gha,scope=ps4
+          cache-to: type=gha,mode=max,scope=ps4,ignore-error=true
+
+      - name: Build payloads
+        env:
+          VERSION: ${{ inputs.version }}
+          PKG_VERSION: ${{ inputs.pkg_version }}
+        run: |
+          tools/ps5-build.sh VERSION="$VERSION"
+          tools/ps4-build.sh ps4-pkg VERSION="$VERSION" ${PKG_VERSION:+PKG_VERSION="$PKG_VERSION"}
+          for elf in build/ps5/romm-sync.elf build/ps4/romm-sync-ps4.elf; do
+            grep -aq "ROMM_SYNC_VERSION=$VERSION\$" "$elf" || { echo "::error::$elf isn't $VERSION"; exit 1; }
+          done
+          mkdir dist
+          cp build/ps5/romm-sync.elf build/ps4/romm-sync-ps4.elf build/ps4/romm-sync-ps4.pkg dist/
+
+      # A manifest and signature per console let the payload verify in-app
+      # updates (src/update.c): manifest.json/.sig for romm-sync.elf (PS5),
+      # manifest-ps4.json/.sig for romm-sync-ps4.elf. The secret is the
+      # 64-hex-character key from tools/release-sign.c; "check" fails unless
+      # the payload trusts that key.
+      - name: Sign
+        if: inputs.sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::RELEASE_SIGNING_KEY secret is not set; in-app updates need a signed release."
+            exit 1
+          fi
+          make tools
+          sign() {
+            build/host/release-sign manifest "$VERSION" "dist/$1" > "dist/$2.json"
+            build/host/release-sign sign "dist/$2.json" > "dist/$2.sig"
+            build/host/release-sign check "dist/$2.json" "dist/$2.sig"
+          }
+          sign romm-sync.elf manifest
+          sign romm-sync-ps4.elf manifest-ps4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: payloads
+          path: dist/
+          if-no-files-found: error

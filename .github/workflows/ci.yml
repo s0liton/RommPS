@@ -1,10 +1,12 @@
-# Host build and end-to-end test against the mock RomM server.
+# Host build and end-to-end test against the mock RomM server. dev.yml runs it
+# too: a dev build that fails it isn't published.
 name: CI
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_call:
 
 jobs:
   host:

@@ -180,11 +180,13 @@ static void *app_main(void *arg) {
     LOGI("web UI on http://%s:%d", ip[0] ? ip : "127.0.0.1", port);
     /* With RommPS installed, it's where the user sees all this. An older
      * RommPS, though, starts its own older copy now and then (1.1.0 does when
-     * this one is slow to answer), so it's worth updating. */
+     * this one is slow to answer), so it's worth updating. A dev build's
+     * RommPS keeps the store version of the release before it, which is no
+     * reason to nag a tester. */
     int quiet = plat_app_installed();
     char app_version[32];
     plat_app_version(app_version, sizeof app_version);
-    if (quiet && app_version[0] && version_cmp(app_version, APP_VERSION) < 0) {
+    if (quiet && app_version[0] && !strchr(APP_VERSION, '-') && version_cmp(app_version, APP_VERSION) < 0) {
         LOGI("RommPS %s is older than RomM Sync %s", app_version, APP_VERSION);
         plat_notify("%s %s is out of date\nUpdate it from your homebrew store", plat_product(), app_version);
     } else if (quiet) {

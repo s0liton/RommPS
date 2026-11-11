@@ -117,21 +117,12 @@ static int has_pid_cb(pid_t pid, const char *tdname, void *vctx) {
     return pid == c->pid && !strcmp(tdname, CONSOLE_PROC_NAME);
 }
 
-/* "1.2.3" into numbers; anything after the patch is ignored. */
-static int parse_version(const char *s, int v[3]) {
-    v[0] = v[1] = v[2] = 0;
-    if (*s == 'v') s++;
-    return sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]) >= 2 ? 0 : -1;
-}
-
 /* Whether this copy should take over from one running `have`. A version that
- * doesn't parse (a hand-made build) is sent on purpose, so it takes over. */
+ * doesn't parse (a hand-made build) is sent on purpose, so it takes over. A
+ * release takes over from its dev builds (src/version.h). */
 static int takes_over(const char *mine, const char *have) {
-    int x[3], y[3];
-    if (parse_version(mine, x) || parse_version(have, y)) return 1;
-    for (int i = 0; i < 3; i++)
-        if (x[i] != y[i]) return x[i] > y[i];
-    return 0;
+    if (!version_valid(mine) || !version_valid(have)) return 1;
+    return version_cmp(mine, have) > 0;
 }
 
 /* Held for as long as this copy runs; the kernel lets go when the process
