@@ -98,6 +98,7 @@ unit: build/host/gcmem_test build/host/jsonlean_cli build/host/ps2card_test buil
 	build/host/ps2card_test
 	tests/gameid_test.sh build/host/gameid_cli
 	python3 tests/jsonlean_test.py build/host/jsonlean_cli
+	build/host/zip_test
 
 build/host/jsonlean_cli: tests/jsonlean_cli.c src/jsonlean.c src/jsonlean.h
 	@mkdir -p $(dir $@)
@@ -116,6 +117,12 @@ build/host/ps2card_test: tests/ps2card_test.c src/ps2card.c src/ps2card.h src/ut
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(filter-out -O2,$(COMMON_CFLAGS)) -g -fsanitize=address,undefined -o $@ $(filter %.c,$^) \
 		third_party/md5.c third_party/libchdr/deps/zstd/zstddeclib.c -lz -lpthread
+
+# Save zips: deflated, read back, and hashed as RomM hashes them.
+unit: build/host/zip_test
+build/host/zip_test: tests/zip_test.c src/zip.c src/zip.h src/util.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(filter-out -O2,$(COMMON_CFLAGS)) -g -fsanitize=address,undefined -o $@ $(filter %.c,$^) third_party/md5.c -lz -lpthread
 
 tools: build/host/release-sign
 

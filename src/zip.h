@@ -1,4 +1,4 @@
-/* Zip files: writing uses stored entries, reading also handles deflate. */
+/* Zip files: written deflated, read stored or deflated. */
 #ifndef ROMM_ZIP_H
 #define ROMM_ZIP_H
 
@@ -10,6 +10,7 @@ typedef struct {
     const char *name; /* entry name inside the zip, "/" separated */
 } zip_member;
 
+/* 0, -1, or -2 for files past what a zip without zip64 holds (4 GB). */
 int zip_write(const char *zip_path, const zip_member *members, int count);
 
 /* Writes a zip holding each file under its base name. */

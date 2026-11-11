@@ -1165,6 +1165,7 @@ static void record_save(const local_file *f, int save_id, const char *hash) {
     }
     if (save_id) jset_num(e, "save_id", save_id);
     jset_num(e, "synced_at", (double)time(NULL));
+    state_entry_remove("too_big", f->path);
     state_entry_remove("conflicts", f->path);
     state_entry_remove("unplaced", f->path);
     state_unlock();
@@ -1984,6 +1985,33 @@ static void scan_bundles(scan_ctx *c) {
     }
 }
 
+/* RomM's upload limit, as its 413 gives it ("Request body exceeds the
+ * maximum allowed size of 536870912 bytes"): a save zip over it isn't sent.
+ * Kept a day, as the server's admin can raise it (MAX_ASSET_UPLOAD_SIZE_BYTES
+ * in RomM's environment) and nothing says when they have. 0 when unknown,
+ * which a reverse proxy's 413 leaves it. */
+#define UPLOAD_LIMIT_KEEP_SEC (24 * 3600)
+
+static int64_t upload_limit(void) {
+    state_lock();
+    const cJSON *s = state_section("server");
+    const double limit = jget_num(s, "upload_limit", 0), at = jget_num(s, "upload_limit_at", 0);
+    state_unlock();
+    return limit > 0 && (double)time(NULL) - at < UPLOAD_LIMIT_KEEP_SEC ? (int64_t)limit : 0;
+}
+
+static void learn_upload_limit(const cJSON *reply) {
+    static const char said[] = "maximum allowed size of ";
+    const char *at = strstr(jget_str(reply, "detail", ""), said);
+    const long long limit = at ? strtoll(at + sizeof said - 1, NULL, 10) : 0;
+    if (limit <= 0) return;
+    state_lock();
+    cJSON *s = state_section("server");
+    jset_num(s, "upload_limit", (double)limit);
+    jset_num(s, "upload_limit_at", (double)time(NULL));
+    state_unlock();
+}
+
 /* A GameCube save from RomM that's a memory card or a single .gci: the
  * game's saves on it replace the game's .gci files here. 1 when placed, 0
  * when it's neither (a zip), -1 when it can't be used. The bundle is listed
@@ -2363,12 +2391,21 @@ static int do_upload(const scan_ctx *c, const local_file *f, int session_id, int
         char zip[PATH_MAX_LEN];
         bundle b;
         snprintf(zip, sizeof zip, "%s/tmp/upload-%d.zip", plat_data_dir(), f->rom_id);
-        if (bundle_reopen(f, &b) != 0 || bundle_zip(&b, zip) != 0) {
+        int zipped = -1;
+        if (bundle_reopen(f, &b) != 0 || (zipped = bundle_zip(&b, zip)) != 0) {
             bundle_free(&b);
-            if (status_out) *status_out = 0;
+            /* Too big for a zip is too big for RomM: the same as its 413. */
+            if (status_out) *status_out = zipped == -2 ? 413 : 0;
             return -1;
         }
         bundle_free(&b);
+        const int64_t limit = upload_limit(), size = file_size(zip);
+        if (limit > 0 && size > limit) { /* RomM's 413, without sending it all first */
+            LOGI("%s: %lld bytes zipped, over RomM's limit of %lld", f->path, (long long)size, (long long)limit);
+            unlink(zip);
+            if (status_out) *status_out = 413;
+            return -1;
+        }
         j = romm_upload("POST", path, "saveFile", zip, f->upload_name, &st);
         unlink(zip);
     } else if (!strcmp(f->map->save_format, "nds-dsv")) {
@@ -2390,6 +2427,7 @@ static int do_upload(const scan_ctx *c, const local_file *f, int session_id, int
     }
     if (status_out) *status_out = st;
     if (st == 404 && f->rom) forget_gone_rom(f->rom);
+    if (st == 413) learn_upload_limit(j);
     int ok = (st == 200 || st == 201) && j;
     if (card_up[0]) { /* the card RomM has now is the one kept here */
         char cache[PATH_MAX_LEN];
@@ -2404,6 +2442,37 @@ static int do_upload(const scan_ctx *c, const local_file *f, int session_id, int
     }
     cJSON_Delete(j);
     return ok ? 0 : -1;
+}
+
+/* RomM turns away a save over its upload limit (HTTP 413), and would again
+ * on every sync after. So the version refused is written down, and the save
+ * goes up again only once it changes (and fits, when RomM said its limit).
+ * The notification is for the first one; a game that saves every few
+ * minutes would make a hobby of it otherwise. */
+static int refused_as_too_big(const local_file *f) {
+    state_lock();
+    const cJSON *e = state_entry("too_big", f->path);
+    const int same = e && f->hash[0] && !strcmp(jget_str(e, "hash", ""), f->hash);
+    state_unlock();
+    return same;
+}
+
+static void say_too_big(const local_file *f) {
+    state_lock();
+    const int first = state_entry("too_big", f->path) == NULL;
+    jset_str(state_entry_ensure("too_big", f->path), "hash", f->hash);
+    state_save();
+    state_unlock();
+    const long long limit = (long long)upload_limit();
+    if (limit) LOGW("%s: over RomM's upload limit of %lld bytes; sent again once it changes", f->path, limit);
+    else LOGW("%s: too big for the server; sent again once it changes", f->path);
+    events_add("save", "failed", f->rom_id, f->path, emu_name(f->map), "Too big for RomM");
+    if (!first || !notify_on() || !f->rom) return;
+    char name[256];
+    game_name(f->rom, name, sizeof name);
+    /* RomM's limit is a setting, which is worth knowing; a proxy's isn't ours to name. */
+    if (limit) plat_notify("RommPS: %s\nIts save is over RomM's %lld MB upload limit (MAX_ASSET_UPLOAD_SIZE_BYTES)", name, limit >> 20);
+    else plat_notify("RommPS: %s\nIts save is too big for the server", name);
 }
 
 /* Where a downloaded save goes when the game has no local save yet. */
@@ -3473,11 +3542,13 @@ static void server_id(char *out, size_t n) {
 }
 
 static void forget_server_records(void) {
-    static const char *const sections[] = {"roms", "saves", "states", "conflicts", "memcards"};
+    static const char *const sections[] = {"roms", "saves", "states", "conflicts", "memcards", "too_big"};
     for (size_t i = 0; i < sizeof sections / sizeof sections[0]; i++) {
         cJSON *sec = state_section(sections[i]);
         while (sec->child) cJSON_Delete(cJSON_DetachItemViaPointer(sec, sec->child));
     }
+    cJSON_DeleteItemFromObjectCaseSensitive(state_section("server"), "upload_limit");
+    cJSON_DeleteItemFromObjectCaseSensitive(state_section("server"), "upload_limit_at");
 }
 
 void sync_new_pairing(void) {
@@ -3676,6 +3747,11 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
             }
         }
 
+        if (want_up && f && refused_as_too_big(f)) {
+            LOGD("%s: still too big for RomM, not sent", f->path);
+            res->skipped++; /* said when it was refused */
+            continue;
+        }
         if (want_up && f) {
             long ust = 0;
             if (do_upload(&c, f, session_id, overwrite, &ust) == 0) {
@@ -3687,6 +3763,9 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                 /* The server copy changed since negotiate. */
                 record_conflict(f, op);
                 res->conflicts++;
+            } else if (ust == 413) {
+                say_too_big(f);
+                res->skipped++;
             } else {
                 res->failed++;
                 events_add("save", "failed", rom_id, f->path, emu_name(f->map), "Upload failed");
@@ -4170,7 +4249,8 @@ int sync_resolve_conflict(const char *path, const char *keep, char *err, int en)
     if (local) {
         long st = 0;
         rc = do_upload(&c, f, 0, 1, &st);
-        if (rc) snprintf(err, (size_t)en, "upload failed (HTTP %ld)", st);
+        if (rc && st == 413) snprintf(err, (size_t)en, "the save is too big for RomM");
+        else if (rc) snprintf(err, (size_t)en, "upload failed (HTTP %ld)", st);
     } else if (f->is_bundle) {
         rc = do_download_bundle(&c, (int)jget_num(e, "save_id", 0), f->rom, f->slot, 0, jget_str(e, "server_hash", ""), 1);
         if (rc) snprintf(err, (size_t)en, "download failed");

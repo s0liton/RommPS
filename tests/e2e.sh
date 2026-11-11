@@ -1676,6 +1676,40 @@ syncnow
 [[ "$(cat "$NS/$U2/0100ABCD12340000/SaveData.bin")" == "sword-u2" ]] || fail "another user's saves must stay as they are"
 [[ "$(cat "$NS/$U1/0100AAAA00000000/SaveData.bin" 2>/dev/null)" == "old-from-switch" ]] \
   || fail "RomM's Switch save must land in the user's folder: $(find "$NS" -type f)"
+echo "    a save made at full size (Eden) goes up deflated; one over RomM's upload limit is said once, and not sent again until it changes and fits"
+curl -skf -X POST "$SV/_admin/max_upload" -d '{"bytes": 1048576}' >/dev/null
+SW="$NS/$U1/0100ABCD12340000"
+truncate -s 48M "$SW/Snap.bin"
+printf 'photo' | dd of="$SW/Snap.bin" bs=1 seek=$((30 << 20)) conv=notrunc 2>/dev/null
+syncnow
+swzip() { curl -skf "$SV/_admin/dump" | python3 -c "
+import hashlib,io,json,sys,zipfile
+s=sorted((x for x in json.load(sys.stdin)['saves'] if x['rom_id']==905), key=lambda x: (x['updated_at'], x['id']))[-1]
+z=zipfile.ZipFile(io.BytesIO(s['content'].encode('latin1')))
+print(s['file_size_bytes'] < 1048576, {i.filename: (i.compress_type, hashlib.md5(z.read(i)).hexdigest()) for i in z.infolist()}.get(sys.argv[1]))" "$1"; }
+[[ "$(swzip 0100ABCD12340000/Snap.bin)" == "True (8, '$(md5sum < "$SW/Snap.bin" | cut -c1-32)')" ]] \
+  || fail "a big save that's mostly zeros must go up deflated: $(swzip 0100ABCD12340000/Snap.bin)"
+refused() { curl -skf "$SV/_admin/dump" | python3 -c "import json,sys; print(json.load(sys.stdin)['refused_uploads'])"; }
+told() { echo "$(grep -c "over RomM's 1 MB upload limit (MAX_ASSET_UPLOAD_SIZE_BYTES)" "$T/daemon.log")/$(curl -sf "$API/api/events?rom_id=905" | grep -o "Too big for RomM" | wc -l)"; }
+head -c 1500000 /dev/urandom > "$SW/Noise.bin"
+syncnow
+[[ "$(refused) $(told) $(last failed)" == "1 1/1 0" ]] || fail "a save RomM refuses as too big must be said once: $(refused) refused, $(told) said, $(last failed) failed"
+syncnow
+[[ "$(refused) $(told)" == "1 1/1" ]] || fail "a save refused as too big must not go again until it changes: $(refused) refused, $(told) said"
+sleep 1.1; head -c 1500000 /dev/urandom > "$SW/Noise.bin"
+syncnow
+# Changed, and still over the limit RomM gave: zipped and measured, not sent.
+[[ "$(refused) $(told)" == "1 1/2" ]] || fail "a changed save over RomM's limit must not be sent, and only logged: $(refused) refused, $(told) said"
+[[ "$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['server'].get('upload_limit'))" "$T/data/state.json")" == 1048576 ]] \
+  || fail "RomM's upload limit must be taken from its 413"
+rm "$SW/Noise.bin" "$SW/Snap.bin"
+syncnow
+[[ "$(refused) $(swzip 0100ABCD12340000/SaveData.bin)" == "1 True (8, '$(printf sword-u1 | md5sum | cut -c1-32)')" ]] \
+  || fail "once it fits it goes up: $(refused) refused, $(swzip 0100ABCD12340000/SaveData.bin)"
+python3 -c "import json,sys; sys.exit(1 if json.load(open(sys.argv[1])).get('too_big') else 0)" "$T/data/state.json" \
+  || fail "a save that went up must not stay refused"
+# RommPS keeps the 1 MB it learned for a day; the saves the rest of this test sends are bytes.
+curl -skf -X POST "$SV/_admin/max_upload" -d '{"bytes": 0}' >/dev/null
 # The emulator syncing this user's saves itself (ProsperoEden's save-sync.json): left alone, and said why.
 printf '{"profiles": [{"profile": "%s", "url": "https://elsewhere.example", "token": "x"}]}' "$U1" > "$NX/sync.json"
 nxsaves "{root}/sync.json"
