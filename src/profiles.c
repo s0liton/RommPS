@@ -968,6 +968,7 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
             str_copy(m->state_name, sizeof m->state_name, jstr(p, e, "state_name", "{rom_stem}{ext}"));
             str_copy(m->save_format, sizeof m->save_format, jstr(p, e, "save_format", ""));
             m->game_folders = jbool(p, e, "game_folders", 0);
+            m->keep_all_files = jbool(p, e, "keep_all_files", -1);
             /* Every Dolphin with a GCI folder keeps GameCube saves the same way. */
             if (!m->save_format[0] && !strcmp(jstr(p, e, "save_layout", ""), "gci"))
                 str_copy(m->save_format, sizeof m->save_format, "gc-gci");

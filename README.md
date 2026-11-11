@@ -194,6 +194,8 @@ RommPS exposes a separate Web UI at http://your-ps5-ip:8780 where you can access
 
 I've included direct support for most of the emulators that are out right now, except for the ones that won't even launch... you can sync games, states, and saves anywhere you want, but the presets should do it for most people. You can also configure the paths for all platforms manually. The web UI has a JSON editor for your emulator profiles.
 
+A game RomM keeps as a folder comes down without what RomM files as a manual, walkthrough, soundtrack, screenshot or cheat, and without the readmes, artwork and checksums (`.txt`, `.nfo`, `.pdf`, `.jpg`, `.png`, `.sfv` and friends) lying loose next to its files. Anything in a folder of the game's own comes down: that's game data (`PS3_GAME/ICON0.PNG`, a Wii U game's `content`), not box art. PC games (Windows, DOS, Linux, Mac, Steam, ScummVM) get every file, since half their config lives in `.txt` files. To decide for yourself, set `"keep_all_files"` on a platform entry (`{"romm": ["psx"], "dir": "psx", "keep_all_files": true}`) or on the whole profile: `true` brings every file, `false` leaves the extras on RomM wherever they are.
+
 ## Building
 
 Both consoles build from the same code in `src/`. What differs lives in `platform/<console>/`: `platform.c` (the `src/platform.h` interface), the make rules and the Docker SDK image. `platform/console/` has the parts the PS4 and PS5 share, and `platform/host/` is the development build.

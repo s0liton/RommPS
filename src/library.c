@@ -243,19 +243,90 @@ static int maps_failed(const profile_map *maps, int n) {
     ".mp3,.flac,.ogg,.sfv,.md5,.sha1,.crc,.db"
 
 /* Inside a game's folder fewer are left out, since a game can need its own
- * .xml, .ini or .db: only readmes, artwork and checksums. */
+ * .xml, .ini or .db: only readmes, artwork and checksums, and only loose ones
+ * (leave_rules). */
 #define NOT_NEEDED_EXTS ".txt,.nfo,.diz,.pdf,.url,.lnk,.jpg,.jpeg,.png,.gif,.bmp,.webp,.sfv,.md5,.sha1"
 
 int library_not_game(const char *fs_name) { return ext_in_list(fs_name, NOT_GAME_EXTS); }
 
-/* A file in a game's folder that playing it doesn't need: RomM's manuals,
- * soundtracks, screenshots, walkthroughs and cheats, and the files above. */
-static int extra_file(const cJSON *f) {
+/* What RomM files as a game's extras: its manuals, soundtracks, screenshots,
+ * walkthroughs and cheats. */
+static int extra_category(const cJSON *f) {
     const char *cat = jget_str(f, "category", "");
     static const char *skip[] = {"manual", "walkthrough", "soundtrack", "screenshot", "cheat"};
     for (size_t i = 0; i < sizeof skip / sizeof *skip; i++)
         if (!strcmp(cat, skip[i])) return 1;
-    return ext_in_list(jget_str(f, "file_name", ""), NOT_NEEDED_EXTS);
+    return 0;
+}
+
+/* A file in a game's folder that playing it doesn't need: RomM's extras, and
+ * the files above. */
+static int extra_file(const cJSON *f) {
+    return extra_category(f) || ext_in_list(jget_str(f, "file_name", ""), NOT_NEEDED_EXTS);
+}
+
+/* The folder within a game's that a file of it goes in, as RomM's file_path
+ * has it below "<fs_path>/<fs_name>" (a GOD game's 415607E1/00007000), ""
+ * for the game's own. Never anywhere out of the game's folder. */
+static const char *game_subdir(const cJSON *rom, const cJSON *f) {
+    char top[PATH_MAX_LEN];
+    snprintf(top, sizeof top, "%s/%s", jget_str(rom, "fs_path", ""), jget_str(rom, "fs_name", ""));
+    const char *fp = jget_str(f, "file_path", "");
+    const size_t tl = strlen(top);
+    if (!strncmp(fp, top, tl) && fp[tl] == '/' && fp[tl + 1] && !strstr(fp + tl, "/../") && !str_ends_with_ci(fp, "/.."))
+        return fp + tl + 1;
+    return "";
+}
+
+/* PC platforms (RomM's slugs, and the folder names people give them): a game
+ * folder there is the game's own file tree, and nobody can say which .txt or
+ * .png it does without (gbe_fork's steam_settings/steam_appid.txt, for one).
+ * Their games come down whole. */
+#define KEEP_ALL_PLATFORMS "win,windows,win3x,win9x,windows-apps,dos,pc,linux,mac,os2,beos,steam,steam-vr,scummvm"
+
+/* What a download of a game leaves on RomM (left_out). Elsewhere RomM's
+ * extras stay there, and readmes, artwork and checksums only when they're
+ * loose beside the game's files: in a folder of its own a .png is the game's
+ * data (PS3_GAME/ICON0.PNG, a Wii U game's content/), not its box art. */
+typedef struct {
+    int all;           /* every file: keep_all_files, or a PC platform's game */
+    int anywhere;      /* readmes, artwork and checksums wherever they are: keep_all_files false */
+    const char *loose; /* else only those in this folder of the game's (game_subdir) */
+} leave_rules;
+
+static leave_rules leave_rules_for(const profile_map *m, const cJSON *rom) {
+    leave_rules r = {m->keep_all_files == 1, m->keep_all_files == 0, ""};
+    for (int k = 0; m->keep_all_files < 0 && k < 2; k++) {
+        char slug[64];
+        str_copy(slug, sizeof slug, jget_str(rom, k ? "platform_fs_slug" : "platform_slug", ""));
+        for (char *c = slug; *c; c++) *c = (char)tolower((unsigned char)*c);
+        r.all |= slug_in(KEEP_ALL_PLATFORMS, slug);
+    }
+    if (r.all || r.anywhere) return r;
+    /* The game's own folder, unless every file of it sits in one folder
+     * inside it, as a game unpacked into a folder of its own does
+     * ("Game/Game/readme.txt"). A folder with folders in it is the game's
+     * tree, readmes and all. */
+    const cJSON *f;
+    int first = 1;
+    cJSON_ArrayForEach(f, cJSON_GetObjectItemCaseSensitive(rom, "files")) {
+        const char *in = game_subdir(rom, f);
+        if (first) {
+            r.loose = in;
+            first = 0;
+        } else if (strcmp(in, r.loose) != 0) {
+            r.loose = "";
+            break;
+        }
+    }
+    return r;
+}
+
+static int left_out(const leave_rules *r, const cJSON *rom, const cJSON *f) {
+    if (r->all) return 0;
+    if (extra_category(f)) return 1;
+    return ext_in_list(jget_str(f, "file_name", ""), NOT_NEEDED_EXTS) &&
+           (r->anywhere || !strcmp(game_subdir(rom, f), r->loose));
 }
 
 /* Archives nothing on the console plays from: a .rar anywhere, and any
@@ -575,7 +646,8 @@ static void record_rom(job *j, const cJSON *rom, const profile_map *m, const cha
     cJSON_DeleteItemFromObjectCaseSensitive(e, "discs");
     if (multi) {
         /* A folder of discs: each disc's files, so which ones are here can be
-         * told when only some came down. */
+         * told when only some came down. Only its game files, extras kept or
+         * not, so the list holds for every emulator the folder is copied to. */
         cJSON *discs = cJSON_CreateObject();
         const cJSON *f;
         cJSON_ArrayForEach(f, files) {
@@ -678,8 +750,11 @@ static int nx_plan(const cJSON *rom, const profile_map *m, int with, nx_file *ou
         x->size = (int64_t)jget_num(rom, "fs_size_bytes", -1);
         str_copy(x->name, sizeof x->name, fs_name);
     } else {
+        /* Every file lands flat in its folder: none is in a folder of the game's. */
+        leave_rules lr = leave_rules_for(m, rom);
+        lr.anywhere = 1;
         cJSON_ArrayForEach(f, files) {
-            if (extra_file(f) || n == max) continue;
+            if (left_out(&lr, rom, f) || n == max) continue;
             nx_file *x = &out[n++];
             memset(x, 0, sizeof *x);
             x->file_id = (int)jget_num(f, "id", 0);
@@ -863,10 +938,11 @@ static void run_rom_job(job *j) {
         cJSON_Delete(rom);
         return;
     }
+    const leave_rules lr = leave_rules_for(m, rom);
     if (multi) {
         const cJSON *f;
         int64_t skipped = 0;
-        cJSON_ArrayForEach(f, files) if (extra_file(f) || other_disc(j, f)) skipped += (int64_t)jget_num(f, "file_size_bytes", 0);
+        cJSON_ArrayForEach(f, files) if (left_out(&lr, rom, f) || other_disc(j, f)) skipped += (int64_t)jget_num(f, "file_size_bytes", 0);
         pthread_mutex_lock(&g_q_lock);
         if (skipped < j->total) j->total -= skipped;
         pthread_mutex_unlock(&g_q_lock);
@@ -895,19 +971,15 @@ static void run_rom_job(job *j) {
         ok = romm_download(path, dest, progress_cb, j, &r) == 0;
     } else {
         /* Fetched file by file into <rom_dir>/<fs_name>/ so nothing needs
-         * unzipping, each in its folder within the game ("file_path" below
-         * RomM's "<fs_path>/<fs_name>": a GOD game's 415607E1/00007000/...). */
-        char top[PATH_MAX_LEN];
-        snprintf(top, sizeof top, "%s/%s", jget_str(rom, "fs_path", ""), fs_name);
+         * unzipping, each in its folder within the game (game_subdir). */
         int64_t base = 0;
         const cJSON *f;
         cJSON_ArrayForEach(f, files) {
-            const char *fn = jget_str(f, "file_name", ""), *fp = jget_str(f, "file_path", "");
-            if (extra_file(f) || other_disc(j, f)) continue;
+            const char *fn = jget_str(f, "file_name", ""), *in = game_subdir(rom, f);
+            if (left_out(&lr, rom, f) || other_disc(j, f)) continue;
             char fdest[PATH_MAX_LEN], sub[PATH_MAX_LEN];
-            const size_t tl = strlen(top);
-            if (!strncmp(fp, top, tl) && fp[tl] == '/' && fp[tl + 1] && !strstr(fp + tl, "/../") && !str_ends_with_ci(fp, "/..")) {
-                path_join(sub, sizeof sub, dest, fp + tl + 1);
+            if (in[0]) {
+                path_join(sub, sizeof sub, dest, in);
                 path_join(fdest, sizeof fdest, sub, fn);
                 mkdir_p(sub);
             } else {
