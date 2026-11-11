@@ -493,15 +493,15 @@ static int fix_bare_rom(const profile_map *m, const char *path, int rom_id) {
     return done;
 }
 
-static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
-    DIR *d = opendir(m->rom_dir);
+static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
+    DIR *d = opendir(dir);
     if (!d) return;
     struct dirent *de;
     time_t now = time(NULL);
     while ((de = readdir(d))) {
         if (ignored_rom_file(de->d_name, m)) continue;
         char path[PATH_MAX_LEN];
-        path_join(path, sizeof path, m->rom_dir, de->d_name);
+        path_join(path, sizeof path, dir, de->d_name);
         int is_dir = dir_exists(path);
         if (!is_dir && !file_exists(path)) continue;
 
@@ -650,6 +650,16 @@ static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
         c->roms[c->nroms++] = r;
     }
     closedir(d);
+}
+
+/* The emulator's games: rom_dir's, and those in folders it still plays from
+ * but no longer gets games in (old_rom_dirs). Those stay put, saves and all. */
+static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
+    char list[sizeof m->old_rom_dirs], *save = NULL;
+    scan_games_in(c, m, m->rom_dir);
+    str_copy(list, sizeof list, m->old_rom_dirs);
+    for (char *t = strtok_r(list, ",", &save); t; t = strtok_r(NULL, ",", &save))
+        if (strcmp(t, m->rom_dir) != 0) scan_games_in(c, m, t);
 }
 
 
@@ -1358,7 +1368,20 @@ static int bundle_bases(const local_rom *r, char bases[][PATH_MAX_LEN], int max)
             if (pc.slot[s][0] && (s == 0 || strcmp(pc.slot[1], pc.slot[0]) != 0)) path_join(bases[n++], PATH_MAX_LEN, pc.dir, pc.slot[s]);
         return n;
     }
-    if (!strcmp(r->map->save_layout, "xbox")) { /* the hard disk image, wherever xemu.toml says */
+    if (!strcmp(r->map->save_layout, "xbox")) {
+        /* The hard disk kept as folders, when the emulator names one
+         * ("bundle_dirs": XPSemu 3's /data/xpsemu/hdd) and it's there. That
+         * beats an image left beside it: the folders only turn up once a
+         * version that keeps them has run, and that one can't read the image. */
+        char list[2048], *save = NULL;
+        const char *vars[] = {"root", r->map->root, NULL};
+        str_template(list, sizeof list, r->map->bundle_dirs, vars);
+        for (char *t = strtok_r(list, ",", &save); t && max > 0; t = strtok_r(NULL, ",", &save))
+            if (dir_exists(t)) {
+                str_copy(bases[0], PATH_MAX_LEN, t);
+                return 1;
+            }
+        /* Else the image, wherever xemu.toml says. */
         char toml[PATH_MAX_LEN];
         path_join(toml, sizeof toml, r->map->root, "xemu.toml");
         char *t = read_file(toml, NULL), *at = t ? strstr(t, "hdd_path") : NULL;
@@ -1402,6 +1425,14 @@ static int bundle_bases(const local_rom *r, char bases[][PATH_MAX_LEN], int max)
 /* An Xbox disk skipped because xemu still ran, during this sync. */
 static int g_disk_busy;
 
+/* An Xbox hard disk that's an image, not folders: xemu keeps it open as it
+ * runs, so it's only written while xemu is closed. Folders follow the rules
+ * every other emulator's saves do. */
+static int xbox_image(const local_rom *r) {
+    char base[1][PATH_MAX_LEN];
+    return !strcmp(r->map->save_layout, "xbox") && bundle_bases(r, base, 1) > 0 && !dir_exists(base[0]);
+}
+
 /* psp, ps3: the other title ids a game's saves came down from RomM under
  * (bundle.also). One that's another game's own id here stays that game's:
  * with both releases around, the original keeps its folders. */
@@ -1439,8 +1470,8 @@ static void save_ids_learn(const char *game_id, const char *ids) {
 static int bundle_for_rom(const local_rom *r, const char *game_id, bundle *b) {
     char bases[6][PATH_MAX_LEN], also[64] = "";
     int n = bundle_bases(r, bases, 6);
-    /* xemu writes its disk as it goes: while it runs, the copy made last. */
-    if (n && !strcmp(r->map->save_layout, "xbox") && !emulator_closed(r->map)) {
+    /* xemu writes its image as it goes: while it runs, the copy made last. */
+    if (n && !strcmp(r->map->save_layout, "xbox") && !dir_exists(bases[0]) && !emulator_closed(r->map)) {
         bases[0][0] = 0;
         g_disk_busy = 1;
     }
@@ -1953,8 +1984,8 @@ static void scan_bundles(scan_ctx *c) {
         if (rom_game_id(r, id, sizeof id) != 0) continue;
         ps2_own_card(r, id);
         if (bundle_for_rom(r, id, &b) != 0) continue;
-        /* An Xbox save's folder is our own copy: the sync once xemu closes sees its changes. */
-        if (strcmp(r->map->save_layout, "xbox") != 0) {
+        /* An Xbox image's save folder is our own copy: the sync once xemu closes sees its changes. */
+        if (strcmp(r->map->save_layout, "xbox") != 0 || dir_exists(b.base)) {
             state_lock();
             cJSON_AddItemToArray(g_bundle_roots_next, cJSON_CreateString(b.dir));
             state_unlock();
@@ -2209,7 +2240,7 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
                               const char *server_hash, int record) {
     char id[24], api[256], zip[PATH_MAX_LEN], tmpdir[PATH_MAX_LEN];
     bundle b;
-    if (!strcmp(r->map->save_layout, "xbox") && !emulator_closed(r->map)) {
+    if (xbox_image(r) && !emulator_closed(r->map)) {
         /* xemu would go on writing to the disk it has open, and lose this one. */
         say_save_waits(r);
         return -1;
@@ -3699,7 +3730,7 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                 res->skipped++; /* game isn't on this console */
                 continue;
             }
-            if (!strcmp(r->map->save_layout, "xbox") && !emulator_closed(r->map)) {
+            if (xbox_image(r) && !emulator_closed(r->map)) {
                 res->deferred++; /* not onto a disk xemu has open */
                 continue;
             }

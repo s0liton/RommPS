@@ -928,6 +928,7 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
                                   plat_data_dir(), "rom_dir", NULL, NULL};
             str_template(m->rom_dir, sizeof m->rom_dir, jstr(p, e, "rom_dir", "{root}/roms/{platform}"), vars);
             vars[9] = m->rom_dir;
+            str_template(m->old_rom_dirs, sizeof m->old_rom_dirs, jstr(p, e, "old_rom_dirs", ""), vars);
             str_template(m->update_dir, sizeof m->update_dir, jstr(p, e, "update_dir", "{rom_dir}"), vars);
             str_template(m->dlc_dir, sizeof m->dlc_dir, jstr(p, e, "dlc_dir", jstr(p, e, "update_dir", "{rom_dir}")), vars);
             str_template(m->save_dir, sizeof m->save_dir, jstr(p, e, "save_dir", "{rom_dir}"), vars);
