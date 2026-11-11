@@ -17,6 +17,7 @@
 #include "library.h"
 #include "platform.h"
 #include "state.h"
+#include "switchid.h"
 #include "sync.h"
 
 /* Platforms are matched on RomM's slug or fs_slug. The roots are the PS5's;
@@ -1083,7 +1084,16 @@ static void follow_folders(const cJSON *profiles) {
                 int was = 0;
                 for (int k = 0; k < 3 && !was; k++) was = old[k][0] && !strcmp(dir, old[k]);
                 if (!was) continue;
-                const int kind = jget_num(r, "with", 0) > 0 ? (nx_addon_kind(slash + 1) == 2 ? 2 : 1) : nx_addon_kind(slash + 1);
+                /* No tag in the name: what the file itself said it is (library.c
+                 * keeps its title id), so an untagged update isn't sent back to
+                 * rom_dir only for the sync to move it out again. */
+                int named = nx_addon_kind(slash + 1);
+                const char *tid = jget_str(r, "title_id", "");
+                if (!named && strlen(tid) == 16) {
+                    const switchid_kind k = switchid_kind_of(strtoull(tid, NULL, 16));
+                    named = k == SWITCHID_UPDATE ? 1 : k == SWITCHID_DLC ? 2 : 0;
+                }
+                const int kind = jget_num(r, "with", 0) > 0 ? (named == 2 ? 2 : 1) : named;
                 const char *into = kind == 1 ? m->update_dir : kind == 2 ? m->dlc_dir : m->rom_dir;
                 char to[PATH_MAX_LEN], now[PATH_MAX_LEN];
                 str_copy(now, sizeof now, into);
