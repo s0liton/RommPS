@@ -68,7 +68,7 @@ EOF
 mkdir -p "$T/etaHEN/payloads"; echo "old-payload" > "$T/etaHEN/payloads/romm-sync.elf"
 # Apps in $MB can have mounts, as on the PS5 (the host build lists them in data/mounts.txt).
 MB="$T/mountable"; mkdir -p "$MB"
-ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" \
+ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" ROMM_SYNC_PARALLEL=6 \
   ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" ROMM_SYNC_COVERS_TICK=1 ROMM_SYNC_RA2_EVERY=1 ROMM_SYNC_INSTALLED_SIG_SEC=2 \
   ROMM_SYNC_UPDATE_URL="http://127.0.0.1:$MOCK_PORT/_github/release" ROMM_SYNC_PRESETS_URL="http://127.0.0.1:$MOCK_PORT/_github/assets" \
   "$ROOT/build/host/romm-sync" >"$T/daemon.log" 2>&1 &
@@ -2065,6 +2065,40 @@ $(grep -E 'Cut Short|cut off' "$T/daemon.log" | tail -5)"
 grep -q "Cut Short (USA).sfc cut off at 100000 bytes" "$T/daemon.log" || fail "no log of the download carrying on"
 cut_file=$(find "$T" -name 'Cut Short (USA).sfc' -not -path '*/data/*' | head -1)
 [[ "$(wc -c < "$cut_file")" == 300000 && "$(tr -d Z < "$cut_file" | wc -c)" == 0 ]] || fail "the carried-on download must be whole: $cut_file $(wc -c < "$cut_file")"
+# A big one goes over several connections at once, in pieces (#39: the PS5
+# holds each connection to 512 KB in flight); one cut off halfway carries on
+# from where the file stops being whole (the cut skips the first answer, the
+# one that says how big the file is), and every byte lands in its place.
+python3 -c "import json,sys; json.dump({'id': 954, 'platform_id': 1, 'name': 'Big One', 'fs_name': 'Big One (USA).sfc',
+  'files': [{'id': 9541, 'file_name': 'Big One (USA).sfc', 'content': ''.join('%015d\n' % i for i in range(5 * 2**20))}]},
+  open(sys.argv[1], 'w'))" "$T/big.json"
+curl -skf -X POST "$SV/_admin/rom" -d @"$T/big.json" >/dev/null
+curl -skf -X POST "$SV/_admin/cut" -d '{"bytes":5000000,"after":1}' >/dev/null
+post /api/download '{"rom_id":954,"name":"Big One"}' >/dev/null
+s=$(waitjob 954 done)
+[[ "$s" == done* ]] || fail "a big download cut off halfway must carry on: $s
+$(grep -E 'Big One|cut off' "$T/daemon.log" | tail -5)"
+grep -q "Big One (USA).sfc cut off at" "$T/daemon.log" || fail "no log of the big download carrying on"
+grep -qE "downloaded [0-9.]+ MB in .* over [2-9] connections" "$T/daemon.log" || fail "a big download must go over several connections
+$(grep -E 'downloaded' "$T/daemon.log" | tail -3)"
+big=$(find "$T" -name 'Big One (USA).sfc' -not -path '*/data/*' | head -1)
+python3 -c "import hashlib,sys; want=''.join('%015d\n' % i for i in range(5 * 2**20)).encode()
+sys.exit(0 if open(sys.argv[1],'rb').read() == want else 1)" "$big" || fail "the big download must be whole, every piece in its place: $big"
+# A server that turns some of the connections away (a proxy's limit, 429)
+# still gets the whole file over the ones it took, and isn't asked for more.
+sed 's/"id": 954/"id": 955/; s/"id": 9541/"id": 9551/; s/Big One/Big Two/g' "$T/big.json" > "$T/big2.json"
+curl -skf -X POST "$SV/_admin/rom" -d @"$T/big2.json" >/dev/null
+curl -skf -X POST "$SV/_admin/busy" -d '{"n":2}' >/dev/null
+post /api/download '{"rom_id":955,"name":"Big Two"}' >/dev/null
+s=$(waitjob 955 done)
+[[ "$s" == done* ]] || fail "a big download some connections of were refused must carry on over the others: $s
+$(grep -E 'Big Two|refused|downloaded' "$T/daemon.log" | tail -5)"
+grep -q "the server refused 2 of 5 connections: downloads keep to 3 from now on" "$T/daemon.log" \
+  || fail "no log of the refused connections
+$(grep -E 'refused|downloaded' "$T/daemon.log" | tail -3)"
+big=$(find "$T" -name 'Big Two (USA).sfc' -not -path '*/data/*' | head -1)
+python3 -c "import hashlib,sys; want=''.join('%015d\n' % i for i in range(5 * 2**20)).encode()
+sys.exit(0 if open(sys.argv[1],'rb').read() == want else 1)" "$big" || fail "the refused pieces must land whole over the others: $big"
 # A file RomM lists but no longer has on its disk says so, and isn't retried.
 curl -skf -X POST "$SV/_admin/rom" -d '{"id":953,"platform_id":1,"name":"Moved Away","fs_name":"Moved Away","files":[
   {"id":9531,"file_name":"Moved Away (Disc 1).sfc","content":"ROM:one"},
