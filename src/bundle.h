@@ -11,7 +11,9 @@
  *         "<low>/user/account/..."
  *   xbox  E:\UDATA\<title id>\ on xemu's hard disk image (xboxhdd.h), as
  *         "<title id>/..."; its base is the image, and its files are a copy
- *         kept in the data folder ("" for the base: that copy as it is)
+ *         kept in the data folder ("" for the base: that copy as it is). Or
+ *         a hard disk kept as folders (XPSemu 3's hdd, Partition1 being E:):
+ *         that folder is the base, the files are its own, the zip the same
  *   x360  <player>/<title id>/00000001/ and Headers/00000001/ (Xenia,
  *         PS5X360), as "<title id>/00000001/..." and
  *         "<title id>/Headers/00000001/..."

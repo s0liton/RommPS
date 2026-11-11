@@ -12,28 +12,6 @@
 
 #include "util.h"
 
-static uint32_t crc_table[256];
-
-static void crc_init(void) {
-    if (crc_table[1]) return;
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t c = i;
-        for (int k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-        crc_table[i] = c;
-    }
-}
-
-static uint32_t crc_file(FILE *f, unsigned char *buf, size_t bufsize, uint32_t *size) {
-    uint32_t c = 0xFFFFFFFFu, total = 0;
-    size_t n;
-    while ((n = fread(buf, 1, bufsize, f)) > 0) {
-        for (size_t i = 0; i < n; i++) c = crc_table[(c ^ buf[i]) & 0xFF] ^ (c >> 8);
-        total += (uint32_t)n;
-    }
-    *size = total;
-    return c ^ 0xFFFFFFFFu;
-}
-
 static void put16(unsigned char *p, uint16_t v) { p[0] = (unsigned char)v; p[1] = (unsigned char)(v >> 8); }
 static void put32(unsigned char *p, uint32_t v) {
     put16(p, (uint16_t)v);
@@ -51,8 +29,57 @@ static void dos_time(time_t when, uint16_t *t, uint16_t *d) {
     *d = (uint16_t)((tm.tm_year - 80) << 9 | (tm.tm_mon + 1) << 5 | tm.tm_mday);
 }
 
+/* Entries are deflated, at zlib's fastest. Stored, a save is as big as its
+ * files, and some emulators make those at full size up front: Eden's save for
+ * New Pokemon Snap is 1.6 GB, about 1 MB of it not zeros, which RomM turns
+ * away. Deflated, it's a few MB. The slower levels shrink zeros further, but
+ * spend seconds on a console doing it. */
+#define ZIP_LEVEL Z_BEST_SPEED
+
+/* Deflates the rest of in onto out a buffer at a time, as a file can run to
+ * gigabytes, with its crc and both sizes. */
+static int deflate_entry(z_stream *zs, FILE *in, FILE *out, unsigned char *ibuf, unsigned char *obuf, size_t bufsize,
+                         uint32_t *crc, uint64_t *usize, uint64_t *csize) {
+    if (deflateReset(zs) != Z_OK) return -1;
+    uLong c = crc32(0L, Z_NULL, 0);
+    uint64_t u = 0, z = 0;
+    int flush;
+    do {
+        const size_t n = fread(ibuf, 1, bufsize, in);
+        if (ferror(in)) return -1;
+        flush = feof(in) ? Z_FINISH : Z_NO_FLUSH;
+        c = crc32(c, ibuf, (uInt)n);
+        u += n;
+        zs->next_in = ibuf;
+        zs->avail_in = (uInt)n;
+        do {
+            zs->next_out = obuf;
+            zs->avail_out = (uInt)bufsize;
+            if (deflate(zs, flush) == Z_STREAM_ERROR) return -1;
+            const size_t have = bufsize - zs->avail_out;
+            if (have && fwrite(obuf, 1, have, out) != have) return -1;
+            z += have;
+        } while (zs->avail_out == 0);
+    } while (flush != Z_FINISH);
+    *crc = (uint32_t)c;
+    *usize = u;
+    *csize = z;
+    return 0;
+}
+
+/* The local header goes out before its data, so its crc and sizes are
+ * filled in once they're known. */
+static int local_sizes(FILE *out, uint32_t at, uint32_t crc, uint32_t csize, uint32_t usize) {
+    unsigned char p[12];
+    put32(p, crc);
+    put32(p + 4, csize);
+    put32(p + 8, usize);
+    const off_t end = ftello(out);
+    if (end < 0 || fseeko(out, (off_t)at + 14, SEEK_SET) != 0 || fwrite(p, 1, sizeof p, out) != sizeof p) return -1;
+    return fseeko(out, end, SEEK_SET);
+}
+
 int zip_write(const char *zip_path, const zip_member *members, int count) {
-    crc_init();
     mkdir_parent(zip_path);
     FILE *out = fopen(zip_path, "wb");
     if (!out) return -1;
@@ -61,8 +88,10 @@ int zip_write(const char *zip_path, const zip_member *members, int count) {
     uint32_t offset = 0;
     int rc = 0;
     const size_t bufsize = 64 * 1024;
-    unsigned char *buf = malloc(bufsize);
-    if (!buf) rc = -1;
+    unsigned char *buf = malloc(bufsize), *zbuf = malloc(bufsize);
+    z_stream zs;
+    memset(&zs, 0, sizeof zs);
+    if (!buf || !zbuf || deflateInit2(&zs, ZIP_LEVEL, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) rc = -1;
 
     for (int i = 0; i < count && rc == 0; i++) {
         FILE *in = fopen(members[i].path, "rb");
@@ -70,29 +99,32 @@ int zip_write(const char *zip_path, const zip_member *members, int count) {
             rc = -1;
             break;
         }
-        uint32_t size;
-        uint32_t crc = crc_file(in, buf, bufsize, &size);
         struct stat st;
         uint16_t t, d;
         dos_time(fstat(fileno(in), &st) == 0 ? st.st_mtime : time(NULL), &t, &d);
-        rewind(in);
         const char *name = members[i].name;
         uint16_t nl = (uint16_t)strlen(name);
 
         unsigned char lh[30] = {0};
         put32(lh, 0x04034b50);
         put16(lh + 4, 20);
+        put16(lh + 8, 8);
         put16(lh + 10, t);
         put16(lh + 12, d);
-        put32(lh + 14, crc);
-        put32(lh + 18, size);
-        put32(lh + 22, size);
         put16(lh + 26, nl);
         fwrite(lh, 1, 30, out);
         fwrite(name, 1, nl, out);
-        size_t n;
-        while ((n = fread(buf, 1, bufsize, in)) > 0)
-            if (fwrite(buf, 1, n, out) != n) rc = -1;
+        uint32_t crc = 0;
+        uint64_t usize = 0, csize = 0;
+        if (deflate_entry(&zs, in, out, buf, zbuf, bufsize, &crc, &usize, &csize) != 0) {
+            rc = -1;
+        } else if (usize >= 0xFFFFFFFFu || (uint64_t)offset + 30 + nl + csize >= 0xFFFFFFFFu) {
+            /* Past 4 GB a zip needs zip64, and RomM gives up on saves long before that. */
+            LOGE("%s: too big with %s, over the 4 GB a zip without zip64 holds", zip_path, members[i].path);
+            rc = -2;
+        } else if (local_sizes(out, offset, crc, (uint32_t)csize, (uint32_t)usize) != 0) {
+            rc = -1;
+        }
         fclose(in);
 
         unsigned char *grown = realloc(central, central_len + 46 + nl);
@@ -106,20 +138,21 @@ int zip_write(const char *zip_path, const zip_member *members, int count) {
         put32(ch, 0x02014b50);
         put16(ch + 4, 20);
         put16(ch + 6, 20);
+        put16(ch + 10, 8);
         put16(ch + 12, t);
         put16(ch + 14, d);
         put32(ch + 16, crc);
-        put32(ch + 20, size);
-        put32(ch + 24, size);
+        put32(ch + 20, (uint32_t)csize);
+        put32(ch + 24, (uint32_t)usize);
         put16(ch + 28, nl);
         put32(ch + 42, offset);
         memcpy(ch + 46, name, nl);
         central_len += 46 + nl;
-        offset += 30 + nl + size;
+        offset += 30 + nl + (uint32_t)csize;
     }
 
     if (rc == 0) {
-        fwrite(central, 1, central_len, out);
+        if (central_len) fwrite(central, 1, central_len, out);
         unsigned char end[22] = {0};
         put32(end, 0x06054b50);
         put16(end + 8, (uint16_t)count);
@@ -127,10 +160,13 @@ int zip_write(const char *zip_path, const zip_member *members, int count) {
         put32(end + 12, (uint32_t)central_len);
         put32(end + 16, offset);
         fwrite(end, 1, 22, out);
+        if (ferror(out)) rc = -1; /* a full disk makes a zip RomM won't open */
     }
+    deflateEnd(&zs);
     free(central);
     free(buf);
-    if (fclose(out) != 0) rc = -1;
+    free(zbuf);
+    if (fclose(out) != 0 && rc == 0) rc = -1;
     if (rc) unlink(zip_path);
     return rc;
 }
@@ -213,6 +249,52 @@ static unsigned char *entry_data(const unsigned char *z, const zip_entry *e) {
     return NULL;
 }
 
+/* An entry written out a buffer at a time, through a .tmp beside dest: a
+ * save that's mostly zeros can come out of a few MB of zip as gigabytes. */
+static int entry_to_file(const unsigned char *z, const zip_entry *e, const char *dest) {
+    if (e->method != 8 && !(e->method == 0 && e->csize == e->usize)) return -1;
+    char tmp[PATH_MAX_LEN];
+    snprintf(tmp, sizeof tmp, "%s.tmp", dest);
+    mkdir_parent(dest);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) return -1;
+    int ok = 1;
+    if (e->method == 0) {
+        ok = fwrite(z + e->data, 1, e->usize, f) == e->usize;
+    } else {
+        const size_t bufsize = 64 * 1024;
+        unsigned char *buf = malloc(bufsize);
+        z_stream s;
+        memset(&s, 0, sizeof s);
+        if (!buf || inflateInit2(&s, -MAX_WBITS) != Z_OK) {
+            free(buf);
+            fclose(f);
+            unlink(tmp);
+            return -1;
+        }
+        s.next_in = (unsigned char *)z + e->data;
+        s.avail_in = e->csize;
+        int r = Z_OK;
+        while (ok && r == Z_OK) {
+            s.next_out = buf;
+            s.avail_out = (uInt)bufsize;
+            r = inflate(&s, Z_NO_FLUSH);
+            const size_t have = bufsize - s.avail_out;
+            if ((r != Z_OK && r != Z_STREAM_END) || fwrite(buf, 1, have, f) != have) ok = 0;
+        }
+        ok = ok && r == Z_STREAM_END && s.total_out == e->usize;
+        inflateEnd(&s);
+        free(buf);
+    }
+    if (ok && (fflush(f) != 0 || fsync(fileno(f)) != 0)) ok = 0;
+    if (fclose(f) != 0) ok = 0;
+    if (!ok || rename(tmp, dest) != 0) {
+        unlink(tmp);
+        return -1;
+    }
+    return 0;
+}
+
 static int safe_name(const char *name) {
     if (!name[0] || name[0] == '/' || strchr(name, '\\') || strchr(name, ':')) return 0;
     for (const char *p = name; *p;) {
@@ -233,9 +315,7 @@ int zip_extract_entry(const char *zip_path, const char *name, const char *dest) 
     int n = zip_entries(z, len, &e), rc = -1;
     for (int i = 0; i < n; i++) {
         if (strcmp(e[i].name, name) != 0) continue;
-        unsigned char *data = entry_data(z, &e[i]);
-        if (data) rc = write_file_atomic(dest, data, e[i].usize);
-        free(data);
+        rc = entry_to_file(z, &e[i], dest);
         break;
     }
     free(e);
@@ -257,12 +337,10 @@ int zip_extract_all(const char *zip_path, const char *dest_dir) {
             count = -1;
             break;
         }
-        unsigned char *data = entry_data(z, &e[i]);
         char dest[PATH_MAX_LEN];
         path_join(dest, sizeof dest, dest_dir, e[i].name);
-        if (!data || write_file_atomic(dest, data, e[i].usize) != 0) count = -1;
+        if (entry_to_file(z, &e[i], dest) != 0) count = -1;
         else count++;
-        free(data);
     }
     free(e);
     free(z);

@@ -6,10 +6,15 @@
 #include "cJSON.h"
 
 /* Sections, keyed by local path (bundles use "<folder>#<game id>"):
- *   roms       rom_id, name, profile, platform_dir, stems, fs_name, md5, game_id
+ *   roms       rom_id, name, profile, platform_dir, stems, fs_name, md5, game_id;
+ *              with (a Switch update or DLC: the game it came with), gone_id
+ *              (the game RomM let go, until the file is matched again)
  *   saves      rom_id, slot, hash, mtime, mtime_ns, size, save_id, synced_at
  *   states     rom_id, hash, mtime, mtime_ns, size, state_id, server_updated_at, synced_at
  *   memcards   card_id, hash, version_id, backed_up_at
+ *   too_big    by save: hash, of the version RomM refused as too big (HTTP
+ *              413), not sent again until the save changes. The limit the 413
+ *              gave is in "server": upload_limit, upload_limit_at
  *   conflicts  rom_id, save_id, slot, reason, server_updated_at, server_hash, local_mtime
  *   save_ids   by game id: also, the other title ids its saves go by (bundle.also)
  *   unplaced   by bundle: save, "<save id>|<content hash>" of RomM's version

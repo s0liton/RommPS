@@ -166,6 +166,7 @@ class LibraryPage
     int focus_raw_ = 0;
     std::size_t focus_hidden_ = 0;
     bool on_letters_ = false;
+    bool grid_failed_ = false; // RomM failed on the focused game's page: Cross asks again
     float install_armed_ = 0.0f; // seconds a second Square installs the whole collection
     int letter_ = 0; // the A to Z bar's focus, an index into the list's letters
     hui::tween::Spring grid_scroll_; // in rows

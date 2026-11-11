@@ -190,6 +190,44 @@ static void xbox_copy_out(bundle *b, const char *image) {
     write_file_atomic(stamp, now, strlen(now));
 }
 
+/* The entry of dir called name, in any case: its own name in out, 0 when found. */
+static int name_ci(const char *dir, const char *name, char *out, size_t n) {
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    int rc = -1;
+    while (d && rc && (de = readdir(d)))
+        if (!strcasecmp(de->d_name, name)) {
+            str_copy(out, n, de->d_name);
+            rc = 0;
+        }
+    if (d) closedir(d);
+    return rc;
+}
+
+/* The game's save on a hard disk kept as folders (XPSemu 3's hdd), where
+ * Partition1 is E:. Names match in any case, as the emulator matches them.
+ * Listed as "<its folder's name>/...", the very entries a copy out of an
+ * image gets, so the zip is the same whichever disk it came from. A save not
+ * there yet is named as xemu names one. */
+static void xbox_folders(bundle *b, const char *hdd) {
+    char e[PATH_MAX_LEN], udata[PATH_MAX_LEN], name[24], copy[PATH_MAX_LEN];
+    path_join(e, sizeof e, hdd, "Partition1");
+    if (name_ci(e, "UDATA", name, sizeof name) != 0) str_copy(name, sizeof name, "UDATA");
+    path_join(udata, sizeof udata, e, name);
+    if (name_ci(udata, b->game_id, name, sizeof name) != 0) {
+        str_copy(name, sizeof name, b->game_id);
+        for (char *p = name; *p; p++) *p = (char)tolower((unsigned char)*p);
+    }
+    path_join(b->dir, sizeof b->dir, udata, name);
+    add_tree(b, b->dir, name, 0);
+    /* The copy an image needed (xbox_copy_out) is just clutter from here on,
+     * and so is its folder once the last one's gone. */
+    snprintf(copy, sizeof copy, "%s/xbox/%s", plat_data_dir(), b->game_id);
+    remove_tree(copy);
+    *strrchr(copy, '/') = 0;
+    rmdir(copy);
+}
+
 /* psp, ps3: whether a save folder is the game's, by the title id it starts with. */
 static int folder_is_games(const bundle *b, const char *name) {
     if (!strncasecmp(name, b->game_id, strlen(b->game_id))) return 1;
@@ -331,10 +369,15 @@ int bundle_open(bundle *b, const char *layout, const char *id, const char *also,
         }
         if (d) closedir(d);
     } else if (!strcmp(layout, "xbox")) {
-        /* E:\UDATA\<id> inside the image (base), hashed and zipped from a copy. */
+        /* E:\UDATA\<id> on the hard disk (base): its folders as they are, or
+         * inside the image, hashed and zipped from a copy. */
         if (strlen(id) != 8) return -1;
-        xbox_copy_out(b, base);
-        add_tree(b, b->dir, "", 0);
+        if (dir_exists(base)) {
+            xbox_folders(b, base);
+        } else {
+            xbox_copy_out(b, base);
+            add_tree(b, b->dir, "", 0);
+        }
     } else if (!strcmp(layout, "x360")) {
         /* <title id>/00000001 (saved games) and its headers under the player's
          * folder; the title's other content (DLC, updates) stays out. */
@@ -574,6 +617,18 @@ static int place_unpacked(bundle *b, const char *tmp) {
         while (d && (de = readdir(d)))
             if (!strcasecmp(de->d_name, b->game_id)) path_join(src, sizeof src, tmp, de->d_name);
         if (d) closedir(d);
+        if (dir_exists(b->base)) {
+            /* Folders: named as the zip has it, so its hash stays RomM's (the
+             * emulator doesn't mind the case), else as it was. */
+            char to[PATH_MAX_LEN + 32];
+            const char *slash = strrchr(b->dir, '/');
+            if (strcmp(src, tmp) != 0 && slash)
+                snprintf(to, sizeof to, "%.*s/%s", (int)(slash - b->dir), b->dir, path_basename(src));
+            else
+                str_copy(to, sizeof to, b->dir);
+            if (strcmp(to, b->dir) != 0) remove_tree(b->dir); /* the same save in its old case */
+            return put_folder(src, to);
+        }
         const int rc = xhdd_put_save_file(b->base, b->game_id, src);
         remove_tree(b->dir);
         return rc;

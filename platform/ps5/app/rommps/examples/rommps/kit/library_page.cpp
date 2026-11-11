@@ -816,6 +816,7 @@ void LibraryPage::open_grid(App &app, const Scope &scope, const std::string &sea
     on_letters_ = false;
     grid_free_ = false;
     grid_scroll_.snap(0.0f);
+    app.retry(grid(app)); // opened again: what failed last time is asked for again
     app.ensure(grid(app), 0, kMaxCols * 4);
 }
 
@@ -858,6 +859,7 @@ void LibraryPage::update_grid(App &app, const hui::InputFrame &input, hui::ui::F
     focus_list_ = &now;
     focus_raw_ = now.ready() ? now.raw(index_) : index_;
     focus_hidden_ = now.hidden.size();
+    grid_failed_ = !now.error.empty() && !now.at(index_);
 }
 
 void LibraryPage::settle_shape(App &app, GameList &l) const
@@ -992,6 +994,15 @@ void LibraryPage::move_in_grid(App &app, const hui::InputFrame &pad, hui::ui::Fe
             on_letters_ = false;
         }
         else if (input.nav == Direction::right && !repeat)
+            refuse(feedback);
+        return;
+    }
+    // RomM failed on the games here: Cross asks again. Nothing else does.
+    if (!l.error.empty() && !l.at(index_) && input.is_pressed(Action::confirm))
+    {
+        if (app.retry(l))
+            feedback.play(Cue::open);
+        else
             refuse(feedback);
         return;
     }
@@ -1406,11 +1417,11 @@ std::vector<hui::ui::Hint> LibraryPage::hints() const
             return {{Button::l2, "Letters", Button::r2},
                     {Button::square, install_armed_ > 0.0f ? "Press again to install all" : "Install all"},
                     {Button::triangle, "Search"},
-                    {Button::cross, "Details"},
+                    {Button::cross, grid_failed_ ? "Try again" : "Details"},
                     {Button::circle, "Back"}};
         return {{Button::l2, "Letters", Button::r2},
                 {Button::triangle, "Search"},
-                {Button::cross, "Details"},
+                {Button::cross, grid_failed_ ? "Try again" : "Details"},
                 {Button::circle, "Back"}};
     case kSearch:
         return {{Button::square, "Delete"}, {Button::r2, "Show all"}, {Button::circle, "Back"}};

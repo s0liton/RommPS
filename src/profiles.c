@@ -1261,6 +1261,7 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
                                   plat_data_dir(), "rom_dir", NULL, NULL};
             str_template(m->rom_dir, sizeof m->rom_dir, jstr(p, e, "rom_dir", "{root}/roms/{platform}"), vars);
             vars[9] = m->rom_dir;
+            str_template(m->old_rom_dirs, sizeof m->old_rom_dirs, jstr(p, e, "old_rom_dirs", ""), vars);
             str_template(m->update_dir, sizeof m->update_dir, jstr(p, e, "update_dir", "{rom_dir}"), vars);
             str_template(m->dlc_dir, sizeof m->dlc_dir, jstr(p, e, "dlc_dir", jstr(p, e, "update_dir", "{rom_dir}")), vars);
             str_template(m->save_dir, sizeof m->save_dir, jstr(p, e, "save_dir", "{rom_dir}"), vars);
@@ -1301,6 +1302,7 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
             str_copy(m->state_name, sizeof m->state_name, jstr(p, e, "state_name", "{rom_stem}{ext}"));
             str_copy(m->save_format, sizeof m->save_format, jstr(p, e, "save_format", ""));
             m->game_folders = jbool(p, e, "game_folders", 0);
+            m->keep_all_files = jbool(p, e, "keep_all_files", -1);
             /* Every Dolphin with a GCI folder keeps GameCube saves the same way. */
             if (!m->save_format[0] && !strcmp(jstr(p, e, "save_layout", ""), "gci"))
                 str_copy(m->save_format, sizeof m->save_format, "gc-gci");

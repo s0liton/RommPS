@@ -165,7 +165,9 @@ struct GameList
     std::string search;
     int total = -1;                   // games to show; unknown until the first page arrives
     std::vector<Game> games;          // RomM's whole list, by RomM's offset; id 0 isn't loaded yet
-    std::vector<unsigned char> pages; // per page: 0 not asked, 1 asked, 2 here
+    // per page: 0 not asked, 1 asked, 2 here, 3 failed (asked again only when
+    // the user says so: App::retry)
+    std::vector<unsigned char> pages;
     std::vector<std::pair<std::string, int>> letters; // first letter -> the index of its first game
     std::vector<std::pair<std::string, int>> raw_letters; // the same, by RomM's offset
     std::vector<int> hidden;          // RomM offsets of the files that aren't games, sorted
@@ -345,6 +347,8 @@ class App
     // holding [first, last] loaded. Lists stay for a while, a few at most.
     GameList &games(const Scope &scope, const std::string &search);
     void ensure(GameList &list, int first, int last);
+    // The pages that failed, asked for again; false when none had.
+    bool retry(GameList &list);
 
     // The games on this console, most recently played first.
     const std::vector<Game> &installed() const { return installed_; }
