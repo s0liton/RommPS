@@ -23,6 +23,7 @@
 #include "profiles.h"
 #include "romm.h"
 #include "state.h"
+#include "switchid.h"
 #include "util.h"
 
 #define MAX_WORKERS 8
@@ -671,8 +672,9 @@ static void record_rom(job *j, const cJSON *rom, const profile_map *m, const cha
 
 /* One file of a Switch game, recorded as RomM's game it is. An update or DLC
  * also says which game it came with ("with"): removing that game removes it,
- * and it isn't a game of its own on the console. */
-static void record_file(int rom_id, const cJSON *rom, const profile_map *m, const char *dest, int with) {
+ * and it isn't a game of its own on the console. title: the title id read
+ * from inside it, when its name has none (0: none). */
+static void record_file(int rom_id, const cJSON *rom, const profile_map *m, const char *dest, int with, uint64_t title) {
     char stem[256];
     path_stem(stem, sizeof stem, path_basename(dest));
     state_lock();
@@ -685,6 +687,12 @@ static void record_file(int rom_id, const cJSON *rom, const profile_map *m, cons
     jset_num(e, "platform_id", jget_num(rom, "platform_id", 0));
     jset_str(e, "cover", jget_str(rom, "path_cover_small", ""));
     if (with > 0) jset_num(e, "with", with);
+    cJSON_DeleteItemFromObjectCaseSensitive(e, "title_id");
+    if (title) {
+        char hex[20];
+        snprintf(hex, sizeof hex, "%016llX", (unsigned long long)title);
+        jset_str(e, "title_id", hex);
+    }
     cJSON_DeleteItemFromObjectCaseSensitive(e, "miss_at");
     cJSON_DeleteItemFromObjectCaseSensitive(e, "stems");
     cJSON *stems = cJSON_AddArrayToObject(e, "stems");
@@ -795,6 +803,8 @@ typedef struct {
     int rom_id, file_id; /* file_id 0: the game's one file, by its name */
     int with;            /* the game an update or DLC came with, else 0 */
     nx_kind kind;
+    int guessed;         /* a game for want of a word from its name or RomM: what's inside decides */
+    uint64_t title;      /* the title id inside it, for a guessed one (0: not read, or none) */
     int had;             /* there, whole, before this download */
     int got;             /* brought by this download */
     int64_t size;
@@ -831,13 +841,46 @@ static int nx_plan(const cJSON *rom, const profile_map *m, int with, nx_file *ou
         }
     }
     for (int i = 0; i < n; i++) {
+        unsigned long long named;
         out[i].rom_id = (int)jget_num(rom, "id", 0);
         out[i].with = with;
         out[i].rom = rom;
+        out[i].guessed = out[i].kind == NX_GAME && nx_title(out[i].name, &named, NULL) == NX_NONE;
         path_join(out[i].dest, sizeof out[i].dest, nx_dir(m, out[i].kind), out[i].name);
         out[i].had = out[i].size >= 0 && file_size(out[i].dest) == out[i].size;
+        /* Down before and found to be an update or DLC: it's where those go now. */
+        for (int k = NX_UPDATE; out[i].guessed && !out[i].had && k <= NX_DLC; k++) {
+            char there[PATH_MAX_LEN];
+            path_join(there, sizeof there, nx_dir(m, (nx_kind)k), out[i].name);
+            if (out[i].size < 0 || file_size(there) != out[i].size) continue;
+            str_copy(out[i].dest, sizeof out[i].dest, there);
+            out[i].kind = (nx_kind)k;
+            out[i].had = 1;
+        }
     }
     return n;
+}
+
+/* A file neither its name nor RomM said anything of ("Some Game
+ * v3.0.3.nsp"): what's inside does (sync_nx_title). An update or DLC goes
+ * where the emulator takes those, unless it was here before the download:
+ * that one waits for the emulator to close (sync_nx_settle). */
+static void nx_identify(nx_file *x, const profile_map *m) {
+    if (!x->guessed) return;
+    x->title = sync_nx_title(m, x->dest, 1);
+    const switchid_kind k = switchid_kind_of(x->title);
+    if (k != SWITCHID_UPDATE && k != SWITCHID_DLC) return;
+    x->kind = k == SWITCHID_UPDATE ? NX_UPDATE : NX_DLC;
+    char to[PATH_MAX_LEN];
+    path_join(to, sizeof to, nx_dir(m, x->kind), x->name);
+    int moved = 0;
+    if (x->got && strcmp(to, x->dest) != 0 && !file_exists(to) && !dir_exists(to)) {
+        moved = mkdir_p(nx_dir(m, x->kind)) == 0 && move_file(x->dest, to) == 0;
+        if (moved) str_copy(x->dest, sizeof x->dest, to);
+        else LOGW("could not move %s to %s", x->name, nx_dir(m, x->kind));
+    }
+    LOGI("%s is %s of %016llX, not a game of its own%s%s", x->name, k == SWITCHID_UPDATE ? "an update" : "DLC",
+         (unsigned long long)switchid_game_of(x->title), moved ? ": in " : "", moved ? nx_dir(m, x->kind) : "");
 }
 
 static void run_switch_job(job *j, const cJSON *rom, const profile_map *maps, int n, const profile_map *m) {
@@ -885,8 +928,6 @@ static void run_switch_job(job *j, const cJSON *rom, const profile_map *maps, in
     memset(&r, 0, sizeof r);
     for (int i = 0; i < nf && ok; i++) {
         nx_file *x = &files[i];
-        ups += x->kind == NX_UPDATE;
-        dlcs += x->kind == NX_DLC;
         if (x->had) {
             base += x->size;
             continue;
@@ -906,7 +947,13 @@ static void run_switch_job(job *j, const cJSON *rom, const profile_map *maps, in
         base += file_size(x->dest) > 0 ? file_size(x->dest) : 0;
     }
     if (ok) {
-        for (int i = 0; i < nf; i++) record_file(files[i].rom_id, files[i].rom, m, files[i].dest, files[i].with);
+        for (int i = 0; i < nf; i++) {
+            nx_identify(&files[i], m);
+            ups += files[i].kind == NX_UPDATE;
+            dlcs += files[i].kind == NX_DLC;
+            record_file(files[i].rom_id, files[i].rom, m, files[i].dest, files[i].with, files[i].title);
+        }
+        for (int i = 0; i < nf; i++) sync_nx_link(m, files[i].dest);
         LOGI("downloaded %s: %d file%s, %d update, %d DLC%s", j->name, nf, nf == 1 ? "" : "s", ups, dlcs,
              skipped ? " (archived ones left out)" : "");
         /* Another Switch emulator with folders of its own gets the same files. */
@@ -919,8 +966,12 @@ static void run_switch_job(job *j, const cJSON *rom, const profile_map *maps, in
                 path_join(other, sizeof other, nx_dir(x, files[i].kind), files[i].name);
                 if (!strcmp(other, files[i].dest)) continue;
                 mkdir_p(nx_dir(x, files[i].kind));
-                if (link_or_copy(files[i].dest, other) == 0) record_file(files[i].rom_id, files[i].rom, x, other, files[i].with);
-                else LOGW("could not put %s in %s", files[i].name, nx_dir(x, files[i].kind));
+                if (link_or_copy(files[i].dest, other) == 0) {
+                    record_file(files[i].rom_id, files[i].rom, x, other, files[i].with, files[i].title);
+                    sync_nx_link(x, other);
+                } else {
+                    LOGW("could not put %s in %s", files[i].name, nx_dir(x, files[i].kind));
+                }
             }
         }
         finish_download(j, maps, n, rom, NULL, NULL);
@@ -2136,6 +2187,7 @@ again:;
     clear_old_copies(maps, n); /* before the mounts can hide them */
     update_mounts(maps, n);
     nx_unfold(maps, n);
+    sync_nx_settle(maps, n);
     for (int i = 0; i < n; i++) {
         const profile_map *x = &maps[i];
         if (!x->extra || x->twin) continue;
@@ -2651,6 +2703,21 @@ static int any_on_console(const cJSON *o) {
     return 0;
 }
 
+/* What a Switch entry with no title id in its name turned out to be once
+ * down (its record's "title_id"): an update or DLC, else NX_NONE. */
+static nx_kind nx_found_as(int rom_id) {
+    nx_kind k = NX_NONE;
+    const cJSON *e;
+    state_lock();
+    cJSON_ArrayForEach(e, state_section("roms")) {
+        if ((int)jget_num(e, "rom_id", 0) != rom_id) continue;
+        const switchid_kind x = switchid_kind_of(strtoull(jget_str(e, "title_id", "0"), NULL, 16));
+        if (x == SWITCHID_UPDATE || x == SWITCHID_DLC) k = x == SWITCHID_UPDATE ? NX_UPDATE : NX_DLC;
+    }
+    state_unlock();
+    return k;
+}
+
 /* Keeps only what the library page shows of each game. */
 static int add_library_rom(const cJSON *it, const cJSON *page, int first, void *ctx) {
     cJSON *out = ctx;
@@ -2675,7 +2742,8 @@ static int add_library_rom(const cJSON *it, const cJSON *page, int first, void *
     /* A Switch game's update or DLC comes with the game, and isn't listed. */
     const int nx = is_switch(jget_str(it, "platform_slug", ""));
     unsigned long long game;
-    const nx_kind k = nx ? nx_title(jget_str(it, "fs_name", ""), &game, NULL) : NX_NONE;
+    nx_kind k = nx ? nx_title(jget_str(it, "fs_name", ""), &game, NULL) : NX_NONE;
+    if (nx && k == NX_NONE) k = nx_found_as(id);
     if (library_not_game(jget_str(it, "fs_name", "")) || k == NX_UPDATE || k == NX_DLC) cJSON_AddBoolToObject(o, "not_game", 1);
     if (k == NX_UPDATE || k == NX_DLC) cJSON_AddStringToObject(o, "addon", k == NX_UPDATE ? "update" : "dlc");
     if (rom_archive(it, nx)) cJSON_AddBoolToObject(o, "archived", 1);

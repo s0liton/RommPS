@@ -17,6 +17,7 @@
 #include "gcmem.h"
 #include "gameid.h"
 #include "http.h"
+#include "library.h"
 #include "memcard.h"
 #include "n64.h"
 #include "platform.h"
@@ -647,25 +648,73 @@ static int fix_bare_rom(const profile_map *m, const char *path, int rom_id) {
     return done;
 }
 
+/* The [title id] a Switch file's name carries, as it is; 0 for none. */
+static uint64_t nx_name_title(const char *path) {
+    const char *name = path_basename(path);
+    for (const char *b = strchr(name, '['); b; b = strchr(b + 1, '['))
+        if (strspn(b + 1, "0123456789abcdefABCDEF") == 16 && b[17] == ']') return strtoull(b + 1, NULL, 16);
+    return 0;
+}
+
+/* What a record says its Switch file is: the name's title id, else the one
+ * read from inside it ("title_id"). Under state_lock. */
+static uint64_t nx_record_title(const cJSON *e) {
+    const uint64_t named = nx_name_title(e->string);
+    return named ? named : strtoull(jget_str(e, "title_id", "0"), NULL, 16);
+}
+
+static int nx_is_addon(uint64_t id) {
+    const switchid_kind k = switchid_kind_of(id);
+    return k == SWITCHID_UPDATE || k == SWITCHID_DLC;
+}
+
+/* prod.keys' header_key, from the emulator's keys folder: where RomM's keys
+ * go, and where the user's own already are, or the emulator wouldn't run a
+ * thing. keys gets where it looked. 1 when there's one. */
+static int nx_header_key(const profile_map *m, unsigned char key[32], char *keys, size_t n) {
+    return firmware_find(m, "prod.keys", keys, n) == 0 && switchid_header_key(keys, key) == 0;
+}
+
+uint64_t sync_nx_title(const profile_map *m, const char *path, int fresh) {
+    uint64_t id = nx_name_title(path);
+    if (id) return id;
+    if (!fresh) {
+        state_lock();
+        const cJSON *e = state_entry("roms", path);
+        id = e ? strtoull(jget_str(e, "title_id", "0"), NULL, 16) : 0;
+        state_unlock();
+        if (id) return id;
+    }
+    char keys[PATH_MAX_LEN];
+    unsigned char key[32];
+    const int have = nx_header_key(m, key, keys, sizeof keys);
+    if (switchid_title(path, have ? key : NULL, &id) != 0) return 0;
+    char hex[20];
+    snprintf(hex, sizeof hex, "%016llX", (unsigned long long)id);
+    state_lock();
+    cJSON *e = state_entry("roms", path);
+    if (e) jset_str(e, "title_id", hex); /* headers don't change: read once */
+    state_unlock();
+    return id;
+}
+
 /* A Switch game's update or DLC, in a games folder it shares with games
  * (the update_dir default): by the title id in its name (an update's ends in
- * 800, a DLC's is past the game's 1000), or as the download that brought it
- * said ("with"). Not a game: its saves are its game's, and going up again
- * under its own RomM id is a second copy nobody asked for. */
+ * 800, a DLC's is past the game's 1000), as the download that brought it
+ * said ("with"), or, the name saying nothing ("Some Game v3.0.3.nsp"), by
+ * what's inside. Not a game: its saves are its game's, and going up again
+ * under its own RomM id is a second copy nobody asked for. Inside saying
+ * nothing either (no prod.keys), it's a game, as it always was. */
 static int nx_addon(const profile_map *m, const char *path) {
     if (!profile_map_handles(m, "switch", NULL)) return 0;
-    const char *name = path_basename(path);
-    for (const char *b = strchr(name, '['); b; b = strchr(b + 1, '[')) {
-        if (strspn(b + 1, "0123456789abcdefABCDEF") != 16 || b[17] != ']') continue;
-        const unsigned low = (unsigned)(strtoull(b + 1, NULL, 16) & 0x1FFF);
-        if (low == 0x800 || low > 0x1000) return 1;
-        break;
-    }
+    const uint64_t named = nx_name_title(path);
+    if (nx_is_addon(named)) return 1;
     state_lock();
     const cJSON *e = state_entry("roms", path);
     const int with = e && jget_num(e, "with", 0) > 0;
     state_unlock();
-    return with;
+    if (with || named) return with;
+    return nx_is_addon(sync_nx_title(m, path, 0));
 }
 
 static void scan_games_in(scan_ctx *c, const profile_map *m, const char *dir) {
@@ -1278,6 +1327,8 @@ static void scan_saves(scan_ctx *c) {
 }
 
 
+static void nx_settle(const profile_map *maps, int n);
+
 static int scan_prepare(scan_ctx *c) {
     memset(c, 0, sizeof *c);
     g_nfresh = 0;
@@ -1289,6 +1340,7 @@ static int scan_prepare(scan_ctx *c) {
     c->server_versions = g_cfg.server_versions;
     c->policy = g_cfg.conflicts;
     config_unlock();
+    nx_settle(c->maps, c->nmaps);
 
     long st = 0;
     c->platforms = romm_call("GET", "/api/platforms", NULL, &st);
@@ -1790,13 +1842,12 @@ static int switch_title(const char *path, char *out, size_t n) {
 
 /* No id in the name ("New Pokemon Snap (World) (En,Ja,Fr,De,Es,It,Zh,Ko).xci"):
  * the one inside the file (switchid.h). Most files only say with prod.keys'
- * header_key, from the emulator's keys folder: where RomM's keys go, and
- * where the user's own already are, or the emulator wouldn't run a thing. */
+ * header_key (nx_header_key). */
 static int switch_title_inside(const local_rom *r, char *out, size_t n) {
     static int said; /* missing keys are missing for every game: once a run will do */
     char keys[PATH_MAX_LEN];
     unsigned char key[32];
-    const int have = firmware_find(r->map, "prod.keys", keys, sizeof keys) == 0 && switchid_header_key(keys, key) == 0;
+    const int have = nx_header_key(r->map, key, keys, sizeof keys);
     const int rc = switchid_from_file(r->path, have ? key : NULL, out, n);
     if (rc == -2 && !said) {
         said = 1;
@@ -1804,6 +1855,164 @@ static int switch_title_inside(const local_rom *r, char *out, size_t n) {
              r->map->profile_name, keys[0] ? keys : "prod.keys");
     }
     return rc == 0 ? 0 : -1;
+}
+
+/* The RomM id of the Switch game with this title id (switchid_game_of) the
+ * emulator has here, 0 for none. Under state_lock. */
+static int nx_game_here(const profile_map *m, uint64_t game) {
+    const cJSON *e;
+    cJSON_ArrayForEach(e, state_section("roms")) {
+        const int rom = (int)jget_num(e, "rom_id", 0);
+        const uint64_t id = nx_record_title(e);
+        if (rom > 0 && jget_num(e, "with", 0) <= 0 && switchid_kind_of(id) == SWITCHID_GAME && switchid_game_of(id) == game &&
+            !strcmp(jget_str(e, "profile", ""), m->profile_id) && (file_exists(e->string) || dir_exists(e->string)))
+            return rom;
+    }
+    return 0;
+}
+
+/* An update's or DLC's record joins its game's: it goes with it ("with":
+ * removed with it, never a game of its own), and what a sync did with it as
+ * a game is the game's now. Same title, same save folder, same save: its
+ * history carries over, so the game doesn't meet its own save as a
+ * stranger's. Under state_lock. */
+static void nx_join(cJSON *e, int game_rom) {
+    const int rom = (int)jget_num(e, "rom_id", 0);
+    jset_num(e, "with", game_rom);
+    static const char *const synced[] = {"saves", "states"};
+    for (size_t i = 0; i < sizeof synced / sizeof *synced; i++) {
+        cJSON *x;
+        cJSON_ArrayForEach(x, state_section(synced[i])) if ((int)jget_num(x, "rom_id", 0) == rom) jset_num(x, "rom_id", game_rom);
+    }
+}
+
+void sync_nx_link(const profile_map *m, const char *path) {
+    int joined = 0;
+    state_lock();
+    cJSON *e = state_entry("roms", path), *x;
+    const uint64_t id = e ? nx_record_title(e) : 0;
+    const int rom = e ? (int)jget_num(e, "rom_id", 0) : 0;
+    if (rom > 0 && jget_num(e, "with", 0) <= 0 && nx_is_addon(id)) {
+        const int game = nx_game_here(m, switchid_game_of(id));
+        if (game > 0) {
+            nx_join(e, game);
+            LOGI("%s goes with game %d", path_basename(path), game);
+            joined++;
+        }
+    } else if (rom > 0 && jget_num(e, "with", 0) <= 0 && switchid_kind_of(id) == SWITCHID_GAME) {
+        cJSON_ArrayForEach(x, state_section("roms")) {
+            const uint64_t t = nx_record_title(x);
+            if (x == e || jget_num(x, "rom_id", 0) <= 0 || jget_num(x, "with", 0) > 0 || !nx_is_addon(t) ||
+                switchid_game_of(t) != switchid_game_of(id) || strcmp(jget_str(x, "profile", ""), m->profile_id) != 0)
+                continue;
+            nx_join(x, rom);
+            LOGI("%s goes with game %d, downloaded after it", path_basename(x->string), rom);
+            joined++;
+        }
+    }
+    if (joined) state_save();
+    state_unlock();
+}
+
+/* Switch updates and DLC whose names don't say so ("Animal Crossing New
+ * Horizons v3.0.3.nsp", an entry of its own in RomM) came down into the
+ * games folder as games before anyone looked inside them, and synced their
+ * game's save as their own. Each is told for what it is now: no game id or
+ * conflict of its own, with its game when that's here, and moved where the
+ * emulator takes updates and DLC (when that's not the games folder), never
+ * while it runs. Nothing in the way is replaced. Under g_run_lock. */
+static void nx_settle(const profile_map *maps, int n) {
+    if (library_busy()) return; /* a download could be writing where one goes */
+    for (int i = 0; i < n; i++) {
+        const profile_map *m = &maps[i];
+        int seen = m->twin || !profile_map_handles(m, "switch", NULL);
+        for (int k = 0; k < i && !seen; k++) seen = !strcmp(maps[k].profile_id, m->profile_id);
+        if (seen) continue;
+        char (*paths)[PATH_MAX_LEN] = NULL;
+        int np = 0, cap = 0, changed = 0;
+        const cJSON *e;
+        state_lock();
+        cJSON_ArrayForEach(e, state_section("roms")) {
+            if (jget_num(e, "rom_id", 0) <= 0 || nx_name_title(e->string) || strcmp(jget_str(e, "profile", ""), m->profile_id) != 0)
+                continue;
+            if (np == cap) {
+                void *grown = realloc(paths, sizeof *paths * (size_t)(cap ? cap * 2 : 8));
+                if (!grown) break;
+                paths = grown;
+                cap = cap ? cap * 2 : 8;
+            }
+            str_copy(paths[np++], PATH_MAX_LEN, e->string);
+        }
+        state_unlock();
+        /* What each is, games too, before any is matched with its game. */
+        uint64_t *ids = calloc((size_t)(np ? np : 1), sizeof *ids);
+        for (int k = 0; ids && k < np; k++)
+            if (file_exists(paths[k]) || dir_exists(paths[k])) ids[k] = sync_nx_title(m, paths[k], 0);
+        for (int k = 0; ids && k < np; k++) {
+            if (!nx_is_addon(ids[k])) continue;
+            const char *name = path_basename(paths[k]);
+            const int update = switchid_kind_of(ids[k]) == SWITCHID_UPDATE;
+            state_lock();
+            cJSON *rec = state_entry("roms", paths[k]);
+            const int rom = rec ? (int)jget_num(rec, "rom_id", 0) : 0;
+            if (rom > 0 && cJSON_GetObjectItemCaseSensitive(rec, "game_id")) {
+                /* Synced as a game: its conflicts were its game's to settle, and a sync of the game finds any again. */
+                cJSON_DeleteItemFromObjectCaseSensitive(rec, "game_id");
+                cJSON *sec = state_section("conflicts"), *x = sec->child;
+                while (x) {
+                    cJSON *next = x->next;
+                    if ((int)jget_num(x, "rom_id", 0) == rom) cJSON_Delete(cJSON_DetachItemViaPointer(sec, x));
+                    x = next;
+                }
+                LOGI("%s is %s of %016llX, not a game: its saves are the game's", name, update ? "an update" : "DLC",
+                     (unsigned long long)switchid_game_of(ids[k]));
+                changed++;
+            }
+            const int game = rom > 0 && jget_num(rec, "with", 0) <= 0 ? nx_game_here(m, switchid_game_of(ids[k])) : 0;
+            if (game > 0) {
+                nx_join(rec, game);
+                LOGI("%s goes with game %d", name, game);
+                changed++;
+            }
+            state_unlock();
+            const char *into = update ? m->update_dir : m->dlc_dir;
+            char dir[PATH_MAX_LEN], to[PATH_MAX_LEN];
+            str_copy(dir, sizeof dir, paths[k]);
+            char *slash = strrchr(dir, '/');
+            if (slash) *slash = 0;
+            path_join(to, sizeof to, into, name);
+            if (rom <= 0 || !into[0] || strcmp(dir, m->rom_dir) != 0 || !strcmp(into, m->rom_dir) || file_exists(to) ||
+                dir_exists(to) || !file_exists(paths[k]) || plat_is_mount(m->rom_dir))
+                continue;
+            if (!emulator_closed(m)) {
+                LOGI("%s moves to %s once %s is closed", name, into, m->profile_name);
+                continue;
+            }
+            if (mkdir_p(into) != 0 || move_file(paths[k], to) != 0) {
+                LOGW("could not move %s to %s", paths[k], into);
+                continue;
+            }
+            state_lock();
+            state_rekey(paths[k], to);
+            state_unlock();
+            LOGI("moved %s to %s, where %s looks for %s", name, into, m->profile_name, update ? "updates" : "DLC");
+            events_add("game", "moved", rom, to, m->profile_name, update ? "An update, into the updates folder" : "DLC, into its folder");
+            changed++;
+        }
+        if (changed) {
+            state_lock();
+            state_save();
+            state_unlock();
+        }
+        free(ids);
+        free(paths);
+    }
+}
+
+void sync_nx_settle(const profile_map *maps, int n) {
+    if (pthread_mutex_trylock(&g_run_lock) != 0) return; /* the sync running settles them itself */
+    nx_settle(maps, n);
+    pthread_mutex_unlock(&g_run_lock);
 }
 
 /* RomM no longer has the game this file was matched to (a rescan gives games

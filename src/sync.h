@@ -5,6 +5,7 @@
 #include <time.h>
 
 #include "cJSON.h"
+#include "profiles.h"
 
 void sync_init(void);                    /* starts the worker thread */
 void sync_request(const char *reason);   /* queued; repeats are merged */
@@ -68,5 +69,20 @@ int sync_scanned_dirs(char dirs[][1024], int *any_file, int max);
 
 /* Matches local games to RomM. */
 void sync_scan_local_roms(void);
+
+/* A Switch file's title id as it stands ("0100F4300BF2C800" for an update,
+ * switchid_kind_of says): its name's [title id], else the one inside it, read
+ * with the emulator's prod.keys and kept in its state.json record. fresh:
+ * read the file again, not the record. 0 when nothing says. */
+uint64_t sync_nx_title(const profile_map *m, const char *path, int fresh);
+/* A Switch file just recorded as downloaded: an update or DLC goes with its
+ * game when that's here, and a game takes in the updates and DLC here that
+ * were waiting for it. */
+void sync_nx_link(const profile_map *m, const char *path);
+/* Switch updates and DLC with nothing in their names to say so, left in the
+ * games folder as games by older versions: what each is, its game, and its
+ * move to update_dir or dlc_dir once the emulator is closed. Every sync does
+ * it first; this is for when none runs (save sync off). */
+void sync_nx_settle(const profile_map *maps, int n);
 
 #endif

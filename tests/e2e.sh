@@ -2006,6 +2006,95 @@ syncnow
 post /api/delete '{"rom_id":936}' >/dev/null
 [[ -z "$(find "$NX" "$NX2" -name 'Merge*')" ]] || fail "removing the game removes its update, in both emulators: $(find "$NX" "$NX2" -name 'Merge*')"
 
+echo "    Switch updates named without a title id (RomM's entry of their own): told by what's inside, never a game"
+# One emulator's folders from here: the extra goes.
+python3 - "$API" <<'PY' >/dev/null
+import json, sys, urllib.request
+api = sys.argv[1]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+profiles = [p for p in cfg["profiles"] if p.get("id") != "nxextra"]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+# Made up: a game and its update. As 1.4.2 left a Steam Deck: the update downloaded on its own into the
+# games folder beside its game, matched as a game with the game's id, the game's save going up to both.
+# Without a ticket and without prod.keys nothing says what it is, so this version does the same.
+CR=0100C0DE0A000000; CRU="Crossing v3.0.3.nsp"
+python3 "$ROOT/tests/make_switch.py" nsp "$NX/roms/$CRU" 0100C0DE0A000800 "$T/made-up.keys" noticket
+printf 'ROM:crossing' > "$NX/roms/Crossing [$CR][v0].nsp"
+nxrom "{\"id\":945,\"platform_id\":90,\"name\":\"Crossing\",\"fs_name\":\"Crossing [$CR][v0].nsp\"}"
+nxrom "{\"id\":946,\"platform_id\":90,\"name\":\"Crossing\",\"fs_name\":\"$CRU\",\"title_id\":\"$CR\"}"
+mkdir -p "$NS/$U1/$CR"; printf 'crossing-1' > "$NS/$U1/$CR/SaveData.bin"
+syncnow
+nxrec() { python3 -c "
+import json,sys; e=json.load(open(sys.argv[1]))['roms'].get(sys.argv[2])
+print(e and (e.get('rom_id'), e.get('game_id', ''), e.get('with', ''), e.get('title_id', '')))" "$T/data/state.json" "$1"; }
+nxsv() { curl -skf "$SV/_admin/dump" | python3 -c "
+import io,json,sys,zipfile
+out = []
+for s in json.load(sys.stdin)['saves']:
+    if s['rom_id'] == $1:
+        z = zipfile.ZipFile(io.BytesIO(s['content'].encode('latin1')))
+        out += [z.read(n).decode() for n in z.namelist() if n.endswith('SaveData.bin')]
+print(sorted(out))"; }
+[[ "$(nxrec "$NX/roms/$CRU")" == "(946, '$CR', '', '')" ]] || fail "the update must be in 1.4.2's state to begin with: $(nxrec "$NX/roms/$CRU")"
+[[ "$(nxsv 945)/$(nxsv 946)" == "['crossing-1']/['crossing-1']" ]] || fail "1.4.2's state: the game's save on both: $(nxsv 945)/$(nxsv 946)"
+# The keys come while the emulator runs: the update is told for one, its game's save the game's alone.
+echo "PPSA00000" > "$T/data/foreground"
+for _ in $(seq 1 30); do [[ "$(last reason)" == "game started" ]] && break; sleep 0.5; done
+mkdir -p "$NX/keys" && cp "$T/made-up.keys" "$NX/keys/prod.keys"
+sleep 1.1; printf 'crossing-2' > "$NS/$U1/$CR/SaveData.bin"
+syncnow
+[[ "$(nxrec "$NX/roms/$CRU")" == "(946, '', 945, '0100C0DE0A000800')" ]] \
+  || fail "the update must go with its game, with no game id of its own: $(nxrec "$NX/roms/$CRU")"
+[[ -f "$NX/roms/$CRU" && ! -e "$NX/updates/$CRU" ]] || fail "nothing moves while the emulator runs: $(find "$NX" -name 'Crossing*')"
+[[ "$(nxsv 945)" == *crossing-2* && "$(nxsv 946)" == "['crossing-1']" ]] || fail "the game's save goes up to the game alone: $(nxsv 945)/$(nxsv 946)"
+# Closed: the update moves where the emulator takes updates, its record with it.
+rm "$T/data/foreground"
+for _ in $(seq 1 30); do [[ -f "$NX/updates/$CRU" ]] && break; sleep 0.5; done
+[[ -f "$NX/updates/$CRU" && ! -e "$NX/roms/$CRU" ]] || fail "closed, the update must move to updates: $(find "$NX" -name 'Crossing*')"
+[[ "$(nxrec "$NX/updates/$CRU")/$(nxrec "$NX/roms/$CRU")" == "(946, '', 945, '0100C0DE0A000800')/None" ]] \
+  || fail "the update's record must follow it: $(nxrec "$NX/updates/$CRU")/$(nxrec "$NX/roms/$CRU")"
+# Another device's save on the update's entry never comes down here, and the update isn't a game on the console.
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":946,\"slot\":\"autosave\",\"file_name\":\"$CR.zip\",\"content_b64\":\"$(python3 -c "
+import base64,io,zipfile
+b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('$CR/SaveData.bin','crossing-946'); z.close()
+print(base64.b64encode(b.getvalue()).decode())")\"}" >/dev/null
+syncnow
+[[ "$(cat "$NS/$U1/$CR/SaveData.bin")" == crossing-2 ]] || fail "a save of the update's own entry came down: $(cat "$NS/$U1/$CR/SaveData.bin")"
+[[ "$(nxsv 946)" == "['crossing-1', 'crossing-946']" ]] || fail "nothing more goes up to the update: $(nxsv 946)"
+inst=$(curl -sf "$API/api/installed?limit=100" | python3 -c "import json,sys; print(sorted(g['id'] for g in json.load(sys.stdin) if g['id'] in (945, 946)))")
+[[ "$inst" == "[945]" ]] || fail "the update isn't a game of its own on the console: $inst"
+echo "    one downloaded alone goes in the updates folder; its game, downloaded after, takes it in"
+rm -r "$NX/keys" # its ticket says, no keys needed
+IS=0100C0DE0B000000
+python3 "$ROOT/tests/make_switch.py" nsp "$T/isle.nsp" 0100C0DE0B000800 "$T/made-up.keys"
+nxrom "{\"id\":947,\"platform_id\":90,\"name\":\"Isle\",\"fs_name\":\"Isle [$IS][v0].nsp\"}"
+nxrom "{\"id\":948,\"platform_id\":90,\"name\":\"Isle\",\"fs_name\":\"Isle v1.2.0.nsp\",
+  \"files\":[{\"id\":9481,\"file_name\":\"Isle v1.2.0.nsp\",\"content_b64\":\"$(base64 -w0 "$T/isle.nsp")\"}]}"
+post /api/download '{"rom_id":948}' >/dev/null
+[[ "$(nxdone 948)" == done ]] || fail "the update didn't download: $(curl -sf "$API/api/downloads")"
+[[ -f "$NX/updates/Isle v1.2.0.nsp" && ! -e "$NX/roms/Isle v1.2.0.nsp" ]] || fail "an update downloaded alone goes in updates: $(find "$NX" -name 'Isle*')"
+cmp -s "$T/isle.nsp" "$NX/updates/Isle v1.2.0.nsp" || fail "the update came down changed"
+[[ "$(nxrec "$NX/updates/Isle v1.2.0.nsp")" == "(948, '', '', '0100C0DE0B000800')" ]] || fail "the update's record: $(nxrec "$NX/updates/Isle v1.2.0.nsp")"
+lib=$(curl -sf "$API/api/roms?platform_id=90&limit=60&search=isle" | python3 -c "
+import json,sys
+for g in json.load(sys.stdin)['items']: print(g['id'], bool(g.get('not_game')), g.get('addon',''))")
+[[ "$lib" == $'947 False \n948 True update' ]] || fail "once down, RomM's entry shows as the update it is: $lib"
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":948,\"slot\":\"autosave\",\"file_name\":\"$IS.zip\",\"content_b64\":\"$(python3 -c "
+import base64,io,zipfile
+b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('$IS/SaveData.bin','isle-948'); z.close()
+print(base64.b64encode(b.getvalue()).decode())")\"}" >/dev/null
+syncnow
+[[ ! -e "$NS/$U1/$IS" ]] || fail "an update alone is no game, its entry's save must not come down: $(find "$NS/$U1/$IS")"
+post /api/download '{"rom_id":947}' >/dev/null
+[[ "$(nxdone 947)" == done ]] || fail "the game didn't download: $(curl -sf "$API/api/downloads")"
+[[ -f "$NX/roms/Isle [$IS][v0].nsp" && "$(nxrec "$NX/updates/Isle v1.2.0.nsp")" == "(948, '', 947, '0100C0DE0B000800')" ]] \
+  || fail "the game downloaded after must take its update in: $(nxrec "$NX/updates/Isle v1.2.0.nsp")"
+for g in 947 945; do post /api/delete "{\"rom_id\":$g}" >/dev/null; done
+[[ -z "$(find "$NX" -name 'Isle*' -o -name 'Crossing*')" ]] || fail "removing a game removes the updates it took in: $(find "$NX" -name 'Isle*' -o -name 'Crossing*')"
+rm -rf "$NS/$U1/$CR" "$NS/$U1/$IS" "$T/isle.nsp"
+
 echo "28c. Xbox saves: E:\\UDATA\\<title id> inside xemu's hard disk image, as RomM's save unit; never while xemu runs"
 XB="$T/homebrew/PPSA97358"; XS="$T/xbsave"; mkdir -p "$XB/games" "$XB/hdd" "$XS/006412E217B6"
 python3 "$ROOT/tests/make_disc.py" xiso "$XB/games/Halo (USA).xiso.iso" 4D530004

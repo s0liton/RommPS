@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""A made-up Switch cartridge dump for tests, and the prod.keys that opens it.
+"""Made-up Switch dumps for tests, and the prod.keys that opens them.
 
     make_switch.py xci <out.xci> <TITLE_ID> <prod.keys>
+    make_switch.py nsp <out.nsp> <TITLE_ID> <prod.keys> [noticket]
 
 The XCI's secure partition holds a meta and a Program NCA whose headers name
 the title id, encrypted as Nintendo's are (AES-128-XTS, the sector number
 big-endian in the tweak) under a made-up header_key, written to prod.keys.
+The NSP is laid out as an eShop update's: a ticket and certificate named by
+the rights id (the title id first), then meta, Program and Control NCAs;
+noticket leaves the ticket out, so only the key reads what it is.
 AES comes from the openssl command. No Nintendo data, no real keys.
 """
 import struct
@@ -62,6 +66,28 @@ def hfs0(files):
     return b"HFS0" + struct.pack("<III", len(files), len(names), 0) + table + names + data
 
 
+def pfs0(files):
+    names = b"".join(name.encode() + b"\0" for name, _ in files)
+    names += b"\0" * (-len(names) % 0x20)
+    table, data, name_at = b"", b"", 0
+    for name, body in files:
+        table += struct.pack("<QQII", len(data), len(body), name_at, 0)
+        name_at += len(name) + 1
+        data += body
+    return b"PFS0" + struct.pack("<III", len(files), len(names), 0) + table + names + data
+
+
+def nsp(title_id, ticket):
+    rights = "%016x%016x" % (title_id, 0xb)  # the title id, then the key generation
+    files = [(rights + ".tik", b"made-up ticket"), (rights + ".cert", b"made-up cert")] if ticket else []
+    # As real updates are: only the meta NCA names the update; its Program and
+    # Control NCAs name the game they patch.
+    patched = title_id & ~0xFFF if title_id & 0xFFF == 0x800 else title_id
+    return pfs0(files + [("0123456789abcdef0123456789abcdef.cnmt.nca", nca(1, title_id)),
+                         ("fedcba9876543210fedcba9876543210.nca", nca(0, patched)),
+                         ("00112233445566778899aabbccddeeff.nca", nca(2, patched))])
+
+
 def xci(title_id):
     secure = hfs0([("0123456789abcdef0123456789abcdef.cnmt.nca", nca(1, title_id)),
                    ("fedcba9876543210fedcba9876543210.nca", nca(0, title_id))])
@@ -73,10 +99,11 @@ def xci(title_id):
 
 
 def main():
-    if len(sys.argv) != 5 or sys.argv[1] != "xci":
+    if len(sys.argv) not in (5, 6) or sys.argv[1] not in ("xci", "nsp") or sys.argv[5:] not in ([], ["noticket"]):
         sys.exit(__doc__)
+    title_id = int(sys.argv[3], 16)
     with open(sys.argv[2], "wb") as f:
-        f.write(xci(int(sys.argv[3], 16)))
+        f.write(xci(title_id) if sys.argv[1] == "xci" else nsp(title_id, sys.argv[5:] != ["noticket"]))
     with open(sys.argv[4], "w") as f:
         f.write("master_key_00 = 00112233445566778899aabbccddeeff\nheader_key = %s\n" % HEADER_KEY.hex())
 
