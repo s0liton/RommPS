@@ -1824,6 +1824,10 @@ grep -q "save changed on disk: dev.bin" "$T/daemon.log" || fail "a change to the
 [[ "$(nxunits 913 | tail -1)" == *"0100DDDD00000000/save.bin=one-user device/0100DDDD00000000/dev.bin=one-device-2" ]] \
   || fail "the device save's change must go up with the user's save: $(nxunits 913)"
 for g in "Devone [0100DDDD00000000]" "Devtwo [0100EEEE00000000]" "Devthree [0100FFFF00000000]"; do rm "$NX/roms/$g[v0].nsp"; done
+# Their saves go too, once no sync that still saw the games is running. Merge, further down, is
+# 0100DDDD00000000 as well: it would inherit Devone's save (by title id, as it should) as one more upload.
+syncnow
+rm -r "$ND" "$NS/$U1/0100DDDD00000000" "$NS/$U1/0100EEEE00000000" "$NS/$U1/0100FFFF00000000"
 echo "    no title id in the name (No-Intro's) nor in RomM: read from the file, with the emulator's prod.keys"
 SNAP="New Pokemon Snap (World) (En,Ja,Fr,De,Es,It,Zh,Ko).xci"
 python3 "$ROOT/tests/make_switch.py" xci "$NX/roms/$SNAP" 0100F4300BF2C000 "$T/made-up.keys"
@@ -2198,8 +2202,8 @@ syncnow
 [[ "$(last uploaded)" == 0 && "$(last downloaded)" == 0 ]] || fail "DeSmuME's save and the others in step kept moving: $(last uploaded) up, $(last downloaded) down"
 
 echo "28c4b. RetroArch's MAME core: each set's NVRAM folder as <set>.zip in a slot of its own; the arcade entry's .srm syncs as before, whichever core it is"
-curl -skf -X POST "$SV/_admin/platform" -d '{"id":99,"slug":"arcade","name":"Arcade"}' >/dev/null
-curl -skf -X POST "$SV/_admin/rom" -d '{"id":990,"platform_id":99,"name":"Street Fighter II","fs_name":"sf2.zip"}' >/dev/null
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":93,"slug":"arcade","name":"Arcade"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":993,"platform_id":93,"name":"Street Fighter II","fs_name":"sf2.zip"}' >/dev/null
 AR="$T/raarcade"; mkdir -p "$AR/games" "$AR/saves/mame/nvram/sf2"
 printf 'ROM:sf2' > "$AR/games/sf2.zip"
 printf 'fbneo-sram' > "$AR/saves/sf2.srm"; printf 'mame-eeprom' > "$AR/saves/mame/nvram/sf2/eeprom"
@@ -2219,7 +2223,7 @@ PY
 arc() { curl -skf "$SV/_admin/dump" | python3 -c "
 import io,json,re,sys,zipfile
 newest = {}
-for s in sorted((s for s in json.load(sys.stdin)['saves'] if s['rom_id'] == 990), key=lambda s: s['updated_at']): newest[s['slot']] = s
+for s in sorted((s for s in json.load(sys.stdin)['saves'] if s['rom_id'] == 993), key=lambda s: s['updated_at']): newest[s['slot']] = s
 for slot, s in sorted(newest.items()):
     c = s['content'].encode('latin1')
     z = zipfile.ZipFile(io.BytesIO(c)) if c[:2] == b'PK' else None
@@ -2230,7 +2234,7 @@ syncnow
 want=$'autosave fbneo sf2.srm fbneo-sram\nautosave-mame mame sf2.zip sf2/eeprom=mame-eeprom'
 [[ "$(arc)" == "$want" ]] || fail "FBNeo's .srm and MAME's NVRAM must both go up, each in a slot of its own: $(arc)"
 syncnow
-[[ "$(arc)" == "$want" && "$(curl -skf "$SV/_admin/dump" | python3 -c "import json,sys; print(sum(s['rom_id'] == 990 for s in json.load(sys.stdin)['saves']))")" == 2 ]] \
+[[ "$(arc)" == "$want" && "$(curl -skf "$SV/_admin/dump" | python3 -c "import json,sys; print(sum(s['rom_id'] == 993 for s in json.load(sys.stdin)['saves']))")" == 2 ]] \
   || fail "the two in step must stay put: $(arc)"
 rm -r "$AR/saves/sf2.srm" "$AR/saves/mame/nvram/sf2"
 syncnow
