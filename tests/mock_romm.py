@@ -106,6 +106,8 @@ DB = {
     "cover_ts": {},   # rom id -> its cover's change stamp
     "asset_hits": 0,  # cover requests served
     "device_name": None,  # what the client last renamed its device to
+    "max_upload": 0,  # bytes a save or state upload may be, 0 for no limit (RomM's is 512 MB)
+    "refused_uploads": 0,  # uploads turned away for it
     "next_id": 100,
 }
 TOKEN = "rmm_" + "a" * 64
@@ -305,6 +307,13 @@ class H(BaseHTTPRequestHandler):
         parts = [unquote(x) for x in p.strip("/").split("/")]
         with LOCK:
             # no auth needed
+            n = int(self.headers.get("Content-Length") or 0)
+            if DB["max_upload"] and p in ("/api/saves", "/api/states") and method == "POST" and n > DB["max_upload"]:
+                # RomM's upload size middleware turns it away by Content-Length. The
+                # body is read first only so the client hears the answer.
+                self.rfile.read(n)
+                DB["refused_uploads"] += 1
+                return self.reply(413, {"detail": f"Request body exceeds the maximum allowed size of {DB['max_upload']} bytes"})
             if p.startswith("/assets/busy/"):  # RomM too busy to answer
                 return self.reply(503, {"detail": "busy"})
             if p.startswith("/assets/"):
@@ -390,6 +399,9 @@ class H(BaseHTTPRequestHandler):
                                             "file_size_bytes": len(buf.getvalue()), "created_at": NOW().isoformat(),
                                             "missing_from_fs": False, "content": buf.getvalue()})
                 return self.reply(200, {"ok": True})
+            if p == "/_admin/max_upload" and method == "POST":
+                DB["max_upload"] = int(self.json_body()["bytes"])
+                return self.reply(200, {"ok": True})
             if p == "/_admin/cut" and method == "POST":
                 b = self.json_body()
                 DB["cut_next"], DB["cut_after"] = int(b["bytes"]), int(b.get("after", 0))
@@ -427,6 +439,7 @@ class H(BaseHTTPRequestHandler):
                                         "states": [save_public(s) for s in DB["states"].values()],
                                         "sessions": DB["sessions"],
                                         "asset_hits": DB["asset_hits"], "device_name": DB["device_name"],
+                                        "refused_uploads": DB["refused_uploads"],
                                         "cards": [{"name": c["name"], "emulator": c["emulator"], "versions": len(c["versions"]),
                                                    "latest": card_latest(c), "latest_md5": card_latest_md5(c)}
                                                   for c in DB["cards"].values()]})
