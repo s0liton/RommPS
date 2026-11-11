@@ -74,7 +74,8 @@ add_executable(rommdeck
 	${screen_sources}
 	${REPO}/platform/ps5/app/src/rommps_api.cpp
 	${REPO}/third_party/cJSON.c
-	${REPO}/third_party/qrcodegen.c)
+	${REPO}/third_party/qrcodegen.c
+	${REPO}/src/version.c)
 target_include_directories(rommdeck PRIVATE
 	src
 	${KIT_COPY}/src
@@ -85,6 +86,12 @@ target_include_directories(rommdeck PRIVATE
 target_compile_definitions(rommdeck PRIVATE ROMMPS_DECK GL_GLEXT_PROTOTYPES HUI_VIRTUAL_HEIGHT=1200.0f HUI_DECK_GLYPHS)
 if(DEFINED ENV{BUILD_ID})
 	target_compile_definitions(rommdeck PRIVATE ROMMPS_BUILD="$ENV{BUILD_ID}")
+endif()
+# RommDeck ships its service with it, on RommDeck's own version numbers: the
+# service it wants is its own version, not RommPS's kMinPayload. Unset (a
+# local build), both fall back to the release literal and still agree.
+if(DEFINED ENV{ROMMPS_PAYLOAD_VERSION} AND NOT "$ENV{ROMMPS_PAYLOAD_VERSION}" STREQUAL "")
+	target_compile_definitions(rommdeck PRIVATE "ROMMPS_PAYLOAD_VERSION=\"$ENV{ROMMPS_PAYLOAD_VERSION}\"")
 endif()
 
 find_package(SDL3 REQUIRED CONFIG COMPONENTS SDL3-static)

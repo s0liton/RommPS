@@ -33,7 +33,7 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
       # The tag tools/deck-build.sh runs; keep the two in step.
-      DECK_IMAGE: romm-sync-deck:4
+      DECK_IMAGE: romm-sync-deck:5
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +53,7 @@ jobs:
       - name: Build
         run: |
           tools/deck-build.sh make steamdeck VERSION="${VERSION#v}"
-          tools/deck-build.sh bash -c 'cmake -S platform/steamdeck/app -B build/steamdeck/app -G Ninja \
+          ROMMPS_PAYLOAD_VERSION="${VERSION#v}" tools/deck-build.sh bash -c 'cmake -S platform/steamdeck/app -B build/steamdeck/app -G Ninja \
             && cmake --build build/steamdeck/app'
 
       # RetroDECK, EmuDeck and standalone layouts, each against the mock RomM.
