@@ -148,7 +148,7 @@ Note: RommPS relies on your emulator **NOT** being sandboxed. Some emulators req
 | PS64 | Commodore 64 | Full Support | Save disks | Games save into their own disk images. No save states |
 | PS5-ECAM | Wii U, 3DS, DS, Switch | Full Support | Wii U, 3DS, DS and Switch saves, 3DS and DS states | 3DS and DS states only load in PS5-ECAM. Switch saves are one player's, the same save as ProsperoEden's on RomM |
 | [Porpoise](https://github.com/elripalda/Porpoise-Dolphin-Emulator-for-PS5) | Wii/GameCube | Full Support | GameCube and Wii saves, and states | - |
-| XPSemu | Xbox | Full Support | Saves | Read from and written into its hard disk image, only while it's closed |
+| XPSemu | Xbox | Full Support | Saves | Alpha 3's hard disk folders (`/data/xpsemu/hdd`), or Alpha 2's disk image only while it's closed. New games go to `/data/xpsemu/games`; ones in `/data/xemu/games` stay |
 | [PS5X360](https://github.com/BrinooTk/PS5X360) | Xbox 360 | Full Support | Saves | The first signed-in player's saves; games go in `/data/xbox360`, a folder each |
 | Seedee5 | Philips CD-i | Full Support | Saves and states | Each game's NVRAM is its save |
 | [ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden) | Switch | Full Support | Saves | One Switch user's saves (the first PS5 user's, unless set otherwise). Steps aside when ProsperoEden's own RomM sync is set up |

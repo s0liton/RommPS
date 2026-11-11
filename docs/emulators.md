@@ -161,11 +161,13 @@ Each game's saves are the console's NVRAM (one 8 KB file, written every 20 s whi
 
 ### XPSemu
 
-Saves sync from inside its hard disk image, once it's closed.
+Saves sync from its hard disk: Alpha 3's folders, or Alpha 2's image once it's closed.
+
+`{user_dir}`: `/data/xpsemu`, else `{root}`, the first that's there.
 
 | System | Games | Saves | Save files | Saved as | States | State files | Memory cards |
 |---|---|---|---|---|---|---|---|
-| xbox | `{root}/games` | `{rom_dir}` | a zip per game (xbox), from  |  | `{rom_dir}` | `.state*` |  |
+| xbox | `{user_dir}/games` (games already in `{root}/games` stay there) | E:\UDATA on its hard disk | a zip per game (xbox), from its hard disk's folders, `/data/xpsemu/hdd`, when there; else the hard disk image `xemu.toml` names |  | `{rom_dir}` | `.state*` |  |
 
 ### PS5X360
 

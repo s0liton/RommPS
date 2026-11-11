@@ -878,6 +878,24 @@ static int other_disc(const job *j, const cJSON *f) {
     return j->disc && d && d != j->disc;
 }
 
+/* The folder a game goes in: rom_dir, unless it's already in one the emulator
+ * still plays from (old_rom_dirs). Downloaded again, it's replaced there
+ * rather than turning up twice. */
+static const char *games_dir(const profile_map *m, const char *name, char *buf, size_t n) {
+    char list[sizeof m->old_rom_dirs], path[PATH_MAX_LEN], *save = NULL;
+    path_join(path, sizeof path, m->rom_dir, name);
+    if (file_exists(path) || dir_exists(path)) return m->rom_dir;
+    str_copy(list, sizeof list, m->old_rom_dirs);
+    for (char *t = strtok_r(list, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+        path_join(path, sizeof path, t, name);
+        if (file_exists(path) || dir_exists(path)) {
+            str_copy(buf, n, t);
+            return buf;
+        }
+    }
+    return m->rom_dir;
+}
+
 static void run_rom_job(job *j) {
     char path[2048], dest[PATH_MAX_LEN];
     snprintf(path, sizeof path, "/api/roms/%d", j->target_id);
@@ -948,18 +966,18 @@ static void run_rom_job(job *j) {
         pthread_mutex_unlock(&g_q_lock);
     }
     /* The game is dest, or with game_folders a folder of its own holding it. */
-    char game[PATH_MAX_LEN];
+    char game[PATH_MAX_LEN], stem[256], into[PATH_MAX_LEN];
     const int wrap = !multi && m->game_folders;
+    path_stem(stem, sizeof stem, fs_name);
+    const char *dir = games_dir(m, wrap ? stem : fs_name, into, sizeof into);
     if (wrap) {
-        char stem[256];
-        path_stem(stem, sizeof stem, fs_name);
-        path_join(game, sizeof game, m->rom_dir, stem);
+        path_join(game, sizeof game, dir, stem);
         path_join(dest, sizeof dest, game, fs_name);
     } else {
-        path_join(dest, sizeof dest, m->rom_dir, fs_name);
+        path_join(dest, sizeof dest, dir, fs_name);
         str_copy(game, sizeof game, dest);
     }
-    mkdir_p(wrap ? game : m->rom_dir);
+    mkdir_p(wrap ? game : dir);
     /* A game downloaded again: cancelling keeps what was already there. */
     const int had = file_exists(dest) || dir_exists(dest);
     int ok = 1;
@@ -1176,6 +1194,11 @@ static void clear_parts(void) {
             for (size_t j = 0; j < k; j++) seen |= !strcmp(dirs[j], dirs[k]);
             if (dirs[k][0] && !seen && !plat_is_mount(dirs[k])) clear_parts_in(dirs[k], 1);
         }
+        /* A game downloaded again where it was (games_dir) can leave some there too. */
+        char list[sizeof maps[i].old_rom_dirs], *save = NULL;
+        str_copy(list, sizeof list, maps[i].old_rom_dirs);
+        for (char *t = strtok_r(list, ",", &save); t; t = strtok_r(NULL, ",", &save))
+            if (strcmp(t, maps[i].rom_dir) != 0 && !plat_is_mount(t)) clear_parts_in(t, 1);
     }
     profiles_free(maps);
 }

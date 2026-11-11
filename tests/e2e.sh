@@ -1942,6 +1942,62 @@ syncnow
 [[ "$(python3 "$ROOT/tests/xboxhdd.py" get "$XB/hdd/disk.qcow2" 4D530099 "$T/xbout")" == none ]] || fail "a save went onto the disk for a game with no id"
 rm "$XB/games/Cut (USA).xiso.iso"
 
+echo "28c6. XPSemu 3's hard disk as folders (Partition1 is E:): the image's save unit, the folders winning once there; Alpha 2's games stay"
+# As the preset has it, its folders not there yet (still Alpha 2): the image, and the games where they are.
+python3 - "$API" <<'PY' >/dev/null
+import json, sys, urllib.request
+api = sys.argv[1]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+for p in cfg["profiles"]:
+    if p.get("id") == "xboxlike":
+        p.update({"user_dir": "{root}/xpsemu,{root}", "rom_dir": "{user_dir}/games", "old_rom_dirs": "{root}/games"})
+        p["platforms"][0]["bundle_dirs"] = "{root}/xpsemu/hdd"
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": cfg["profiles"]}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+img=$(md5sum < "$XB/hdd/disk.qcow2"); units=$(xbunits)
+syncnow
+[[ "$(last uploaded)$(last downloaded)" == 00 && "$(xbunits)" == "$units" ]] || fail "with no folders yet, the image must stay the disk: $(last uploaded) up, $(last downloaded) down"
+# Alpha 3 runs once: its folders turn up empty beside Alpha 2's image, and RomM's saves come down onto them.
+XE="$XB/xpsemu/hdd/Partition1/UDATA"; mkdir -p "$XB/xpsemu/hdd" "$XB/xpsemu/games"
+syncnow
+[[ "$(cat "$XE/4d530004/006412E217B6/savegame.bin" 2>/dev/null)" == halo-save-2 && "$(cat "$XE/4d530004/TitleMeta.xbx" 2>/dev/null)" == meta ]] \
+  || fail "RomM's save must come down onto the folders, named as its zip has it: $(find "$XB/xpsemu" -type f)"
+[[ "$(cat "$XE/4C410014/SLOT0/rally.sav" 2>/dev/null)" == rally-from-pc ]] || fail "a game in Alpha 2's folder must still sync: $(find "$XB/xpsemu" -type f)"
+[[ "$(md5sum < "$XB/hdd/disk.qcow2")" == "$img" && ! -e "$XB/hdd/disk.qcow2.romm" ]] || fail "the image left behind must stay as it was"
+[[ ! -e "$T/data/xbox/4D530004" && ! -e "$T/data/xbox/4C410014" ]] || fail "the copies made out of the image must go: $(ls "$T/data/xbox")"
+syncnow
+[[ "$(last uploaded)$(last downloaded)" == 00 ]] || fail "a save placed on the folders must be RomM's to the byte: $(last uploaded) up, $(last downloaded) down"
+sleep 1.1; printf 'halo-save-3' > "$XE/4d530004/006412E217B6/savegame.bin"
+syncnow
+[[ "$(xbunits)" == *"(960, '4D530004', 'xemu', [('4d530004/006412E217B6/savegame.bin', 'halo-save-3'), ('4d530004/TitleMeta.xbx', 'meta')])"* ]] \
+  || fail "a save made on the folders must go up as the same save unit: $(xbunits)"
+# Nothing holds folders open: saves go up as it plays and RomM's wait for it to close, as with any emulator.
+echo "PPSA97358" > "$T/data/foreground"
+for _ in $(seq 1 30); do [[ "$(last reason)" == "game started" ]] && break; sleep 0.5; done
+[[ "$(last reason)" == "game started" ]] || fail "no sync when XPSemu started"
+b64=$(python3 -c "import base64,io,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('4C410014/SLOT0/rally.sav','rally-from-pc-2'); z.writestr('4C410014/TitleMeta.xbx','rally'); z.close(); print(base64.b64encode(b.getvalue()).decode())")
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":961,\"slot\":\"autosave\",\"file_name\":\"4C410014.zip\",\"emulator\":\"xemu\",\"content_b64\":\"$b64\"}" >/dev/null
+sleep 1.1; printf 'halo-save-4' > "$XE/4d530004/006412E217B6/savegame.bin"
+syncnow
+[[ "$(xbunits)" == *"'4d530004/006412E217B6/savegame.bin', 'halo-save-4'"* ]] || fail "a save made while XPSemu runs must go up: $(xbunits)"
+[[ "$(cat "$XE/4C410014/SLOT0/rally.sav")" == rally-from-pc ]] || fail "RomM's save must wait for XPSemu to close"
+rm "$T/data/foreground"
+for _ in $(seq 1 30); do [[ "$(cat "$XE/4C410014/SLOT0/rally.sav")" == rally-from-pc-2 ]] && break; sleep 0.5; done
+[[ "$(cat "$XE/4C410014/SLOT0/rally.sav")" == rally-from-pc-2 ]] || fail "RomM's save must come down once XPSemu closed"
+[[ "$(md5sum < "$XB/hdd/disk.qcow2")" == "$img" ]] || fail "nothing may go onto the image once the folders are in use"
+# A new game goes to Alpha 3's folder; one in Alpha 2's stays there, downloaded again too.
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":963,"platform_id":96,"name":"Jade","fs_name":"Jade (USA).iso","save_target":"4D53000F"}' >/dev/null
+post /api/download '{"rom_id":963,"name":"Jade"}' >/dev/null
+post /api/download '{"rom_id":961,"name":"Rally"}' >/dev/null
+for _ in $(seq 1 40); do [[ -f "$XB/xpsemu/games/Jade (USA).iso" && "$(cat "$XB/games/Rally (USA).xiso.iso")" == "ROM:Rally (USA).xiso.iso" ]] && break; sleep 0.25; done
+[[ -f "$XB/xpsemu/games/Jade (USA).iso" && ! -e "$XB/games/Jade (USA).iso" ]] || fail "a new game must go to Alpha 3's games folder"
+[[ "$(cat "$XB/games/Rally (USA).xiso.iso")" == "ROM:Rally (USA).xiso.iso" && ! -e "$XB/xpsemu/games/Rally (USA).xiso.iso" ]] \
+  || fail "a game in Alpha 2's folder downloaded again must stay there"
+sleep 3   # the watcher sees the downloads settle
+syncnow
+[[ "$(last uploaded)$(last downloaded)" == 00 ]] || fail "XPSemu's saves must end in step with RomM: $(last uploaded) up, $(last downloaded) down"
+
 echo "28c2. DS saves: melonDS's .sav and the melonDS DS core's .srm are one raw save, shared between a main emulator and an extra"
 curl -skf -X POST "$SV/_admin/platform" -d '{"id":98,"slug":"nds","name":"Nintendo DS"}' >/dev/null
 curl -skf -X POST "$SV/_admin/rom" -d '{"id":980,"platform_id":98,"name":"Pocket Test","fs_name":"Pocket Test (USA).nds"}' >/dev/null
@@ -2282,8 +2338,15 @@ cat, t = json.load(open(sys.argv[1])), sys.argv[3]
 cat.append({"id": "ps5cemu", "name": "PS5-ECAM", "detect": [t + "/ecam2"], "profile": {"root": t + "/ecam2", "platforms": [
     {"romm": ["nds"], "dir": "nds", "user_dir": "{root}/melonds," + t + "/melonds2", "rom_dir": "{user_dir}/games",
      "save_dir": "{user_dir}/saves", "bios_dir": "{user_dir}/bios"}]}})
+# XPSemu's preset as Alpha 3 needs it, the folders under $T.
+cat.append({"id": "xpsemu", "name": "XPSemu", "detect": [t + "/xemu2"], "profile": {
+    "root": t + "/xemu2", "user_dir": t + "/xpsemu2,{root}", "rom_dir": "{user_dir}/games", "old_rom_dirs": "{root}/games",
+    "bios_dir": "{root}", "platforms": [{"romm": ["xbox"], "dir": "xbox", "emulator": "xemu", "save_layout": "xbox",
+                                         "bundle_dirs": t + "/xpsemu2/hdd"}]}})
 json.dump(cat, open(sys.argv[1], "w"))
 json.dump({"web_port": 8787, "sync_interval_min": 0, "profiles_custom": True, "profiles": [
+    {"id": "xpsemu", "name": "XPSemu", "enabled": True, "root": t + "/xemu2", "rom_dir": "{root}/games", "bios_dir": "{root}",
+     "platforms": [{"romm": ["xbox"], "dir": "xbox", "emulator": "xemu", "save_layout": "xbox"}]},
     {"id": "ps5cemu", "name": "PS5-ECAM", "enabled": True, "root": t + "/ecam2", "platforms": [
         {"romm": ["nds"], "dir": "nds", "rom_dir": "{root}/melonds/games", "save_dir": "{root}/melonds/saves",
          "bios_dir": "/mine/bios"}]},
@@ -2308,6 +2371,12 @@ e = [p for p in json.load(open(sys.argv[1]))['profiles'] if p['id'] == 'ps5cemu'
 print(e.get('user_dir', '').split(',')[0], e['rom_dir'], e['save_dir'], e['bios_dir'])" "$D4/config.json")
 [[ "$got" == "{root}/melonds {user_dir}/games {user_dir}/saves /mine/bios" ]] \
   || fail "the shipped DS folders must follow the preset, a folder the user set must stay: $got"
+got=$(python3 -c "
+import json,sys
+p = [p for p in json.load(open(sys.argv[1]))['profiles'] if p['id'] == 'xpsemu'][0]
+print(p['rom_dir'], p.get('user_dir', '').split(',')[1:], p.get('old_rom_dirs'), p['platforms'][0].get('bundle_dirs', '').endswith('/xpsemu2/hdd'))" "$D4/config.json")
+[[ "$got" == "{user_dir}/games ['{root}'] {root}/games True" ]] \
+  || fail "a saved XPSemu profile must take Alpha 3's folders and keep Alpha 2's games: $got"
 [[ ! -e "$T/moved/gb" ]] || fail "a system's old folder holding only copies must go: $(find "$T/moved/gb")"
 keys=$(python3 -c "import json,sys; print(list(json.load(open(sys.argv[1]))['saves']))" "$D4/state.json")
 [[ "$keys" == "['$T/movedgb/saves/Pocket (USA).sav']" ]] || fail "a save's record must follow its system to the new folder: $keys"

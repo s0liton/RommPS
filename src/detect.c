@@ -569,6 +569,7 @@ static const struct {
 } SHIPPED_VALUES[] = {
     {"seedee5", "save_dir", "{root}/saves"}, /* CD-i saves: each game's NVRAM, 1.4.0 */
     {"ps5sx2", "bios_dir", "{root}"},        /* PS5SX2 2.x lists its BIOS in bios/, 1.4.0 */
+    {"xpsemu", "rom_dir", "{root}/games"},   /* XPSemu 3's games go in /data/xpsemu/games (old_rom_dirs keeps Alpha 2's) */
     /* SwanStationPS5 names cards and states by serial once it knows it, 1.4.0 */
     {"swanstationps5", "save_name", "{rom_stem}_1{ext}"},
     {"swanstationps5", "save_stems", "{rom_stem}_1"},
