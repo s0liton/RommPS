@@ -34,7 +34,7 @@ SIGIL_SRCS := $(addprefix $(SIGIL)/src/,sync.c sync_state.c sync_kinds.c sync_ki
         card_ps1.c card_ps2.c card_gamecube.c card_dreamcast.c card_saturn.c card_segacd.c zip_mem.c \
         zip_entries.c md5.c sha1.c io_file.c n64_save.c clock_gb.c rzip.c sfo_parser.c psp_sfo.c) \
         $(SIGIL)/third_party/tiny-AES-c/aes.c
-SRCS := src/main.c src/util.c src/http.c src/romm.c src/config.c src/state.c \
+SRCS := src/main.c src/util.c src/http.c src/clientcert.c src/romm.c src/config.c src/state.c \
         src/profiles.c src/sync.c src/watch.c src/detect.c src/ra2.c src/playlist.c src/autostart.c src/memcard.c src/zip.c src/bundle.c src/gcmem.c src/statefmt.c src/events.c src/gameid.c src/covers.c src/library.c src/firmware.c src/pair.c src/web.c src/update.c src/presets.c src/cfgvars.c src/cfgwrite.c src/jsonlean.c src/ps2card.c src/xboxhdd.c src/n64.c src/duckcard.c \
         third_party/cJSON.c third_party/md5.c third_party/monocypher.c third_party/monocypher-ed25519.c \
         $(CHDR_SRCS) $(SIGIL_SRCS)
@@ -86,10 +86,14 @@ HOST_BIN := build/host/romm-sync
 
 host: $(HOST_BIN)
 
+# OpenSSL, where pkg-config finds it, for client certificates (mTLS); the
+# consoles always have it.
+HOST_SSL := $(shell pkg-config --exists openssl 2>/dev/null && echo -DROMM_OPENSSL `pkg-config --cflags --libs openssl`)
+
 # Host builds also trust the test key in tests/, so the e2e test can sign updates.
 $(HOST_BIN): $(SRCS) platform/host/platform.c $(HDRS) $(GEN_HEADERS)
 	@mkdir -p $(dir $@)
-	$(HOST_CC) $(COMMON_CFLAGS) -DROMM_UPDATE_TEST_KEY -o $@ $(SRCS) platform/host/platform.c -lcurl -lz -lpthread
+	$(HOST_CC) $(COMMON_CFLAGS) -DROMM_UPDATE_TEST_KEY -o $@ $(SRCS) platform/host/platform.c -lcurl $(HOST_SSL) -lz -lpthread
 
 # Unit tests for the parts with file formats of their own.
 unit: build/host/gcmem_test build/host/jsonlean_cli build/host/ps2card_test build/host/gameid_cli build/host/cfgvars_test \

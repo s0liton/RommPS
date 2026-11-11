@@ -4,6 +4,8 @@
 
 A [RomM](https://romm.app) companion client for jailbroken PS5 consoles (etaHEN or onionHEN, with kstuff) and PS4 consoles (GoldHEN). Through my insatiable need to mod everything electronic I encounter, I had my 12.70 PS5 jailbroken the minute that P2JB was out. I maintain a RomM server to centralize all my _legal_ ROMs, saves, and savestates, which all my devices sync with, and the PS5 needs similar treatment.
 
+> **RommDeck lands this week.** Your Steam Deck has been feeling left out, so it's getting the same treatment: the same sync, the same app, built for the Deck and working with RetroDECK and EmuDeck. It lives in its own repository, [s0liton/RommDeck](https://github.com/s0liton/RommDeck). Watch it if you want to know the moment it's out.
+
 - **Save and state sync**
   - Monitors save file changes in the background, and uploads them as soon as they've changed. Periodic syncs also ensure that your PS4/5 always has the latest saves and save states.
   - A game's saves come down the moment it finishes downloading, so it's ready to play.
@@ -96,6 +98,32 @@ The setup wizard walks you through five steps:
 5. Choosing when to sync in the background.
 
 **Back up your saves before the first sync.** Copy your emulator save folders to a computer or USB drive. RommPS keeps a local copy before replacing any file, but your own backup is the safest option.
+
+### Client certificate (mTLS)
+
+If your RomM server sits behind a reverse proxy that asks for a client certificate (mutual TLS: Traefik, Pangolin, nginx, Caddy), give RommPS that certificate as a PKCS#12 file (`.p12` or `.pfx`) **before** you connect:
+
+- **Web UI:** in the setup's first step, open *Client certificate (mTLS)*, pick the file, enter its password and choose *Use this certificate*. Later it's under Settings, Server. RommPS checks the file and the password right away and shows whose certificate it is and until when it's valid.
+- **By hand:** copy the file into `/data/romm-sync/` and add it to `/data/romm-sync/config.json`, then restart the payload. The path is relative to `/data/romm-sync/`, or absolute:
+
+  ```json
+  "client_cert": "client.p12",
+  "client_cert_password": "your password"
+  ```
+
+The certificate is only shown to your RomM server, never to GitHub (updates). The password is kept in `config.json` like RomM's token, and never shown by the web UI or put in diagnostics.
+
+If the server turns the connection down, RommPS says so: that it wants a certificate, or that it didn't accept this one (wrong CA, expired, revoked).
+
+Older `.p12` files encrypted with RC2 (OpenSSL 1.x's default, older Windows exports) can't be read on the PS5. Export yours again with AES:
+
+```sh
+openssl pkcs12 -in old.p12 -nodes -legacy -out cert.pem   # OpenSSL 1.1: without -legacy
+openssl pkcs12 -export -in cert.pem -out client.p12 -keypbe AES-256-CBC -certpbe AES-256-CBC -macalg sha256
+rm cert.pem   # it holds the unencrypted key
+```
+
+**Pangolin:** its own login for a resource (SSO, PIN, password) happens in a browser, which RommPS can't do. Turn authentication off for the RomM resource, or add a rule that lets it through, and let the client certificate (checked by Traefik) and RomM's own login guard it.
 
 ## Emulators
 RommPS has built-in profiles for most known emulators on the PS5, and will set the correct default game, save/save state, and bios directories for them. Since there is a huge influx of new emulators popping up, I will be doing my very best to keep up with them and add profiles accordingly.  

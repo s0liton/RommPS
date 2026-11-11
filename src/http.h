@@ -38,6 +38,18 @@ int http_upload_file(const char *method, const char *url, const char *auth, cons
 int http_download(const char *url, const char *auth, const char *dest, int resume,
                   http_progress_fn progress, void *ud, http_resp *out);
 
+/* mTLS: the certificate and key in a PKCS#12 (.p12) file, shown to the RomM
+ * server when it asks for one; never to the verified requests (GitHub).
+ * use 0 only reads it. p12 NULL (with use) takes it away. info gets
+ * "CN=name, valid until 2027-05-01". 0, or -1 and why in err. */
+int http_client_cert_load(const void *p12, size_t len, const char *password, int use, char *info, size_t in,
+                          char *err, size_t en);
+/* 1, and info as above, while one is in use. */
+int http_client_cert_info(char *info, size_t n);
+/* 1, and why, while url's server (any, if NULL) turns the TLS handshake down
+ * over the client certificate: it wants one, or won't take this one. */
+int http_client_cert_refused(const char *url, char *msg, size_t n);
+
 /* 1 if url's TLS certificate fails verification (self-signed, private CA). */
 int http_tls_untrusted(const char *url);
 

@@ -163,6 +163,9 @@ int config_load(void) {
             get_str(j, "device_id", g_cfg.device_id, sizeof g_cfg.device_id);
             get_str(j, "username", g_cfg.username, sizeof g_cfg.username);
             get_str(j, "server_version", g_cfg.server_version, sizeof g_cfg.server_version);
+            /* Not in config_apply_json: set with the certificate upload, or here by hand. */
+            get_str(j, "client_cert", g_cfg.client_cert, sizeof g_cfg.client_cert);
+            get_str(j, "client_cert_password", g_cfg.client_cert_password, sizeof g_cfg.client_cert_password);
             get_str(j, "romm_device_name", g_cfg.romm_device_name, sizeof g_cfg.romm_device_name);
             get_str(j, "client_device_identifier", g_cfg.client_device_identifier,
                     sizeof g_cfg.client_device_identifier);
@@ -199,6 +202,8 @@ cJSON *config_to_json(int include_secrets) {
     cJSON_AddStringToObject(j, "client_device_identifier", g_cfg.client_device_identifier);
     if (include_secrets) cJSON_AddStringToObject(j, "token", g_cfg.token);
     cJSON_AddBoolToObject(j, "tls_verify", g_cfg.tls_verify);
+    cJSON_AddStringToObject(j, "client_cert", g_cfg.client_cert);
+    if (include_secrets) cJSON_AddStringToObject(j, "client_cert_password", g_cfg.client_cert_password);
     cJSON_AddNumberToObject(j, "web_port", g_cfg.web_port);
     cJSON_AddNumberToObject(j, "sync_interval_min", g_cfg.sync_interval_min);
     cJSON_AddBoolToObject(j, "sync_on_game_exit", g_cfg.sync_on_game_exit);

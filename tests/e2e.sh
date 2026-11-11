@@ -26,6 +26,15 @@ TLS_PORT=8898
 openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=127.0.0.1 -keyout "$T/tls.pem" -out "$T/tls.crt" 2>/dev/null
 cat "$T/tls.crt" >> "$T/tls.pem"
 python3 "$ROOT/tests/mock_romm.py" $TLS_PORT "$T/tls.pem" 2>"$T/mock-tls.log" &
+# And once more behind mTLS: a client certificate from its own CA, as a .p12.
+MTLS_PORT=8897
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=client-ca -keyout "$T/cca.key" -out "$T/cca.crt" 2>/dev/null
+openssl req -newkey rsa:2048 -nodes -subj /CN=rommps-test -keyout "$T/client.key" -out "$T/client.csr" 2>/dev/null
+openssl x509 -req -in "$T/client.csr" -CA "$T/cca.crt" -CAkey "$T/cca.key" -CAcreateserial -days 1 -out "$T/client.crt" 2>/dev/null
+openssl pkcs12 -export -inkey "$T/client.key" -in "$T/client.crt" -passout pass:s3cret -out "$T/client.p12"
+openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=stranger -keyout "$T/other.key" -out "$T/other.crt" 2>/dev/null
+openssl pkcs12 -export -inkey "$T/other.key" -in "$T/other.crt" -passout pass: -out "$T/other.p12"
+MOCK_CLIENT_CA="$T/cca.crt" python3 "$ROOT/tests/mock_romm.py" $MTLS_PORT "$T/tls.pem" 2>"$T/mock-mtls.log" &
 RA="$T/RetroArch"; mkdir -p "$RA/roms/snes" "$RA/saves/Snes9x" "$T/data"
 # RetroArch defaults: saves sorted into a folder per core name.
 printf 'savefile_directory = ":/saves"\nsort_savefiles_enable = "true"\n' > "$RA/retroarch.cfg"
@@ -59,7 +68,7 @@ EOF
 mkdir -p "$T/etaHEN/payloads"; echo "old-payload" > "$T/etaHEN/payloads/romm-sync.elf"
 # Apps in $MB can have mounts, as on the PS5 (the host build lists them in data/mounts.txt).
 MB="$T/mountable"; mkdir -p "$MB"
-ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" \
+ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" ROMM_SYNC_PARALLEL=6 \
   ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" ROMM_SYNC_COVERS_TICK=1 ROMM_SYNC_RA2_EVERY=1 ROMM_SYNC_INSTALLED_SIG_SEC=2 \
   ROMM_SYNC_UPDATE_URL="http://127.0.0.1:$MOCK_PORT/_github/release" ROMM_SYNC_PRESETS_URL="http://127.0.0.1:$MOCK_PORT/_github/assets" \
   "$ROOT/build/host/romm-sync" >"$T/daemon.log" 2>&1 &
@@ -79,7 +88,30 @@ r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"127.0.0.1:$TLS_P
 post /api/config '{"tls_verify":false}' >/dev/null
 r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$TLS_PORT\"}")
 [[ "$r" == *pending* ]] || fail "pairing with checks off failed: $r"
-post /api/pair/forget >/dev/null; post /api/config '{"tls_verify":true}' >/dev/null
+post /api/pair/forget >/dev/null
+
+echo "0b. a server behind mTLS takes a client certificate (.p12)"
+cert() { curl -s -X POST "$API/api/client-cert" -d "{\"p12\":\"$(base64 -w0 "$1")\",\"password\":\"$2\"}"; }
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *"asks for a client certificate"* ]] || fail "missing client certificate not reported: $r"
+r=$(cert "$T/client.p12" wrong); [[ "$r" == *"wrong password"* ]] || fail "wrong password not reported: $r"
+r=$(cert "$T/tls.crt" ""); [[ "$r" == *"not a PKCS#12"* ]] || fail "a file that isn't a .p12 was taken: $r"
+r=$(curl -sf "$API/api/client-cert"); [[ "$r" == *'"active":false'* && "$r" == *'"file":""'* ]] || fail "a refused upload changed the certificate: $r"
+r=$(cert "$T/other.p12" ""); [[ "$r" == *'"active":true'* && "$r" == *"CN=stranger"* ]] || fail "a .p12 without a password wasn't taken: $r"
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *"didn't accept"* ]] || fail "a certificate the server won't take not reported: $r"
+r=$(cert "$T/client.p12" s3cret); [[ "$r" == *'"active":true'* && "$r" == *"CN=rommps-test"* && "$r" == *"valid until"* ]] || fail "certificate upload: $r"
+r=$(curl -s -X POST "$API/api/pair/start" -d "{\"server_url\":\"https://127.0.0.1:$MTLS_PORT\"}")
+[[ "$r" == *pending* ]] || fail "pairing through mTLS failed: $r"
+[[ -f "$T/data/client.p12" ]] || fail "the certificate wasn't saved in the data folder"
+python3 -c "import json,sys; c=json.load(open(sys.argv[1])); assert c['client_cert']=='client.p12' and c['client_cert_password']=='s3cret', c" "$T/data/config.json" \
+  || fail "the certificate isn't in config.json"
+r=$(curl -sf "$API/api/config"); [[ "$r" != *s3cret* && "$r" == *'"client_cert":"client.p12"'* ]] || fail "the web UI's config shows the certificate's password: $r"
+post /api/pair/forget >/dev/null
+r=$(curl -sf -X POST "$API/api/client-cert/remove"); [[ "$r" == *'"active":false'* ]] || fail "certificate not removed: $r"
+[[ ! -f "$T/data/client.p12" ]] || fail "client.p12 left behind"
+grep -q s3cret "$T/data/config.json" && fail "the password stayed in config.json"
+post /api/config '{"tls_verify":true}' >/dev/null
 
 echo "1. setup: pair, detect emulators, preview, first sync"
 post /api/pair/start "{\"server_url\":\"http://127.0.0.1:$MOCK_PORT\"}" >/dev/null
@@ -1276,7 +1308,9 @@ echo "21. one-file folder games: saves named after the file sync; old extensionl
 curl -sfk -X POST "$TM/_admin/rom" -d '{"id":70,"platform_id":1,"name":"Folder Game","fs_name":"Folder Game",
   "files":[{"id":701,"file_name":"Folder Game (USA).sfc","content":"ROM:Folder Game (USA).sfc"}]}' >/dev/null
 post /api/download '{"rom_id":70}' >/dev/null
-for _ in $(seq 1 20); do got=$(find "$T" -path "*/Folder Game/Folder Game (USA).sfc" -not -path '*/data/*' | head -1); [[ -n "$got" ]] && break; sleep 0.25; done
+# The main emulator's copy: RomM's saves come down to it, and the extra's copy
+# would only be picked when find happens to list it first (it did, on CI).
+for _ in $(seq 1 20); do got=$(find "$T/homebrew" -path "*/Folder Game/Folder Game (USA).sfc" | head -1); [[ -n "$got" ]] && break; sleep 0.25; done
 [[ -n "$got" ]] || fail "a one-file folder game must download into its folder"
 gdir=$(dirname "$(dirname "$got")")
 sdir=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print([m['save_dir'] for m in json.load(sys.stdin) if m['rom_dir']=='$gdir'][0])")
@@ -2046,6 +2080,40 @@ $(grep -E 'Cut Short|cut off' "$T/daemon.log" | tail -5)"
 grep -q "Cut Short (USA).sfc cut off at 100000 bytes" "$T/daemon.log" || fail "no log of the download carrying on"
 cut_file=$(find "$T" -name 'Cut Short (USA).sfc' -not -path '*/data/*' | head -1)
 [[ "$(wc -c < "$cut_file")" == 300000 && "$(tr -d Z < "$cut_file" | wc -c)" == 0 ]] || fail "the carried-on download must be whole: $cut_file $(wc -c < "$cut_file")"
+# A big one goes over several connections at once, in pieces (#39: the PS5
+# holds each connection to 512 KB in flight); one cut off halfway carries on
+# from where the file stops being whole (the cut skips the first answer, the
+# one that says how big the file is), and every byte lands in its place.
+python3 -c "import json,sys; json.dump({'id': 954, 'platform_id': 1, 'name': 'Big One', 'fs_name': 'Big One (USA).sfc',
+  'files': [{'id': 9541, 'file_name': 'Big One (USA).sfc', 'content': ''.join('%015d\n' % i for i in range(5 * 2**20))}]},
+  open(sys.argv[1], 'w'))" "$T/big.json"
+curl -skf -X POST "$SV/_admin/rom" -d @"$T/big.json" >/dev/null
+curl -skf -X POST "$SV/_admin/cut" -d '{"bytes":5000000,"after":1}' >/dev/null
+post /api/download '{"rom_id":954,"name":"Big One"}' >/dev/null
+s=$(waitjob 954 done)
+[[ "$s" == done* ]] || fail "a big download cut off halfway must carry on: $s
+$(grep -E 'Big One|cut off' "$T/daemon.log" | tail -5)"
+grep -q "Big One (USA).sfc cut off at" "$T/daemon.log" || fail "no log of the big download carrying on"
+grep -qE "downloaded [0-9.]+ MB in .* over [2-9] connections" "$T/daemon.log" || fail "a big download must go over several connections
+$(grep -E 'downloaded' "$T/daemon.log" | tail -3)"
+big=$(find "$T" -name 'Big One (USA).sfc' -not -path '*/data/*' | head -1)
+python3 -c "import hashlib,sys; want=''.join('%015d\n' % i for i in range(5 * 2**20)).encode()
+sys.exit(0 if open(sys.argv[1],'rb').read() == want else 1)" "$big" || fail "the big download must be whole, every piece in its place: $big"
+# A server that turns some of the connections away (a proxy's limit, 429)
+# still gets the whole file over the ones it took, and isn't asked for more.
+sed 's/"id": 954/"id": 955/; s/"id": 9541/"id": 9551/; s/Big One/Big Two/g' "$T/big.json" > "$T/big2.json"
+curl -skf -X POST "$SV/_admin/rom" -d @"$T/big2.json" >/dev/null
+curl -skf -X POST "$SV/_admin/busy" -d '{"n":2}' >/dev/null
+post /api/download '{"rom_id":955,"name":"Big Two"}' >/dev/null
+s=$(waitjob 955 done)
+[[ "$s" == done* ]] || fail "a big download some connections of were refused must carry on over the others: $s
+$(grep -E 'Big Two|refused|downloaded' "$T/daemon.log" | tail -5)"
+grep -q "the server refused 2 of 5 connections: downloads keep to 3 from now on" "$T/daemon.log" \
+  || fail "no log of the refused connections
+$(grep -E 'refused|downloaded' "$T/daemon.log" | tail -3)"
+big=$(find "$T" -name 'Big Two (USA).sfc' -not -path '*/data/*' | head -1)
+python3 -c "import hashlib,sys; want=''.join('%015d\n' % i for i in range(5 * 2**20)).encode()
+sys.exit(0 if open(sys.argv[1],'rb').read() == want else 1)" "$big" || fail "the refused pieces must land whole over the others: $big"
 # A file RomM lists but no longer has on its disk says so, and isn't retried.
 curl -skf -X POST "$SV/_admin/rom" -d '{"id":953,"platform_id":1,"name":"Moved Away","fs_name":"Moved Away","files":[
   {"id":9531,"file_name":"Moved Away (Disc 1).sfc","content":"ROM:one"},

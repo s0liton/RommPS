@@ -7,7 +7,7 @@ FROM debian:bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git pkg-config python3 python3-numpy python3-pil ca-certificates curl \
         clang-format-16 clang-tidy-16 cppcheck shellcheck file desktop-file-utils \
-        libcurl4-openssl-dev zlib1g-dev \
+        libcurl4-openssl-dev libssl-dev zlib1g-dev \
         mesa-common-dev libgl-dev libegl-dev libopengl-dev libgles-dev \
         libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
         libxkbcommon-dev libwayland-dev wayland-protocols libdecor-0-dev \

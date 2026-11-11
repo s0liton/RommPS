@@ -10,6 +10,7 @@
 #include <unistd.h>
 
 #include "autostart.h"
+#include "clientcert.h"
 #include "config.h"
 #include "events.h"
 #include "covers.h"
@@ -159,6 +160,7 @@ static void *app_main(void *arg) {
     /* Copies of older versions left on the console are brought up to date. */
     autostart_repair();
     http_global_init(plat_ca_bundle(), g_cfg.tls_verify);
+    clientcert_init();
 
     sync_init();
     watch_init();

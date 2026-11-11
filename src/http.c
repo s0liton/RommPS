@@ -4,12 +4,15 @@
 #include <pthread.h>
 
 #include <curl/curl.h>
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -17,9 +20,19 @@
 #include "util.h"
 #ifdef ROMM_EMBED_CA
 #include "cacert_pem.h" /* generated from the SDK's Mozilla CA bundle */
+#endif
+/* The consoles' libcurl is built on OpenSSL, and host builds use it when
+ * it's there (the Makefile defines ROMM_OPENSSL): CA store, client certificates. */
+#if defined(ROMM_EMBED_CA) || defined(ROMM_OPENSSL)
+#define HAVE_OPENSSL 1
+#include <openssl/err.h>
 #include <openssl/pem.h>
+#include <openssl/pkcs12.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+#include <openssl/provider.h>
+#endif
 #endif
 
 static char g_ca_bundle[PATH_MAX_LEN];
@@ -35,6 +48,20 @@ static X509_STORE *g_ca_store;
 #endif
 static int g_tls_verify = 1;
 static char g_user_agent[64];
+
+/* mTLS: the client certificate (and its chain) and key from the user's .p12,
+ * as PEM, handed to the RomM server's connections when it asks for one. Never
+ * to the verified requests (GitHub). The key is kept in memory only. */
+static pthread_mutex_t g_cc_lock = PTHREAD_MUTEX_INITIALIZER;
+static char *g_cc_cert, *g_cc_key;
+static size_t g_cc_cert_len, g_cc_key_len;
+static char g_cc_info[192];
+/* Why the server last turned the handshake down over the certificate, "" once it accepts one. */
+static char g_cc_refused[256], g_cc_refused_origin[200];
+/* The last TLS 1.2 check (cert_probe): which server, when. Forgotten when
+ * the certificate changes, so the next refusal is told at once. */
+static char g_probe_origin[200];
+static double g_probe_at;
 
 /* DNS answers and TLS sessions shared by every request, from any thread, so a
  * cover, a list page or a save skips the lookup and the full TLS handshake.
@@ -323,9 +350,58 @@ static int curl_trace(CURL *c, curl_infotype type, char *data, size_t size, void
 }
 #endif
 
+#if defined(__FreeBSD__)
+/* The socket's receive buffer is the TCP window, and the window caps a
+ * download at window / round trip, whatever the line can do. The consoles grow
+ * it by themselves only from 64 KB to 128 KB: about 2.4 MB/s from a server
+ * 40 ms away (issue #39). So it's set by hand, on every connection: a download
+ * usually goes over the one the API call before it left open, and setting it
+ * on download connections alone missed nearly all of them. The PS5 quietly
+ * hands out 512 KB at most for anything up to 4 MB and refuses 8 MB outright,
+ * so ask big and step down until one is taken; the PS4 stops at 1 MB, its
+ * memory being tight. Buffer memory is only used by data waiting to be read,
+ * so the API's connections cost nothing for it. Linux grows the buffer by
+ * itself as far as it's needed and stops once it's set by hand, so there it's
+ * left alone. */
+static int g_rcvbuf; /* the size the kernel took, once known */
+static int g_rcvbuf_got; /* and what it made of it: the window a connection gets (512 KB on the PS5) */
+
+static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
+    (void)ud;
+    if (purpose != CURLSOCKTYPE_IPCXN) return CURL_SOCKOPT_OK;
+    /* Once known, each connection asks for what the kernel gives (512 KB),
+     * not the 4 MB it took that from: with several connections open, the PS5
+     * refuses a 4 MB ask outright ("no buffer space"), and a connection
+     * refused keeps 64 KB, about 1 MB/s from 40 ms away (seen with a download
+     * over 8 connections: 1.0 MB/s each). A refused ask steps down. */
+    int size = __atomic_load_n(&g_rcvbuf_got, __ATOMIC_RELAXED);
+    if (size) {
+        const int want = size;
+        for (; size >= 64 * 1024; size /= 2)
+            if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size) == 0) break;
+        static int told;
+        if (size < want && !__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED))
+            LOGW("receive window: a connection got %d KB, %d KB refused", size >= 64 * 1024 ? size / 1024 : 64,
+                 want / 1024);
+        return CURL_SOCKOPT_OK;
+    }
+    for (size = strcmp(plat_info()->name, "ps4") ? 8 * 1024 * 1024 : 1024 * 1024; size >= 128 * 1024; size /= 2)
+        if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size) == 0) break;
+    if (size < 128 * 1024) return CURL_SOCKOPT_OK; /* none taken: the default stays, and the next one asks again */
+    int got = 0;
+    socklen_t gl = sizeof got;
+    getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &got, &gl);
+    __atomic_store_n(&g_rcvbuf_got, got, __ATOMIC_RELAXED);
+    if (!__atomic_exchange_n(&g_rcvbuf, size, __ATOMIC_RELAXED))
+        LOGI("receive window: %d KB (%d KB asked)", got / 1024, size / 1024);
+    return CURL_SOCKOPT_OK;
+}
+#endif
+
 /* errbuf, CURL_ERROR_SIZE bytes or NULL, gets curl's own account of a
- * failure: which host, which phase, how long it waited. */
-static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *auth, int verify, char *errbuf) {
+ * failure: which host, which phase, how long it waited. client: a request to
+ * the RomM server, which gets the client certificate, if there is one. */
+static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *auth, int verify, int client, char *errbuf) {
     CURL *c = handle_take();
     if (!c) return NULL;
     if (errbuf) {
@@ -333,6 +409,9 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
         curl_easy_setopt(c, CURLOPT_ERRORBUFFER, errbuf);
     }
     if (g_share) curl_easy_setopt(c, CURLOPT_SHARE, g_share);
+#if defined(__FreeBSD__)
+    curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, big_rcvbuf);
+#endif
     curl_easy_setopt(c, CURLOPT_URL, url);
     curl_easy_setopt(c, CURLOPT_USERAGENT, g_user_agent);
     curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
@@ -365,6 +444,26 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
     }
+    if (client) {
+        pthread_mutex_lock(&g_cc_lock);
+        if (g_cc_cert) {
+            /* Copied into the handle: the certificate can change meanwhile. */
+            struct curl_blob cert = {g_cc_cert, g_cc_cert_len, CURL_BLOB_COPY};
+            struct curl_blob key = {g_cc_key, g_cc_key_len, CURL_BLOB_COPY};
+            curl_easy_setopt(c, CURLOPT_SSLCERTTYPE, "PEM");
+            curl_easy_setopt(c, CURLOPT_SSLKEYTYPE, "PEM");
+            CURLcode e = curl_easy_setopt(c, CURLOPT_SSLCERT_BLOB, &cert);
+            if (e == CURLE_OK) e = curl_easy_setopt(c, CURLOPT_SSLKEY_BLOB, &key);
+            /* A libcurl whose TLS library can't take them from memory (GnuTLS
+             * builds on a computer; never the consoles') would go without. */
+            static int told;
+            if (e != CURLE_OK && !told) {
+                told = 1;
+                LOGE("this libcurl can't send the client certificate: %s", curl_easy_strerror(e));
+            }
+        }
+        pthread_mutex_unlock(&g_cc_lock);
+    }
     *hdrs = curl_slist_append(*hdrs, "Accept: application/json");
     if (auth && *auth) {
         char h[1024];
@@ -374,8 +473,51 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
     return c;
 }
 
-static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *url, const char *errbuf, int probe) {
+static void cert_note(const char *url, CURLcode rc, const char *errbuf, int may_probe);
+static void cert_forget(const char *url);
+
+/* The round trip to the RomM server, from the TCP handshake of the last
+ * connection opened to it, in microseconds; 0 until one was. A handshake is
+ * answered by the server's kernel at once, so it's the line's round trip
+ * alone, where the kernel's own estimate for a connection also counts the
+ * server's delayed ACKs and the time RomM takes to answer (measured on the
+ * PS5: 15-34 ms on a LAN that pings at 2 ms). */
+static int g_handshake_us;
+
+/* This request's handshake, if it opened its connection; 0 if it reused one. */
+static int handshake_us(CURL *c) {
+    curl_off_t conn = 0, dns = 0;
+    if (curl_easy_getinfo(c, CURLINFO_CONNECT_TIME_T, &conn) != CURLE_OK || conn <= 0) return 0;
+    curl_easy_getinfo(c, CURLINFO_NAMELOOKUP_TIME_T, &dns);
+    return conn > dns ? (int)(conn - dns) : 0;
+}
+
+static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *url, const char *errbuf, int probe,
+                  int client) {
     memset(out, 0, sizeof *out);
+    if (client) {
+        const int hs = handshake_us(c);
+        if (hs) __atomic_store_n(&g_handshake_us, hs, __ATOMIC_RELAXED);
+    }
+    /* Where a refused client certificate shows: in the handshake, or right
+     * after it (TLS 1.3), before any answer. */
+    const int tls_err = rc == CURLE_SSL_CONNECT_ERROR || rc == CURLE_SEND_ERROR || rc == CURLE_RECV_ERROR;
+    if (client) {
+        /* nginx finishes the handshake without a certificate and says so in a
+         * 400 page instead: taken as the alert it didn't send. */
+        long st = 0;
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &st);
+        const char *page = rc == CURLE_OK && st == 400 && m && m->buf ? m->buf : "";
+        const char *alert = strstr(page, "No required SSL certificate was sent") ? "alert certificate required"
+                            : strstr(page, "The SSL certificate error")          ? "alert bad certificate"
+                                                                                 : NULL;
+        if (alert) cert_note(url, CURLE_SSL_CONNECT_ERROR, alert, 0);
+        /* Not there at all: an older refusal no longer says what's wrong. */
+        else if (rc != CURLE_OK && no_answer(c, rc)) cert_forget(url);
+        /* Asked again only when it broke before any answer: a connection lost
+         * halfway through a download isn't the certificate's doing. */
+        else cert_note(url, rc, errbuf, st == 0);
+    }
     out->no_answer = rc != CURLE_OK && no_answer(c, rc);
     out->aborted = rc == CURLE_ABORTED_BY_CALLBACK;
     down_note(url, out->no_answer, probe);
@@ -397,6 +539,7 @@ static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *u
         long os_err = 0;
         curl_easy_getinfo(c, CURLINFO_OS_ERRNO, &os_err);
         const char *detail = errbuf && errbuf[0] ? errbuf : out->error;
+        if (client && tls_err) http_client_cert_refused(url, out->error, sizeof out->error); /* in plain words */
         /* curl's words for a reply we had no room for don't say so. */
         const char *oom = out_of_memory(rc, m != NULL) && rc != CURLE_OUT_OF_MEMORY ? " (out of memory)" : "";
         if (os_err) LOGW("HTTP %s: %s%s (errno %ld: %s)", url, detail, oom, os_err, strerror((int)os_err));
@@ -432,14 +575,15 @@ static size_t lean_write(char *ptr, size_t size, size_t nmemb, void *ud) {
 }
 
 static int request_impl(const char *method, const char *url, const char *auth, const char *content_type,
-                        const void *body, size_t body_len, int verify, const char *const *drop, http_resp *out) {
+                        const void *body, size_t body_len, int verify, int client, const char *const *drop,
+                        http_resp *out) {
     memset(out, 0, sizeof *out);
     int probe;
     if (down_gate(url, &probe, out)) return -1;
     struct curl_slist *hdrs = NULL;
     membuf m = {0};
     char errbuf[CURL_ERROR_SIZE];
-    CURL *c = easy_new(url, &hdrs, auth, verify, errbuf);
+    CURL *c = easy_new(url, &hdrs, auth, verify, client, errbuf);
     if (!c) {
         down_note(url, 0, probe);
         return -1;
@@ -471,7 +615,7 @@ static int request_impl(const char *method, const char *url, const char *auth, c
     }
     CURLcode rc = curl_easy_perform(c);
     if (drop) m = lean.m;
-    int r = finish(c, rc, &m, out, url, errbuf, probe);
+    int r = finish(c, rc, &m, out, url, errbuf, probe, client);
     curl_slist_free_all(hdrs);
     handle_give(c);
     return r;
@@ -479,20 +623,20 @@ static int request_impl(const char *method, const char *url, const char *auth, c
 
 int http_request(const char *method, const char *url, const char *auth, const char *content_type,
                  const void *body, size_t body_len, http_resp *out) {
-    return request_impl(method, url, auth, content_type, body, body_len, g_tls_verify, NULL, out);
+    return request_impl(method, url, auth, content_type, body, body_len, g_tls_verify, 1, NULL, out);
 }
 
 int http_get_lean(const char *url, const char *auth, const char *const *drop, http_resp *out) {
-    return request_impl("GET", url, auth, NULL, NULL, 0, g_tls_verify, drop, out);
+    return request_impl("GET", url, auth, NULL, NULL, 0, g_tls_verify, 1, drop, out);
 }
 
 int http_get_verified(const char *url, http_resp *out) {
-    return request_impl("GET", url, NULL, NULL, NULL, 0, 1, NULL, out);
+    return request_impl("GET", url, NULL, NULL, NULL, 0, 1, 0, NULL, out);
 }
 
 int http_tls_untrusted(const char *url) {
     struct curl_slist *hdrs = NULL;
-    CURL *c = easy_new(url, &hdrs, NULL, 1, NULL);
+    CURL *c = easy_new(url, &hdrs, NULL, 1, 1, NULL);
     if (!c) return 0;
     curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 20L);
@@ -509,7 +653,7 @@ int http_upload_file(const char *method, const char *url, const char *auth, cons
     struct curl_slist *hdrs = NULL;
     membuf m = {0};
     char errbuf[CURL_ERROR_SIZE];
-    CURL *c = easy_new(url, &hdrs, auth, g_tls_verify, errbuf);
+    CURL *c = easy_new(url, &hdrs, auth, g_tls_verify, 1, errbuf);
     if (!c) {
         down_note(url, 0, probe);
         return -1;
@@ -528,7 +672,7 @@ int http_upload_file(const char *method, const char *url, const char *auth, cons
     curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, mem_write);
     curl_easy_setopt(c, CURLOPT_WRITEDATA, &m);
     CURLcode rc = curl_easy_perform(c);
-    int r = finish(c, rc, &m, out, url, errbuf, probe);
+    int r = finish(c, rc, &m, out, url, errbuf, probe, 1);
     curl_mime_free(mime);
     curl_slist_free_all(hdrs);
     handle_give(c);
@@ -550,20 +694,408 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ul
     return p->fn(p->ud, p->offset + dlnow, dltotal ? p->offset + dltotal : 0);
 }
 
-/* Downloads read and write in bigger blocks than curl's 16 KB, and ask for a
- * bigger socket buffer, which keeps a slow or bursty link (PS4 Wi-Fi) busier.
- * Kept modest: memory is tight for the PS4 payload. */
+/* Downloads read and write in bigger blocks than curl's 16 KB. */
 #define DOWNLOAD_BUFFER (256 * 1024)
-#define DOWNLOAD_SOCKET_BUFFER (1024 * 1024)
 
-static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
-    int size = DOWNLOAD_SOCKET_BUFFER;
-    (void)ud;
-    if (purpose == CURLSOCKTYPE_IPCXN) setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
-    return CURL_SOCKOPT_OK;
+/* One connection carries at most its receive window per round trip, and the
+ * PS5 holds that window to 512 KB: about 12 MB/s from a server 40 ms away,
+ * a fifth of what the line can do (issue #39; measured on such a line, six
+ * connections of 512 KB carried its full 62 MB/s). So a big download goes
+ * over several connections at once, PAR_PIECE at a time, each piece written
+ * in its place in "<dest>.par.part". That file has holes until it's whole: one
+ * that stops halfway is cut back to where it's whole and becomes the .part a
+ * resume carries on from; one a crash leaves is never taken for <dest>.part,
+ * yet ends in .part, so it is skipped and cleared like any other.
+ * Small files stay on one connection, with no request more.
+ *
+ * As many connections as fill a gigabit line from the server's distance, by
+ * the round trip the kernel measured on the first answer's connection: a
+ * server nearby gets one, the download as it always went. Only on the PS5:
+ * the PS4's memory is too tight for more, and Linux grows a connection's
+ * window as far as it's needed. ROMM_SYNC_PARALLEL sets the count, for tests. */
+#define PAR_MAX 8
+#define PAR_PIECE ((int64_t)16 * 1024 * 1024)
+#define PAR_LINE (117.0 * 1000 * 1000) /* bytes a second: gigabit, less TCP's share */
+
+/* At most this many from then on, once the server refused one more (a proxy's
+ * limit on connections); 0: no limit seen. */
+static int g_par_cap;
+
+static int par_conns(int rtt_us, int window) {
+    const char *env = getenv("ROMM_SYNC_PARALLEL");
+    int n = 1;
+    if (env && *env) {
+        n = atoi(env);
+    } else {
+#if defined(__FreeBSD__)
+        if (strcmp(plat_info()->name, "ps4") && rtt_us > 0 && window > 0) {
+            /* Clamped while still a double: a far server could ask for more than an int holds. */
+            const double want = PAR_LINE * rtt_us / 1e6 / window;
+            n = want >= PAR_MAX ? PAR_MAX : (int)want + (want > (int)want);
+        }
+#else
+        (void)rtt_us, (void)window;
+#endif
+    }
+    const int cap = __atomic_load_n(&g_par_cap, __ATOMIC_RELAXED);
+    if (cap && n > cap) n = cap;
+    return n < 1 ? 1 : n > PAR_MAX ? PAR_MAX : n;
 }
 
-static int download_impl(const char *url, const char *auth, const char *dest, int resume, int verify,
+/* Whether a download here could go over more than one connection at all. */
+static int par_allowed(void) { return par_conns(1000 * 1000, 1024) > 1; }
+
+/* The round trip to the server in microseconds, and the receive window of the
+ * connection c is on; 0 for what isn't known. The round trip is this
+ * connection's handshake if it just opened, else the last one opened to the
+ * server's, else, with none yet, the kernel's estimate, which runs high. */
+static void sock_rtt(CURL *c, int *rtt_us, int *window) {
+    *rtt_us = handshake_us(c);
+    if (!*rtt_us) *rtt_us = __atomic_load_n(&g_handshake_us, __ATOMIC_RELAXED);
+    /* The window big_rcvbuf saw the kernel give, as curl won't hand over the
+     * socket mid-transfer here (CURLINFO_ACTIVESOCKET comes back empty on the
+     * PS5); with none set, the kernel's own 64 KB. */
+    *window = 0;
+#if defined(__FreeBSD__)
+    *window = __atomic_load_n(&g_rcvbuf_got, __ATOMIC_RELAXED);
+    if (!*window) *window = 64 * 1024;
+#endif
+    if (*rtt_us && *window) return;
+    curl_socket_t fd = CURL_SOCKET_BAD;
+    if (curl_easy_getinfo(c, CURLINFO_ACTIVESOCKET, &fd) != CURLE_OK || fd == CURL_SOCKET_BAD) return;
+    if (!*rtt_us) {
+        struct tcp_info ti;
+        socklen_t l = sizeof ti;
+        memset(&ti, 0, sizeof ti);
+        if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &ti, &l) == 0) *rtt_us = (int)ti.tcpi_rtt;
+    }
+    if (!*window) {
+        socklen_t l = sizeof *window;
+        getsockopt(fd, SOL_SOCKET, SO_RCVBUF, window, &l);
+    }
+}
+
+typedef struct {
+    const char *url, *auth;
+    int verify, client, fd;
+    int64_t base, total; /* where the pieces start (what the .part had), the file's size */
+    int npieces, next;   /* next: the first piece no connection took yet */
+    int requeued[PAR_MAX], nrequeued; /* pieces given back by a connection the server refused */
+    int64_t *written;    /* bytes in place per piece, each filled from its start */
+    int64_t got;         /* all of them, for the progress */
+    int stop, failed, running; /* stop: the user's, at once; failed: no new piece */
+    int cut;                   /* the first failed piece: the ones after it would be cut away */
+    int refused;               /* connections the server refused, the download carrying on without them */
+    int retried;               /* connections dropped after a server error, their pieces taken by the others */
+    http_resp err; /* the first failure's */
+    pthread_mutex_t lock;
+} par_dl;
+
+typedef struct {
+    par_dl *d;
+    CURL *c;
+    int piece;
+    int64_t at, end; /* the next byte's place in the file, the piece's end */
+    char *buf;       /* PAR_BLOCK of what came, not yet written: it ends at "at" */
+    size_t nbuf;
+} par_conn;
+
+static int64_t piece_len(const par_dl *d, int i) {
+    const int64_t left = d->total - d->base - (int64_t)i * PAR_PIECE;
+    return left < PAR_PIECE ? left : PAR_PIECE;
+}
+
+/* What a connection got goes to the disk in blocks this big, not as curl hands
+ * it over. On the PS5 each write costs about the same whatever its size, and
+ * the connections' writes to the one file wait on each other: written as it
+ * came, in curl's small chunks, eight connections at 40 ms went no faster
+ * than one (8.5 MB/s), each waiting on the disk instead of reading its socket
+ * until the server was told to stop sending. In 1 MB blocks the same line
+ * gave 15.8 MB/s. */
+#define PAR_BLOCK (1024 * 1024)
+
+/* Writes the block out; only then do its bytes count as in place. */
+static int par_flush(par_conn *w) {
+    if (!w->nbuf) return 0;
+    const off_t at = (off_t)(w->at - (int64_t)w->nbuf);
+    if (pwrite(w->d->fd, w->buf, w->nbuf, at) != (ssize_t)w->nbuf) return -1;
+    pthread_mutex_lock(&w->d->lock);
+    w->d->written[w->piece] += (int64_t)w->nbuf;
+    pthread_mutex_unlock(&w->d->lock);
+    w->nbuf = 0;
+    return 0;
+}
+
+static size_t par_write(char *ptr, size_t size, size_t n, void *ud) {
+    par_conn *w = ud;
+    const size_t len = size * n;
+    long st = 0;
+    curl_easy_getinfo(w->c, CURLINFO_RESPONSE_CODE, &st);
+    /* The piece asked for and no more: a whole file sent instead would land
+     * on the pieces after it. */
+    if (st != 206 || w->at + (int64_t)len > w->end) return 0;
+    if (w->nbuf + len > PAR_BLOCK && par_flush(w)) return 0;
+    if (len > PAR_BLOCK) { /* bigger than a block: straight out */
+        if (pwrite(w->d->fd, ptr, len, (off_t)w->at) != (ssize_t)len) return 0;
+        pthread_mutex_lock(&w->d->lock);
+        w->d->written[w->piece] += (int64_t)len;
+        pthread_mutex_unlock(&w->d->lock);
+    } else {
+        memcpy(w->buf + w->nbuf, ptr, len);
+        w->nbuf += len;
+    }
+    w->at += (int64_t)len;
+    pthread_mutex_lock(&w->d->lock);
+    w->d->got += (int64_t)len;
+    pthread_mutex_unlock(&w->d->lock);
+    return len;
+}
+
+static int par_xfer(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ultotal, curl_off_t ulnow) {
+    (void)dltotal, (void)dlnow, (void)ultotal, (void)ulnow;
+    const par_conn *w = ud;
+    return __atomic_load_n(&w->d->stop, __ATOMIC_RELAXED) || w->piece > __atomic_load_n(&w->d->cut, __ATOMIC_RELAXED);
+}
+
+static void *par_conn_run(void *arg) {
+    par_conn *w = arg;
+    par_dl *d = w->d;
+    struct curl_slist *hdrs = NULL;
+    char errbuf[CURL_ERROR_SIZE];
+    w->buf = malloc(PAR_BLOCK);
+    w->nbuf = 0;
+    w->c = w->buf ? easy_new(d->url, &hdrs, d->auth, d->verify, d->client, errbuf) : NULL;
+    if (w->c) {
+        curl_easy_setopt(w->c, CURLOPT_HTTPHEADER, hdrs);
+        curl_easy_setopt(w->c, CURLOPT_WRITEFUNCTION, par_write);
+        curl_easy_setopt(w->c, CURLOPT_WRITEDATA, w);
+        curl_easy_setopt(w->c, CURLOPT_FAILONERROR, 1L);
+        curl_easy_setopt(w->c, CURLOPT_BUFFERSIZE, (long)DOWNLOAD_BUFFER);
+        curl_easy_setopt(w->c, CURLOPT_XFERINFOFUNCTION, par_xfer);
+        curl_easy_setopt(w->c, CURLOPT_XFERINFODATA, w);
+        curl_easy_setopt(w->c, CURLOPT_NOPROGRESS, 0L);
+    }
+    /* A connection counts itself out under the same lock it finds no piece
+     * left, or gives one back, under: one given back always has a connection
+     * still counted to take it. */
+    int counted = 1;
+    while (w->c) {
+        pthread_mutex_lock(&d->lock);
+        /* After a failure, no new piece: the ones under way before it finish,
+         * so the file gets further; the ones after it stop (par_xfer), being
+         * cut away anyway. A piece given back goes first, the lowest of them,
+         * so the file fills from its start. */
+        int i = d->npieces;
+        if (!__atomic_load_n(&d->stop, __ATOMIC_RELAXED) && !d->failed) {
+            if (d->nrequeued) {
+                int low = 0;
+                for (int k = 1; k < d->nrequeued; k++)
+                    if (d->requeued[k] < d->requeued[low]) low = k;
+                i = d->requeued[low];
+                d->requeued[low] = d->requeued[--d->nrequeued];
+            } else if (d->next < d->npieces) {
+                i = d->next++;
+            }
+        }
+        if (i >= d->npieces) {
+            d->running--;
+            counted = 0;
+        }
+        const int64_t had = i < d->npieces ? d->written[i] : 0;
+        pthread_mutex_unlock(&d->lock);
+        if (i >= d->npieces) break;
+        w->piece = i;
+        w->at = d->base + (int64_t)i * PAR_PIECE + had; /* a piece given back carries on where it stopped */
+        w->end = d->base + (int64_t)i * PAR_PIECE + piece_len(d, i);
+        char range[48];
+        snprintf(range, sizeof range, "%lld-%lld", (long long)w->at, (long long)w->end - 1);
+        curl_easy_setopt(w->c, CURLOPT_RANGE, range);
+        CURLcode rc = curl_easy_perform(w->c);
+        /* What came is kept, whatever stopped the piece: a resume carries on from it. */
+        if (par_flush(w) && rc == CURLE_OK) rc = CURLE_WRITE_ERROR;
+        if (rc == CURLE_OK && w->at == w->end) continue;
+        if (rc == CURLE_OK) rc = CURLE_PARTIAL_FILE; /* the server stopped short */
+        if (__atomic_load_n(&d->stop, __ATOMIC_RELAXED)) break; /* the user's stop */
+        long st = 0;
+        curl_easy_getinfo(w->c, CURLINFO_RESPONSE_CODE, &st);
+        pthread_mutex_lock(&d->lock);
+        /* Too many connections for the server (a proxy's limit, or it's busy),
+         * or a server error on this one: the piece goes back to the others,
+         * and this connection goes. Only a refusal (429, 503) keeps later
+         * downloads to fewer connections; a 500 can be a one-off. */
+        if ((st == 429 || st >= 500) && d->running > 1 && !d->failed) {
+            d->requeued[d->nrequeued++] = i;
+            if (st == 429 || st == 503) d->refused++;
+            else d->retried++;
+            d->running--;
+            counted = 0;
+            pthread_mutex_unlock(&d->lock);
+            break;
+        }
+        const int first = !d->failed;
+        d->failed = 1;
+        if (i < d->cut) __atomic_store_n(&d->cut, i, __ATOMIC_RELAXED);
+        pthread_mutex_unlock(&d->lock);
+        if (first) finish(w->c, rc, NULL, &d->err, d->url, errbuf, 0, d->client);
+        break;
+    }
+    curl_slist_free_all(hdrs);
+    if (w->c) handle_give(w->c);
+    free(w->buf);
+    if (counted) {
+        pthread_mutex_lock(&d->lock);
+        d->running--;
+        pthread_mutex_unlock(&d->lock);
+    }
+    return NULL;
+}
+
+/* What a download's first answer says (Content-Range: bytes <from>-<to>/<size>),
+ * and where its bytes go until the file turns out big: then it's handed over
+ * to par_download before a byte is written. */
+typedef struct {
+    FILE *f;
+    CURL *c;
+    int64_t offset, total; /* total: -1 until a Content-Range says it */
+    int par, handed;       /* par: big ones may go over several connections */
+    int conns, rtt_us;     /* how many, and the round trip that says so; conns 0 until weighed */
+} dl_ctx;
+
+static size_t dl_header(char *b, size_t size, size_t n, void *ud) {
+    const size_t len = size * n;
+    char h[128];
+    long long a, z, total;
+    if (len < sizeof h) {
+        memcpy(h, b, len);
+        h[len] = 0;
+        /* A 416 gives the size alone, after a star. */
+        if (!strncasecmp(h, "content-range:", 14) && (sscanf(h + 14, " bytes %lld-%lld/%lld", &a, &z, &total) == 3 ||
+                                                      sscanf(h + 14, " bytes */%lld", &total) == 1))
+            ((dl_ctx *)ud)->total = total;
+    }
+    return len;
+}
+
+static size_t dl_write(char *p, size_t size, size_t n, void *ud) {
+    dl_ctx *k = ud;
+    if (k->par && k->total - k->offset > PAR_PIECE) {
+        if (!k->conns) {
+            int window;
+            sock_rtt(k->c, &k->rtt_us, &window);
+            k->conns = par_conns(k->rtt_us, window);
+            LOGI("%.1f MB to download: %d connection%s (round trip %.1f ms, window %d KB)",
+                 (k->total - k->offset) / 1048576.0, k->conns, k->conns == 1 ? "" : "s", k->rtt_us / 1000.0,
+                 window / 1024);
+        }
+        if (k->conns > 1) {
+            k->handed = 1;
+            return 0; /* stops this transfer */
+        }
+    }
+    return fwrite(p, size, n, k->f);
+}
+
+/* The rest of a file from offset (what its .part has) on, total bytes in all. */
+static int par_download(const char *url, const char *auth, const char *dest, const char *part, int64_t offset,
+                        int64_t total, int conns, int rtt_us, int verify, int client, http_progress_fn progress,
+                        void *ud, http_resp *out) {
+    char par[PATH_MAX_LEN];
+    snprintf(par, sizeof par, "%s.par.part", dest);
+    const int fd = rename(part, par) == 0 ? open(par, O_WRONLY) : -1;
+    par_dl d = {.url = url, .auth = auth, .verify = verify, .client = client, .fd = fd, .base = offset,
+                .total = total};
+    d.npieces = d.cut = (int)((total - offset + PAR_PIECE - 1) / PAR_PIECE);
+    d.written = fd >= 0 ? calloc((size_t)d.npieces, sizeof *d.written) : NULL;
+    if (!d.written) {
+        if (fd >= 0) close(fd);
+        rename(par, part);
+        memset(out, 0, sizeof *out);
+        snprintf(out->error, sizeof out->error, "cannot open %s", par);
+        return -1;
+    }
+    pthread_mutex_init(&d.lock, NULL);
+    par_conn w[PAR_MAX] = {{0}};
+    pthread_t t[PAR_MAX];
+    pthread_attr_t a;
+    pthread_attr_init(&a);
+    pthread_attr_setstacksize(&a, 1024 * 1024);
+    int n = 0;
+    const double started = mono_sec();
+    /* Held while they start: one that ends at once can't count down before it's counted. */
+    pthread_mutex_lock(&d.lock);
+    for (int i = 0; i < conns && i < PAR_MAX && i < d.npieces; i++) {
+        w[n].d = &d;
+        if (pthread_create(&t[n], &a, par_conn_run, &w[n]) == 0) n++;
+    }
+    d.running = n;
+    pthread_mutex_unlock(&d.lock);
+    pthread_attr_destroy(&a);
+    int aborted = 0;
+    for (;;) {
+        pthread_mutex_lock(&d.lock);
+        const int running = d.running, stop = __atomic_load_n(&d.stop, __ATOMIC_RELAXED);
+        const int64_t got = d.got;
+        pthread_mutex_unlock(&d.lock);
+        if (!running) break;
+        if (!stop && progress && progress(ud, offset + got, total)) {
+            aborted = 1;
+            __atomic_store_n(&d.stop, 1, __ATOMIC_RELAXED);
+        }
+        usleep(200 * 1000);
+    }
+    for (int i = 0; i < n; i++) pthread_join(t[i], NULL);
+    pthread_mutex_destroy(&d.lock);
+
+    int64_t whole = offset; /* from the start, without a gap */
+    for (int i = 0; i < d.npieces; i++) {
+        whole += d.written[i];
+        if (d.written[i] < piece_len(&d, i)) break;
+    }
+    free(d.written);
+    if (d.refused) {
+        /* The next downloads ask no more of the server than it took. */
+        const int took = n - d.refused > 1 ? n - d.refused : 1;
+        __atomic_store_n(&g_par_cap, took, __ATOMIC_RELAXED);
+        LOGW("the server refused %d of %d connections: downloads keep to %d from now on", d.refused, n, took);
+    }
+    if (d.retried)
+        LOGW("the server failed %d piece request%s: the other connections took %s", d.retried, d.retried == 1 ? "" : "s",
+             d.retried == 1 ? "it" : "them");
+    if (whole == total) {
+        close(fd);
+        const double secs = mono_sec() - started;
+        const double mb = (double)(total - offset) / 1048576.0;
+        LOGI("downloaded %.1f MB in %.1fs (%.2f MB/s) over %d connections (round trip %.1f ms)", mb, secs,
+             secs > 0 ? mb / secs : 0, n - d.refused, rtt_us / 1000.0);
+        memset(out, 0, sizeof *out);
+        out->status = 200;
+        if (move_file(par, dest) == 0) return 0;
+        snprintf(out->error, sizeof out->error, "cannot move into %s", dest);
+        return -1;
+    }
+    /* Kept up to where it's whole, for the next go to carry on from; not
+     * after the server refused the file (a 404). Busy (429) or a server error
+     * (5xx) is for now only. */
+    if (d.failed && !aborted && d.err.status >= 400 && d.err.status != 429 && d.err.status < 500) {
+        close(fd);
+        unlink(par);
+    } else {
+        const int kept = whole > 0 && ftruncate(fd, (off_t)whole) == 0;
+        close(fd);
+        if (!kept || rename(par, part) != 0) unlink(par);
+    }
+    if (d.failed && !aborted) {
+        *out = d.err;
+    } else {
+        memset(out, 0, sizeof *out);
+        out->aborted = aborted;
+        snprintf(out->error, sizeof out->error, "%s",
+                 aborted ? curl_easy_strerror(CURLE_ABORTED_BY_CALLBACK) : "download stopped");
+    }
+    return -1;
+}
+
+static int download_impl(const char *url, const char *auth, const char *dest, int resume, int verify, int client,
                          http_progress_fn progress, void *ud, http_resp *out) {
     int probe;
     if (down_gate(url, &probe, out)) return -1;
@@ -584,39 +1116,55 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
 
     struct curl_slist *hdrs = NULL;
     char errbuf[CURL_ERROR_SIZE];
-    CURL *c = easy_new(url, &hdrs, auth, verify, errbuf);
+    CURL *c = easy_new(url, &hdrs, auth, verify, client, errbuf);
     if (!c) {
         down_note(url, 0, probe);
         fclose(f);
         return -1;
     }
     progress_ctx pc = {progress, ud, offset};
+    dl_ctx k = {.f = f, .c = c, .offset = offset, .total = -1, .par = client && par_allowed()};
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
-    curl_easy_setopt(c, CURLOPT_WRITEDATA, f);
+    curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dl_header);
+    curl_easy_setopt(c, CURLOPT_HEADERDATA, &k);
+    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, dl_write);
+    curl_easy_setopt(c, CURLOPT_WRITEDATA, &k);
     curl_easy_setopt(c, CURLOPT_FAILONERROR, 1L);
     if (offset > 0) curl_easy_setopt(c, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)offset);
+    else if (k.par) curl_easy_setopt(c, CURLOPT_RANGE, "0-"); /* so the answer says the file's size */
     curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, xfer_cb);
     curl_easy_setopt(c, CURLOPT_XFERINFODATA, &pc);
     curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(c, CURLOPT_BUFFERSIZE, (long)DOWNLOAD_BUFFER);
-    curl_easy_setopt(c, CURLOPT_SOCKOPTFUNCTION, big_rcvbuf);
     double started = mono_sec();
     CURLcode rc = curl_easy_perform(c);
     fclose(f);
+    if (k.handed) {
+        finish(c, CURLE_OK, NULL, out, url, errbuf, probe, client); /* it answered */
+        curl_slist_free_all(hdrs);
+        handle_give(c);
+        return par_download(url, auth, dest, part, offset, k.total, k.conns, k.rtt_us, verify, client, progress, ud, out);
+    }
     double secs = mono_sec() - started;
     curl_off_t got = 0;
     curl_easy_getinfo(c, CURLINFO_SIZE_DOWNLOAD_T, &got);
     if (rc == CURLE_OK && got > 1024 * 1024 && secs > 0)
         LOGI("downloaded %.1f MB in %.1fs (%.2f MB/s)", got / 1048576.0, secs, got / 1048576.0 / secs);
 
-    int r = finish(c, rc, NULL, out, url, errbuf, probe);
+    /* "0-" can't be satisfied for an empty file: the answer is that file. */
+    const int empty = rc == CURLE_HTTP_RETURNED_ERROR && k.par && offset == 0 && k.total == 0;
+    int r = finish(c, empty ? CURLE_OK : rc, NULL, out, url, errbuf, probe, client);
+    if (empty) {
+        out->status = 200;
+        out->error[0] = 0;
+    }
     if (r == 0 && out->status == 200 && offset > 0) {
         /* The server ignored Range, so start over. */
         LOGW("server ignored Range for %s; restarting download", url);
         curl_slist_free_all(hdrs);
         handle_give(c);
         unlink(part);
-        return download_impl(url, auth, dest, 0, verify, progress, ud, out);
+        return download_impl(url, auth, dest, 0, verify, client, progress, ud, out);
     }
     if (r == 0 && out->status >= 200 && out->status < 300) {
         if (move_file(part, dest) != 0) {
@@ -634,12 +1182,12 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
 
 int http_download(const char *url, const char *auth, const char *dest, int resume,
                   http_progress_fn progress, void *ud, http_resp *out) {
-    return download_impl(url, auth, dest, resume, g_tls_verify, progress, ud, out);
+    return download_impl(url, auth, dest, resume, g_tls_verify, 1, progress, ud, out);
 }
 
 int http_download_verified(const char *url, const char *dest, http_progress_fn progress, void *ud,
                            http_resp *out) {
-    return download_impl(url, NULL, dest, 0, 1, progress, ud, out);
+    return download_impl(url, NULL, dest, 0, 1, 0, progress, ud, out);
 }
 
 char *http_escape(const char *s) {
@@ -647,4 +1195,267 @@ char *http_escape(const char *s) {
     char *r = e ? strdup(e) : strdup("");
     curl_free(e);
     return r;
+}
+
+/* ---- mTLS client certificate ---- */
+
+/* The TLS alert a server sends when it wants a client certificate, or won't
+ * take the one it got (OpenSSL's words, in curl's error): NULL if not one. */
+static const char *cert_alert(const char *errbuf) {
+    static const char *const alerts[] = {"certificate required", "bad certificate",   "unknown ca",
+                                         "certificate expired",  "certificate revoked", "certificate unknown",
+                                         "unsupported certificate", "access denied"};
+    const char *a = errbuf ? strstr(errbuf, "alert ") : NULL;
+    if (!a) return NULL;
+    for (size_t i = 0; i < sizeof alerts / sizeof alerts[0]; i++)
+        if (!strncasecmp(a + 6, alerts[i], strlen(alerts[i]))) return alerts[i];
+    return NULL;
+}
+
+/* With TLS 1.3 a server checks the client certificate after the handshake,
+ * and its alert often comes when the request is already on its way: curl
+ * sees only a broken pipe or a reset. With TLS 1.2 the alert ends the
+ * handshake itself, so a connection like that tells what went wrong. At most
+ * every 30 s per server. */
+static void cert_probe(const char *url) {
+    char o[200];
+    url_origin(url, o, sizeof o);
+    pthread_mutex_lock(&g_cc_lock);
+    const int skip = !strcmp(o, g_probe_origin) && mono_sec() - g_probe_at < 30;
+    if (!skip) {
+        str_copy(g_probe_origin, sizeof g_probe_origin, o);
+        g_probe_at = mono_sec();
+    }
+    pthread_mutex_unlock(&g_cc_lock);
+    if (skip) return;
+    struct curl_slist *hdrs = NULL;
+    char errbuf[CURL_ERROR_SIZE];
+    CURL *c = easy_new(url, &hdrs, NULL, g_tls_verify, 1, errbuf);
+    if (!c) return;
+    curl_easy_setopt(c, CURLOPT_SSLVERSION, (long)(CURL_SSLVERSION_TLSv1_2 | CURL_SSLVERSION_MAX_TLSv1_2));
+    curl_easy_setopt(c, CURLOPT_FRESH_CONNECT, 1L);
+    curl_easy_setopt(c, CURLOPT_FORBID_REUSE, 1L);
+    curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
+    curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
+    CURLcode rc = curl_easy_perform(c);
+    cert_note(url, rc, errbuf, 0);
+    curl_slist_free_all(hdrs);
+    handle_give(c);
+}
+
+static void cert_note(const char *url, CURLcode rc, const char *errbuf, int may_probe) {
+    const char *alert = rc == CURLE_OK ? NULL : cert_alert(errbuf);
+    if (rc != CURLE_OK && !alert) {
+        /* The connection broke without a word: perhaps a TLS 1.3 alert lost. */
+        if (may_probe && !strncmp(url, "https://", 8) &&
+            (rc == CURLE_SEND_ERROR || rc == CURLE_RECV_ERROR || rc == CURLE_SSL_CONNECT_ERROR))
+            cert_probe(url);
+        return;
+    }
+    char o[200];
+    url_origin(url, o, sizeof o);
+    pthread_mutex_lock(&g_cc_lock);
+    char was[sizeof g_cc_refused];
+    str_copy(was, sizeof was, g_cc_refused);
+    if (!alert && strcmp(o, g_cc_refused_origin) != 0) {
+        pthread_mutex_unlock(&g_cc_lock);
+        return; /* another server's answer says nothing about this one */
+    }
+    str_copy(g_cc_refused_origin, sizeof g_cc_refused_origin, alert ? o : "");
+    if (!alert) g_cc_refused[0] = 0;
+    else if (g_cc_cert)
+        snprintf(g_cc_refused, sizeof g_cc_refused, "%s didn't accept the client certificate (%s)", o, alert);
+    else
+        snprintf(g_cc_refused, sizeof g_cc_refused,
+                 "%s asks for a client certificate (mTLS): add one under Client certificate in the web UI", o);
+    int changed = strcmp(was, g_cc_refused) != 0;
+    if (changed && g_cc_refused[0]) LOGW("%s", g_cc_refused);
+    else if (changed) LOGI("%s accepts the connection again", o);
+    pthread_mutex_unlock(&g_cc_lock);
+}
+
+/* url's server didn't answer at all: its refusal, if any, is forgotten (quietly). */
+static void cert_forget(const char *url) {
+    char o[200];
+    url_origin(url, o, sizeof o);
+    pthread_mutex_lock(&g_cc_lock);
+    if (!strcmp(o, g_cc_refused_origin)) g_cc_refused[0] = g_cc_refused_origin[0] = 0;
+    pthread_mutex_unlock(&g_cc_lock);
+}
+
+int http_client_cert_refused(const char *url, char *msg, size_t n) {
+    char o[200] = "";
+    if (url) url_origin(url, o, sizeof o);
+    pthread_mutex_lock(&g_cc_lock);
+    int r = g_cc_refused[0] != 0 && (!url || !strcmp(o, g_cc_refused_origin));
+    if (r && msg) str_copy(msg, n, g_cc_refused);
+    pthread_mutex_unlock(&g_cc_lock);
+    return r;
+}
+
+int http_client_cert_info(char *info, size_t n) {
+    pthread_mutex_lock(&g_cc_lock);
+    int r = g_cc_cert != NULL;
+    if (info) str_copy(info, n, r ? g_cc_info : "");
+    pthread_mutex_unlock(&g_cc_lock);
+    return r;
+}
+
+static void secret_free(char *p, size_t len) {
+    if (!p) return;
+    volatile char *v = p;
+    while (len--) *v++ = 0;
+    free(p);
+}
+
+#ifdef HAVE_OPENSSL
+static char *bio_take(BIO *b, size_t *len) {
+    char *data = NULL;
+    long n = BIO_get_mem_data(b, &data);
+    char *out = n > 0 ? malloc((size_t)n + 1) : NULL;
+    if (out) {
+        memcpy(out, data, (size_t)n);
+        out[n] = 0;
+        *len = (size_t)n;
+    }
+    return out;
+}
+
+/* OpenSSL's words for its last error, or "" */
+static void ssl_error(char *out, size_t n) {
+    const char *why = ERR_reason_error_string(ERR_peek_last_error());
+    str_copy(out, n, why ? why : "");
+}
+
+static int p12_parse(const void *data, size_t len, const char *password, EVP_PKEY **key, X509 **cert,
+                     STACK_OF(X509) **chain, char *err, size_t en) {
+    ERR_clear_error();
+    BIO *b = len <= 0x7fffffff ? BIO_new_mem_buf(data, (int)len) : NULL;
+    PKCS12 *p12 = b ? d2i_PKCS12_bio(b, NULL) : NULL;
+    BIO_free(b);
+    if (!p12) {
+        snprintf(err, en, "not a PKCS#12 (.p12 / .pfx) file");
+        return -1;
+    }
+    const char *pw = password ? password : "";
+    if (PKCS12_mac_present(p12) && !PKCS12_verify_mac(p12, pw, -1) && !(!pw[0] && PKCS12_verify_mac(p12, NULL, 0))) {
+        PKCS12_free(p12);
+        snprintf(err, en, "wrong password for the certificate file");
+        return -1;
+    }
+    int ok = PKCS12_parse(p12, pw, key, cert, chain);
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+    /* Older exports (RC2) need OpenSSL 3's legacy provider, where it can be had (not on the PS5). */
+    if (!ok && OSSL_PROVIDER_try_load(NULL, "legacy", 1)) {
+        ERR_clear_error();
+        ok = PKCS12_parse(p12, pw, key, cert, chain);
+    }
+#endif
+    PKCS12_free(p12);
+    if (!ok || !*cert || !*key) {
+        char why[160];
+        ssl_error(why, sizeof why);
+        snprintf(err, en,
+                 "can't read the certificate file%s%s. Files exported with old encryption (RC2) aren't supported: "
+                 "export it again with AES (see the README, Client certificate)",
+                 why[0] ? ": " : "", why);
+        if (*cert) X509_free(*cert);
+        if (*key) EVP_PKEY_free(*key);
+        sk_X509_pop_free(*chain, X509_free);
+        *cert = NULL, *key = NULL, *chain = NULL;
+        return -1;
+    }
+    if (!X509_check_private_key(*cert, *key)) {
+        snprintf(err, en, "the key in the certificate file doesn't belong to its certificate");
+        X509_free(*cert);
+        EVP_PKEY_free(*key);
+        sk_X509_pop_free(*chain, X509_free);
+        *cert = NULL, *key = NULL, *chain = NULL;
+        return -1;
+    }
+    return 0;
+}
+
+/* "CN=name, valid until 2027-05-01" ("expired 2027-05-01" if it is,
+ * "not valid before 2026-01-01" if it isn't yet) */
+static void describe_cert(X509 *cert, char *out, size_t n) {
+    char cn[96] = "";
+    X509_NAME_get_text_by_NID(X509_get_subject_name(cert), NID_commonName, cn, sizeof cn);
+    struct tm tm;
+    char until[32] = "?";
+    const ASN1_TIME *na = X509_get0_notAfter(cert);
+    memset(&tm, 0, sizeof tm);
+    if (ASN1_TIME_to_tm(na, &tm)) strftime(until, sizeof until, "%Y-%m-%d", &tm);
+    const ASN1_TIME *nb = X509_get0_notBefore(cert);
+    if (X509_cmp_current_time(nb) > 0) {
+        memset(&tm, 0, sizeof tm);
+        if (ASN1_TIME_to_tm(nb, &tm)) strftime(until, sizeof until, "%Y-%m-%d", &tm);
+        snprintf(out, n, "CN=%s, not valid before %s", cn[0] ? cn : "(none)", until);
+        return;
+    }
+    int expired = X509_cmp_current_time(na) < 0;
+    snprintf(out, n, "CN=%s, %s %s", cn[0] ? cn : "(none)", expired ? "expired" : "valid until", until);
+}
+#endif
+
+int http_client_cert_load(const void *p12, size_t len, const char *password, int use, char *info, size_t in,
+                          char *err, size_t en) {
+    if (info && in) info[0] = 0;
+    if (!p12) {
+        if (!use) return 0;
+        pthread_mutex_lock(&g_cc_lock);
+        secret_free(g_cc_key, g_cc_key_len);
+        free(g_cc_cert);
+        g_cc_cert = g_cc_key = NULL;
+        g_cc_cert_len = g_cc_key_len = 0;
+        g_cc_info[0] = 0;
+        g_cc_refused[0] = g_cc_refused_origin[0] = 0;
+        g_probe_origin[0] = 0;
+        pthread_mutex_unlock(&g_cc_lock);
+        return 0;
+    }
+#ifdef HAVE_OPENSSL
+    EVP_PKEY *key = NULL;
+    X509 *cert = NULL;
+    STACK_OF(X509) *chain = NULL;
+    if (p12_parse(p12, len, password, &key, &cert, &chain, err, en)) return -1;
+    char desc[sizeof g_cc_info];
+    describe_cert(cert, desc, sizeof desc);
+    if (info) str_copy(info, in, desc);
+    int rc = 0;
+    if (use) {
+        BIO *cb = BIO_new(BIO_s_mem()), *kb = BIO_new(BIO_s_mem());
+        int ok = cb && kb && PEM_write_bio_X509(cb, cert);
+        for (int i = 0; ok && i < sk_X509_num(chain); i++) ok = PEM_write_bio_X509(cb, sk_X509_value(chain, i));
+        ok = ok && PEM_write_bio_PrivateKey(kb, key, NULL, NULL, 0, NULL, NULL);
+        size_t cl = 0, kl = 0;
+        char *c = ok ? bio_take(cb, &cl) : NULL, *k = ok ? bio_take(kb, &kl) : NULL;
+        BIO_free(cb);
+        BIO_free(kb); /* OpenSSL clears a memory BIO's buffer as it frees it */
+        if (!c || !k) {
+            free(c);
+            secret_free(k, kl);
+            snprintf(err, en, "out of memory reading the certificate");
+            rc = -1;
+        } else {
+            pthread_mutex_lock(&g_cc_lock);
+            secret_free(g_cc_key, g_cc_key_len);
+            free(g_cc_cert);
+            g_cc_cert = c, g_cc_cert_len = cl;
+            g_cc_key = k, g_cc_key_len = kl;
+            str_copy(g_cc_info, sizeof g_cc_info, desc);
+            g_cc_refused[0] = g_cc_refused_origin[0] = 0;
+            g_probe_origin[0] = 0;
+            pthread_mutex_unlock(&g_cc_lock);
+        }
+    }
+    X509_free(cert);
+    EVP_PKEY_free(key);
+    sk_X509_pop_free(chain, X509_free);
+    return rc;
+#else
+    (void)len, (void)password, (void)use;
+    snprintf(err, en, "this build can't read client certificates (no OpenSSL)");
+    return -1;
+#endif
 }

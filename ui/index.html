@@ -50,6 +50,10 @@ document.title = APP;
       <label for="srv">Server address</label>
       <input id="srv" placeholder="https://romm.example.com or 192.168.1.10:8080" autocomplete="off">
       <div class="toggle"><input type="checkbox" id="wzInsecure"><label for="wzInsecure">Don't verify TLS certificate</label></div>
+      <details id="wzCertBox" style="margin-top:12px">
+        <summary class="muted">Client certificate (mTLS)</summary>
+        <div class="certBox" id="wzCert"></div>
+      </details>
       <div class="row" style="margin-top:14px"><button class="primary" id="pairStart">Continue</button></div>
       <details style="margin-top:18px">
         <summary class="muted">Use a pairing code instead</summary>
@@ -240,6 +244,8 @@ document.title = APP;
     <h2>Server</h2>
     <p id="srvInfo"></p>
     <div class="row"><button id="editEmus">Emulators</button><button id="rerunSetup">Run setup again</button><button class="danger" id="forget">Unpair</button></div>
+    <h3>Client certificate (mTLS)</h3>
+    <div class="certBox" id="setCert"></div>
     <div id="pkgFeeds">
     <h3>PS4 and PS5 packages</h3>
     <p class="muted">Add these feeds to FPKGi. They use your RomM username and password.</p>
@@ -557,6 +563,48 @@ $("pairCode2").onclick = function () {
   saveTls().then(function () { return api("POST", "/api/pair/code", { server_url: $("srv").value, code: $("pcode").value.trim() }); }).then(poll).catch(function (e) { $("pairErr").textContent = e.message; });
 };
 $("wzBack2").onclick = function () { api("POST", "/api/pair/forget").then(function () { wzGo(1); }); };
+
+// Client certificate (mTLS): for a RomM server behind a proxy that asks for one.
+// The same box in setup and in Settings.
+function renderCert(c) {
+  var st;
+  // A certificate out of its dates is still sent, but the server will turn it down.
+  if (c.active && /expired|not valid before/.test(c.info)) st = '<p class="warn">In use, but ' + esc(c.info) + "</p>";
+  else if (c.active) st = '<p class="ok">In use: ' + esc(c.info) + "</p>";
+  else if (c.error) st = '<p class="err">' + esc(c.error) + "</p>";
+  else st = '<p class="muted">None. Only needed when your RomM server is behind a proxy that asks for one (Traefik, Pangolin, nginx).</p>';
+  if (c.refused) st += '<p class="warn">' + esc(c.refused) + "</p>";
+  var form = '<label>Certificate file (.p12 or .pfx)</label><input type="file" class="certFile" accept=".p12,.pfx,application/x-pkcs12">' +
+    '<label>Its password</label><input type="password" class="certPw" autocomplete="off" placeholder="Empty if it has none">' +
+    '<div class="row" style="margin-top:10px"><button class="primary certUse">' + (c.file ? "Replace" : "Use this certificate") + "</button>" +
+    (c.file ? '<button class="danger certDel">Remove</button>' : "") + "</div>";
+  ["wzCert", "setCert"].forEach(function (id) {
+    var box = $(id); if (!box) return;
+    box.innerHTML = st + form;
+    box.querySelector(".certUse").onclick = function () { certUpload(box, this); };
+    var del = box.querySelector(".certDel");
+    if (del) del.onclick = function () {
+      if (!confirm("Stop using the client certificate? A server that asks for one can't be reached without it.")) return;
+      api("POST", "/api/client-cert/remove").then(function (c) { toast("Certificate removed"); renderCert(c); }).catch(function (e) { toast(e.message, 1); });
+    };
+  });
+  if (c.file || c.refused) $("wzCertBox").open = true;
+}
+function loadCert() { return api("GET", "/api/client-cert").then(renderCert).catch(function () {}); }
+function certUpload(box, btn) {
+  var f = box.querySelector(".certFile").files[0]; if (!f) { toast("Pick the certificate file first", 1); return; }
+  var pw = box.querySelector(".certPw").value;
+  btn.disabled = true;
+  var rd = new FileReader();
+  rd.onerror = function () { btn.disabled = false; toast("Can't read that file", 1); };
+  rd.onload = function () {
+    var b64 = String(rd.result).split(",")[1] || "";
+    api("POST", "/api/client-cert", { p12: b64, password: pw }).then(function (c) {
+      toast("Certificate in use"); $("pairErr").textContent = ""; renderCert(c);
+    }).catch(function (e) { btn.disabled = false; toast(e.message, 1); });
+  };
+  rd.readAsDataURL(f);
+}
 
 function serverAtLeast(v, want) {
   var a = String(v || "0").split(".").map(Number), b = want.split(".").map(Number);
@@ -1317,6 +1365,7 @@ $("instList").onclick = function (ev) {
 
 // Settings
 function loadSettings() {
+  loadCert();
   api("GET", "/api/config").then(function (c) {
     $("srvInfo").innerHTML = "<code>" + esc(c.server_url) + "</code> " + pill("RomM " + (c.server_version || "?"), "off") + pill(c.username) +
       '<br><small class="muted">Device ' + esc(c.device_id) + "</small>";
@@ -1552,6 +1601,7 @@ api("GET", "/api/status").then(function (s) {
   showTab(ready ? (t === "pair" ? "home" : t) : "pair");
   if (!ready) { wzGo(s.paired ? 3 : 1); wizardFromStatus(s); }
   api("GET", "/api/config").then(function (c) { $("wzInsecure").checked = !c.tls_verify; }).catch(function () {});
+  loadCert();
   loadUpdate().then(function () { if (state.update && updBusy(state.update)) watchUpdate(); });
 }).catch(function () { $("conn").textContent = "Can't reach " + APP; });
 // Every 3 s, or 10 s on the PS4, whose browser is slow to redraw.

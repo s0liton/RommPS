@@ -19,7 +19,7 @@ build/steamdeck/gen/emulators_json.h: platform/steamdeck/emulators.json tools/em
 
 $(DECK_BIN): $(SRCS) platform/steamdeck/platform.c $(HDRS) $(GEN_HEADERS) build/steamdeck/gen/emulators_json.h
 	@mkdir -p $(dir $@)
-	$(HOST_CC) $(COMMON_CFLAGS) -DRELEASES_URL='"$(DECK_RELEASES)"' -Ibuild/steamdeck/gen -o $@ $(SRCS) platform/steamdeck/platform.c -lcurl -lz -lpthread
+	$(HOST_CC) $(COMMON_CFLAGS) -DRELEASES_URL='"$(DECK_RELEASES)"' -Ibuild/steamdeck/gen -o $@ $(SRCS) platform/steamdeck/platform.c -lcurl $(HOST_SSL) -lz -lpthread
 
 deploy-deck: $(DECK_BIN)
 	scp $(DECK_BIN) $(DECK_USER)@$(DECK_HOST):.local/share/rommdeck/romm-sync.new
