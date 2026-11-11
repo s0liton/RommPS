@@ -14,6 +14,9 @@ int detect_refresh_profiles(cJSON *profiles);
  * platform entry: all, or (missing_only) the missing ones and those the rule
  * alone decides. How many changed. */
 int detect_apply_core_rules(cJSON *e, const char *system, const char *corename, int missing_only);
+/* Whether a core's rule keeps its saves "apart": a twin of its own syncs them,
+ * in a slot of its own, never the system's entry (MAME's NVRAM folders). */
+int detect_core_apart(const char *system, const char *corename);
 
 /* The built-in emulator catalog entry with this id (emulators.json), or NULL.
  * Parsed once; don't free. */

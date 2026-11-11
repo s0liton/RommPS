@@ -1,5 +1,6 @@
 #include "cfgwrite.h"
 
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -185,4 +186,13 @@ static void *cfgwrite_thread(void *arg) {
     return NULL;
 }
 
-void cfgwrite_init(void) { thread_start(cfgwrite_thread, NULL); }
+/* No thread until the catalog has something for it to write: on the consoles
+ * nothing has, and a megabyte of stack waking every 5 s to find that out is
+ * a PS4's memory spent on nothing. */
+void cfgwrite_init(void) {
+    static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+    static int started;
+    pthread_mutex_lock(&lock);
+    if (!started && any_writes()) started = thread_start(cfgwrite_thread, NULL) == 0;
+    pthread_mutex_unlock(&lock);
+}

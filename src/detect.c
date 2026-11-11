@@ -164,34 +164,55 @@ static int name_in(const cJSON *list, const char *name, int contains) {
  * sync follows the core, as an emulator's follows its preset (profiles.c). */
 static const char *const RULE_ONLY[] = {"memcards", "cards", "save_layout", "pcsx2_cards"};
 
-/* Adds the matching rule's keys to e: all of them, or (missing_only) those e
- * doesn't have, for a profile saved before the rule had them, and RULE_ONLY's
- * where they differ. How many. */
-int detect_apply_core_rules(cJSON *e, const char *system, const char *corename, int missing_only) {
-    int added = 0;
+/* The first rule matching a core on a system, or NULL. */
+static const cJSON *core_rule(const char *system, const char *corename) {
     static cJSON *rules;
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&lock);
-    if (!rules) rules = cJSON_Parse(RETROARCH_CORES_JSON);
+    if (!rules) rules = cJSON_Parse(RETROARCH_CORES_JSON); /* read once, never changed after */
+    pthread_mutex_unlock(&lock);
     const cJSON *r;
     cJSON_ArrayForEach(r, cJSON_GetObjectItemCaseSensitive(rules, "rules")) {
         const cJSON *names = cJSON_GetObjectItemCaseSensitive(r, "names"), *has = cJSON_GetObjectItemCaseSensitive(r, "contains"),
                     *systems = cJSON_GetObjectItemCaseSensitive(r, "systems");
         if ((names || has) && !name_in(names, corename, 0) && !name_in(has, corename, 1)) continue;
         if (systems && !name_in(systems, system, 0)) continue;
-        const cJSON *k;
+        return r;
+    }
+    return NULL;
+}
+
+int detect_core_apart(const char *system, const char *corename) {
+    return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(core_rule(system, corename), "apart"));
+}
+
+/* Adds the matching rule's keys to e: all of them, or (missing_only) those e
+ * doesn't have, for a profile saved before the rule had them, and RULE_ONLY's
+ * where they differ. How many. An "apart" rule's keys only go on the core's
+ * twin (profiles.c): the system's entry stays as it is, whichever core plays
+ * it, and loses them where an earlier build saved them in it. */
+int detect_apply_core_rules(cJSON *e, const char *system, const char *corename, int missing_only) {
+    int added = 0;
+    const cJSON *r = core_rule(system, corename), *k;
+    const int apart = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(r, "apart"));
+    if (apart && !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(e, "twin"))) {
         cJSON_ArrayForEach(k, cJSON_GetObjectItemCaseSensitive(r, "entry")) {
             const cJSON *have = cJSON_GetObjectItemCaseSensitive(e, k->string);
-            int rule_only = 0;
-            for (size_t i = 0; i < sizeof RULE_ONLY / sizeof RULE_ONLY[0]; i++) rule_only |= !strcmp(k->string, RULE_ONLY[i]);
-            if (missing_only && have && (!rule_only || cJSON_Compare(have, k, 1))) continue;
+            if (!missing_only || !have || !cJSON_Compare(have, k, 1)) continue;
             cJSON_DeleteItemFromObjectCaseSensitive(e, k->string);
-            cJSON_AddItemToObject(e, k->string, cJSON_Duplicate(k, 1));
             added++;
         }
-        break;
+        return added;
     }
-    pthread_mutex_unlock(&lock);
+    cJSON_ArrayForEach(k, cJSON_GetObjectItemCaseSensitive(r, "entry")) {
+        const cJSON *have = cJSON_GetObjectItemCaseSensitive(e, k->string);
+        int rule_only = 0;
+        for (size_t i = 0; i < sizeof RULE_ONLY / sizeof RULE_ONLY[0]; i++) rule_only |= !strcmp(k->string, RULE_ONLY[i]);
+        if (missing_only && have && (!rule_only || cJSON_Compare(have, k, 1))) continue;
+        cJSON_DeleteItemFromObjectCaseSensitive(e, k->string);
+        cJSON_AddItemToObject(e, k->string, cJSON_Duplicate(k, 1));
+        added++;
+    }
     return added;
 }
 

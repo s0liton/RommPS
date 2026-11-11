@@ -145,6 +145,10 @@ typedef struct {
      * ("cores"): only its saves, in that core's folder and format. Never a
      * target for games, mounts or copies. */
     int twin;
+    /* A twin whose saves are a kind of their own ("apart" in its core's rule:
+     * MAME's NVRAM folders): they sync in a slot of their own,
+     * "<slot>-<emulator>", never meeting the entry's .srm in one. */
+    int apart;
     /* Mupen64Plus standalone's own N64 save files ("n64_split_dir"), and its
      * game database ("n64_ini"), for the names it gives them: the save the
      * sync sees is the .srm RommPS keeps for it in save_dir (n64.h). */

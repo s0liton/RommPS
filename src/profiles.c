@@ -417,34 +417,55 @@ const char *profiles_save_family(const char *format) {
     return !strcmp(format, "nds-dsv") ? "nds-raw" : format;
 }
 
+/* A twin of entry e for one of its cores, with the core's rule's keys. */
+static cJSON *core_twin(const cJSON *e, const char *core, const char *emulator) {
+    static const char *const keep[] = {"romm", "dir", "db", "rom_dir", "update_dir", "dlc_dir", "bios_dir", "sync"};
+    cJSON *t = cJSON_CreateObject();
+    for (size_t k = 0; k < sizeof keep / sizeof *keep; k++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(e, keep[k]);
+        if (v) cJSON_AddItemToObject(t, keep[k], cJSON_Duplicate(v, 1));
+    }
+    cJSON_AddStringToObject(t, "emulator", emulator);
+    cJSON_AddStringToObject(t, "core_name", core);
+    cJSON_AddBoolToObject(t, "twin", 1);
+    detect_apply_core_rules(t, profiles_system_key(e), core, 0);
+    return t;
+}
+
 /* A profile's platform entries, with a twin for each of RetroArch's other
  * cores per system ("cores") whose rule names a save format: RetroArch picks
  * the core as a game starts, and a core reads its save before anyone can
  * react, so each one's save is kept. Only cores keeping it in the entry's
- * own core's format (or a form of it): the others would each need a slot. */
+ * own core's format (or a form of it): the others would each need a slot.
+ * A core whose saves are a kind of their own (an "apart" rule: MAME's NVRAM
+ * folders) gets that slot, and a twin even when it's the entry's own core,
+ * whose entry goes on syncing the system's .srm saves as before. */
 static cJSON *with_core_twins(const cJSON *p) {
-    static const char *const keep[] = {"romm", "dir", "db", "rom_dir", "update_dir", "dlc_dir", "bios_dir", "sync"};
     cJSON *plats = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(p, "platforms"), 1);
     if (!plats) plats = cJSON_CreateArray();
     const int n = cJSON_GetArraySize(plats);
     for (int i = 0; i < n; i++) {
         const cJSON *e = cJSON_GetArrayItem(plats, i), *c;
+        const char *own = jstr(e, NULL, "core_name", ""), *sys = profiles_system_key(e);
+        if (own[0] && detect_core_apart(sys, own)) {
+            cJSON *t = core_twin(e, own, jstr(e, NULL, "emulator", own));
+            cJSON_AddBoolToObject(t, "apart", 1);
+            cJSON_AddItemToArray(plats, t);
+        }
         cJSON_ArrayForEach(c, cJSON_GetObjectItemCaseSensitive(e, "cores")) {
             const char *core = jget_str(c, "core_name", "");
-            if (!core[0] || str_ieq(core, jstr(e, NULL, "core_name", ""))) continue;
-            cJSON *t = cJSON_CreateObject();
-            for (size_t k = 0; k < sizeof keep / sizeof *keep; k++) {
-                const cJSON *v = cJSON_GetObjectItemCaseSensitive(e, keep[k]);
-                if (v) cJSON_AddItemToObject(t, keep[k], cJSON_Duplicate(v, 1));
-            }
-            cJSON_AddStringToObject(t, "emulator", jget_str(c, "emulator", core));
-            cJSON_AddStringToObject(t, "core_name", core);
-            cJSON_AddBoolToObject(t, "twin", 1);
-            detect_apply_core_rules(t, profiles_system_key(e), core, 0);
+            if (!core[0] || str_ieq(core, own)) continue;
+            cJSON *t = core_twin(e, core, jget_str(c, "emulator", core));
             /* One save between them: the same family as the entry's own core. */
             const char *mine = jstr(e, NULL, "save_format", ""), *its = jstr(t, NULL, "save_format", "");
-            if (mine[0] && its[0] && !strcmp(profiles_save_family(mine), profiles_save_family(its))) cJSON_AddItemToArray(plats, t);
-            else cJSON_Delete(t);
+            if (detect_core_apart(sys, core)) {
+                cJSON_AddBoolToObject(t, "apart", 1);
+                cJSON_AddItemToArray(plats, t);
+            } else if (mine[0] && its[0] && !strcmp(profiles_save_family(mine), profiles_save_family(its))) {
+                cJSON_AddItemToArray(plats, t);
+            } else {
+                cJSON_Delete(t);
+            }
         }
     }
     return plats;
@@ -1343,6 +1364,7 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
             str_copy(m->disc_id, sizeof m->disc_id, jstr(p, e, "disc_id", ""));
             m->extra = profile_lists(p, "extra", profiles_system_key(e));
             m->twin = jbool(e, NULL, "twin", 0);
+            m->apart = m->twin && jbool(e, NULL, "apart", 0);
             /* How it reads its games was checked on the console: the preset's
              * call, as its cards are, never a saved copy's. */
             const cJSON *mg = card_setting(p, e, "mount_games");

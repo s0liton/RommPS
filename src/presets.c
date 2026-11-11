@@ -10,6 +10,7 @@
 #include <time.h>
 
 #include "cfgvars.h"
+#include "cfgwrite.h"
 #include "platform.h"
 #include "util.h"
 #include "config.h"
@@ -32,9 +33,23 @@ static cJSON *g_raw;
 
 static void seen_reset(void);
 
-static cJSON *resolved(const cJSON *raw) {
-    cJSON *f = cJSON_Duplicate(raw, 1);
+/* Whether a catalog has an entry with "vars" anywhere in it. */
+static int has_vars(const cJSON *node) {
+    const cJSON *c;
+    cJSON_ArrayForEach(c, node) {
+        if (cJSON_IsObject(c) && cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(c, "vars"))) return 1;
+        if ((cJSON_IsObject(c) || cJSON_IsArray(c)) && has_vars(c)) return 1;
+    }
+    return 0;
+}
+
+/* raw filled in, as a copy. With nothing to fill in (no machine placeholders,
+ * no entry with vars: the consoles' catalogs), raw itself: a PS4 has better
+ * uses for the memory than a second copy of the catalog. */
+static cJSON *resolved(cJSON *raw) {
     seen_reset();
+    if (!plat_info()->catalog_var && !has_vars(raw)) return raw;
+    cJSON *f = cJSON_Duplicate(raw, 1);
     presets_resolve(f);
     return f;
 }
@@ -584,6 +599,7 @@ static void apply(cJSON *f) {
     if (changed) config_save();
     config_unlock();
     LOGI("presets: now %s%s", jget_str(f, "version", ""), changed ? ", saved profiles updated" : "");
+    cfgwrite_init(); /* config_writes it brought get their thread */
 }
 
 static void *check_thread(void *arg) {

@@ -443,7 +443,12 @@ void bundle_free(bundle *b) {
 
 static int cmp_lines(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
-int bundle_hash(const bundle *b, char out[33]) {
+/* switch, ryujinx: the layouts with a device save beside the user's. */
+static int with_device(const bundle *b) { return !strcmp(b->layout, "switch") || !strcmp(b->layout, "ryujinx"); }
+
+/* RomM's hash of the zip: md5 of its sorted "name:md5" lines. In user (may
+ * be NULL), the same without the device save's; each file read once. */
+static void hash_lines(const bundle *b, char out[33], char *user) {
     char **lines = calloc((size_t)b->n + 1, sizeof *lines);
     size_t total = 1;
     for (int i = 0; i < b->n; i++) {
@@ -459,10 +464,55 @@ int bundle_hash(const bundle *b, char out[33]) {
     *p = 0;
     for (int i = 0; i < b->n; i++) p += sprintf(p, i ? "\n%s" : "%s", lines[i]);
     md5_hex(joined, strlen(joined), out);
+    if (user) {
+        p = joined;
+        *p = 0;
+        for (int i = 0; i < b->n; i++)
+            if (!with_device(b) || strncmp(lines[i], "device/", 7) != 0) p += sprintf(p, p != joined ? "\n%s" : "%s", lines[i]);
+        md5_hex(joined, strlen(joined), user);
+    }
     for (int i = 0; i < b->n; i++) free(lines[i]);
     free(lines);
     free(joined);
+}
+
+int bundle_hash(const bundle *b, char out[33]) {
+    hash_lines(b, out, NULL);
     return 0;
+}
+
+int bundle_hashes(const bundle *b, char out[33], char user[33]) {
+    hash_lines(b, out, user);
+    return 0;
+}
+
+int bundle_device_only(const bundle *b) {
+    if (!with_device(b) || !b->n) return 0;
+    for (int i = 0; i < b->n; i++)
+        if (strncmp(b->files[i].name, "device/", 7) != 0) return 0;
+    return 1;
+}
+
+int bundle_zip_has_user(const bundle *b, const char *zip_path, const char *tmp_dir) {
+    remove_tree(tmp_dir);
+    if (zip_extract_all(zip_path, tmp_dir) < 0) {
+        remove_tree(tmp_dir);
+        return -1;
+    }
+    /* As place_unpacked reads it: "<title id>/...", or with no device save
+     * either, whatever the zip holds (the folder's contents). */
+    char src[PATH_MAX_LEN], dev[PATH_MAX_LEN];
+    path_join(src, sizeof src, tmp_dir, b->game_id);
+    snprintf(dev, sizeof dev, "%s/device/%s", tmp_dir, b->game_id);
+    int user = dir_exists(src);
+    if (!user && !dir_exists(dev)) {
+        DIR *d = opendir(tmp_dir);
+        struct dirent *de;
+        while (d && !user && (de = readdir(d))) user = de->d_name[0] != '.';
+        if (d) closedir(d);
+    }
+    remove_tree(tmp_dir);
+    return user;
 }
 
 int bundle_zip(const bundle *b, const char *zip_path) {

@@ -529,33 +529,58 @@ static int place(const profile_map *m, const cJSON *f, const char *dest, fetched
     return 1;
 }
 
+/* Whether the plan's file goes to the old set's place (by_ext's "/..." or under dir). */
+static int planned_path(const char *dir, const plan_t *plan, int np, const char *path) {
+    for (int k = 0; k < np; k++) {
+        char planned[PATH_MAX_LEN];
+        plan_dest(dir, plan[k].name, planned, sizeof planned);
+        if (!strcmp(planned, path)) return 1;
+    }
+    return 0;
+}
+
 /* RomM's firmware set swapped for another version: the files of ours that
  * the new set doesn't have go, or the two versions sit in one folder and
  * Eden fails every game on "NCA validation failed". The plan only holds set
  * files when RomM's set goes in (never beside the user's own, see users_set),
- * and a file changed since we put it there is the user's and stays. */
-static void drop_old_set(const char *dir, const plan_t *plan, int np) {
+ * and a file changed since we put it there is the user's and stays.
+ * Only once the new set is all here (whole: every file of it RomM listed came
+ * down, checked, in a list as long as the platform says): a set half
+ * downloaded, or a list cut short, would cost the old set for one that can't
+ * run either, and 200-odd downloads to put it back. A new set less than half
+ * the size of what it replaces is taken for a list cut short too. */
+static void drop_old_set(const char *dir, const plan_t *plan, int np, const cJSON *files, int whole) {
     char folder[PATH_MAX_LEN] = "";
-    for (int k = 0; k < np && !folder[0]; k++) {
+    int planned = 0;
+    for (int k = 0; k < np; k++) {
         if (!ext_in_list(jget_str(plan[k].f, "file_name", ""), ONE_SET_EXTS)) continue;
+        planned++;
+        if (folder[0]) continue;
         char at[PATH_MAX_LEN];
         plan_dest(dir, plan[k].name, at, sizeof at);
         set_folder(at, folder, sizeof folder);
     }
     if (!folder[0]) return;
+    const cJSON *f;
+    cJSON_ArrayForEach(f, files) if (ext_in_list(jget_str(f, "file_name", ""), ONE_SET_EXTS) && !usable(f)) whole = 0;
+    int leaving = 0;
+    state_lock();
+    const cJSON *rec;
+    cJSON_ArrayForEach(rec, state_section("firmware")) leaving += in_set(rec->string, folder) && !planned_path(dir, plan, np, rec->string);
+    state_unlock();
+    if (!leaving) return;
+    if (!whole || planned * 2 < leaving) {
+        LOGW("BIOS: RomM's firmware set in %s isn't all here (%d files of it, %d of the old one): the old one stays until it is",
+             folder, planned, leaving);
+        return;
+    }
     int removed = 0;
     state_lock();
     cJSON *recs = state_section("firmware"), *e = recs ? recs->child : NULL;
     while (e) {
         cJSON *next = e->next;
         const char *p = e->string;
-        int keep = !in_set(p, folder);
-        for (int k = 0; k < np && !keep; k++) {
-            char planned[PATH_MAX_LEN];
-            plan_dest(dir, plan[k].name, planned, sizeof planned);
-            keep = !strcmp(planned, p);
-        }
-        if (!keep) {
+        if (in_set(p, folder) && !planned_path(dir, plan, np, p)) {
             if (file_exists(p) && still_ours(p, jget_str(e, "md5", ""), (int64_t)jget_num(e, "size", -1)) && unlink_set_file(p) == 0) {
                 events_add("bios", "removed", 0, p, NULL, path_basename(p));
                 removed++;
@@ -689,6 +714,8 @@ int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int on
             fails++;
             continue;
         }
+        /* Shorter than the platform says: cut off on the way, not a smaller set. */
+        const int whole_list = cJSON_GetArraySize(files) >= (int)jget_num(plat, "firmware_count", 0);
         for (int i = 0; i < n; i++) {
             const profile_map *m = &maps[i];
             if (!profile_map_handles(m, slug, fs_slug)) continue;
@@ -700,17 +727,21 @@ int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int on
                 cJSON_Delete(rules);
                 continue;
             }
+            const int fails_before = fails;
             cJSON *mine = with_borrowed(files, rules, platforms, &fails);
             const int np = dir[0] && cJSON_GetArraySize(mine) > 0 ? make_plan(rules, mine, dir, plan) : 0;
+            int whole = whole_list && fails == fails_before; /* no borrowed list missing either */
             for (int k = 0; k < np; k++) {
                 char dest[PATH_MAX_LEN];
                 plan_dest(dir, plan[k].name, dest, sizeof dest);
                 const int r = place(m, plan[k].f, dest, got, &ngot, 64);
                 if (r > 0) added++;
                 else if (r < 0) fails++;
+                if (ext_in_list(jget_str(plan[k].f, "file_name", ""), ONE_SET_EXTS) && (r < 0 || (!file_exists(dest) && !dir_exists(dest))))
+                    whole = 0;
             }
             drop_named_twins(dir, plan, np);
-            drop_old_set(dir, plan, np);
+            drop_old_set(dir, plan, np, mine, whole);
             say_install(m, rules, dir, only_platform != 0); /* with what just came down */
             cJSON_Delete(mine);
             cJSON_Delete(rules);

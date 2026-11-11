@@ -77,6 +77,10 @@ typedef struct {
     char gc_form[8];
     char gc_file[PATH_MAX_LEN];
     char ps2_identity[33]; /* ps2: the saves' identity (ps2card_collect) */
+    /* switch, ryujinx: the hash without the device save (what 1.4.2 and
+     * older synced), and whether the device save is all there is. */
+    char user_hash[33];
+    int device_only;
 } local_file;
 
 typedef struct {
@@ -167,6 +171,15 @@ static const char *slot_for(const scan_ctx *c, const profile_map *m, const char 
         snprintf(buf, n, "%s-%s", base, ext[0] == '.' ? ext + 1 : ext);
     }
     return buf;
+}
+
+/* The slot a game's bundled saves sync in: the console's, or for a core
+ * twin whose saves are a kind of their own (profile_map.apart) one of its
+ * own, "autosave-mame": RetroArch's MAME zips never meet the arcade entry's
+ * .srm saves in one slot. */
+static void bundle_slot(const scan_ctx *c, const profile_map *m, char *out, size_t n) {
+    if (m->apart) snprintf(out, n, "%s-%s", c->slot, m->emulator);
+    else str_copy(out, n, c->slot);
 }
 
 static int ignored_rom_file(const char *name, const profile_map *m) {
@@ -590,7 +603,7 @@ static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
         int dup = 0;
         for (int i = 0; i < c->nroms; i++)
             if (!strcmp(c->roms[i].path, path) && !strcmp(c->roms[i].map->profile_id, m->profile_id) &&
-                !strcmp(c->roms[i].map->emulator, m->emulator)) /* (a core twin has its own) */
+                !strcmp(c->roms[i].map->emulator, m->emulator) && c->roms[i].map->apart == m->apart) /* (a core twin has its own) */
                 dup = 1;
         if (dup) continue;
 
@@ -1236,12 +1249,14 @@ static int beats(int a_counts, time_t a_mtime, int b_counts, time_t b_mtime) {
     return a_mtime > b_mtime;
 }
 
-static void record_save(const local_file *f, int save_id, const char *hash) {
+/* server_hash: RomM's hash of the version synced, when it's known ("" when not). */
+static void record_save(const local_file *f, int save_id, const char *hash, const char *server_hash) {
     state_lock();
     cJSON *e = state_entry_ensure("saves", f->path);
     jset_num(e, "rom_id", f->rom_id);
     jset_str(e, "slot", f->slot);
     jset_str(e, "hash", hash ? hash : f->hash);
+    jset_str(e, "server_hash", server_hash ? server_hash : "");
     jset_num(e, "mtime", (double)(f->is_bundle ? f->mtime : file_mtime(f->path)));
     jset_num(e, "size", (double)(f->is_bundle ? f->size : file_size(f->path)));
     if (!f->is_bundle) {
@@ -2013,10 +2028,15 @@ static void fill_bundle_file(local_file *f, const scan_ctx *c, const local_rom *
     f->rom = r;
     f->is_bundle = 1;
     str_copy(f->game_id, sizeof f->game_id, b->game_id);
-    str_copy(f->slot, sizeof f->slot, c->slot);
+    bundle_slot(c, r->map, f->slot, sizeof f->slot);
     f->mtime = b->mtime;
     f->size = b->size;
-    bundle_hash(b, f->hash);
+    if (!strcmp(r->map->save_layout, "switch") || !strcmp(r->map->save_layout, "ryujinx")) {
+        bundle_hashes(b, f->hash, f->user_hash);
+        f->device_only = bundle_device_only(b);
+    } else {
+        bundle_hash(b, f->hash);
+    }
     if (!strcmp(r->map->save_layout, "ps2")) {
         char identity[33];
         ps2_unit_hash(r, b, f->hash, f->upload_name, identity); /* no hash: not sent (scan_bundles) */
@@ -2060,6 +2080,14 @@ static void fill_bundle_file(local_file *f, const scan_ctx *c, const local_rom *
     }
 }
 
+/* A bundle's folder for the watcher (watch.c), once. Caller holds state_lock. */
+static void watch_bundle_dir(const char *dir) {
+    const cJSON *d;
+    if (!dir[0]) return;
+    cJSON_ArrayForEach(d, g_bundle_roots_next) if (cJSON_IsString(d) && !strcmp(d->valuestring, dir)) return;
+    cJSON_AddItemToArray(g_bundle_roots_next, cJSON_CreateString(dir));
+}
+
 static void scan_bundles(scan_ctx *c) {
     for (int i = 0; i < c->nroms; i++) {
         const local_rom *r = &c->roms[i];
@@ -2072,7 +2100,8 @@ static void scan_bundles(scan_ctx *c) {
         /* An Xbox save's folder is our own copy: the sync once xemu closes sees its changes. */
         if (strcmp(r->map->save_layout, "xbox") != 0) {
             state_lock();
-            cJSON_AddItemToArray(g_bundle_roots_next, cJSON_CreateString(b.dir));
+            watch_bundle_dir(b.dir);
+            watch_bundle_dir(b.dir2); /* a device save changes on its own too */
             state_unlock();
         }
         if (!strcmp(r->map->save_layout, "gci")) gc_learn_form(c, r);
@@ -2081,18 +2110,21 @@ static void scan_bundles(scan_ctx *c) {
             fill_bundle_file(&f, c, r, &b);
             /* Another emulator's copy of the game already here: the one saved
              * last goes up (a leftover RomM never saw doesn't beat one it
-             * knows), and the other gets it after (share_bundle_saves). */
+             * knows, nor a device save alone one with the user's), and the
+             * other gets it after (share_bundle_saves). */
             int at = -1;
             for (int k = 0; k < c->nsaves && at < 0; k++)
-                if (c->saves[k].rom_id == r->rom_id && !strcmp(c->saves[k].slot, c->slot)) at = k;
+                if (c->saves[k].rom_id == r->rom_id && !strcmp(c->saves[k].slot, f.slot)) at = k;
             if (!f.hash[0]) {
                 if (strcmp(r->map->save_layout, "ps2") != 0) /* ps2card logged why */
                     LOGW("%s: its saves can't go on RomM's memory card yet", path_basename(r->path));
             } else if (at < 0) {
                 add_file(&c->saves, &c->nsaves, &c->capsaves, &f);
             } else if (c->saves[at].is_bundle && !strcmp(c->saves[at].map->save_layout, r->map->save_layout) &&
-                       beats(counts(f.path, f.map, f.mtime), f.mtime,
-                             counts(c->saves[at].path, c->saves[at].map, c->saves[at].mtime), c->saves[at].mtime)) {
+                       (f.device_only != c->saves[at].device_only
+                            ? !f.device_only
+                            : beats(counts(f.path, f.map, f.mtime), f.mtime,
+                                    counts(c->saves[at].path, c->saves[at].map, c->saves[at].mtime), c->saves[at].mtime))) {
                 c->saves[at] = f;
             }
         }
@@ -2431,7 +2463,7 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
             ps2_note_synced(r, f.ps2_identity, server_hash);
             str_copy(f.hash, sizeof f.hash, server_hash);
         }
-        record_save(&f, save_id, f.hash);
+        record_save(&f, save_id, f.hash, server_hash);
         cJSON *body = cJSON_CreateObject();
         cJSON_AddStringToObject(body, "device_id", c->device_id);
         cJSON_AddStringToObject(body, "content_hash", server_hash && server_hash[0] ? server_hash : f.hash);
@@ -2445,6 +2477,54 @@ out:
     unlink(zip);
     bundle_free(&b);
     return rc;
+}
+
+/* switch, ryujinx: whether RomM's save save_id (hash: RomM's content hash)
+ * holds the game's user save, not only its device save. Looked inside once a
+ * version; the answer stays with the game (state "save_parts"). One that's
+ * no zip holds nothing of the kind. -1 when it couldn't be fetched. */
+static int romm_has_user_save(const local_rom *r, const char *game_id, int save_id, const char *hash) {
+    char key[16], api[64], zip[PATH_MAX_LEN], tmp[PATH_MAX_LEN];
+    snprintf(key, sizeof key, "%d", r->rom_id);
+    state_lock();
+    const cJSON *e = state_entry("save_parts", key);
+    const int known = e && hash[0] && (int)jget_num(e, "save_id", 0) == save_id && !strcmp(jget_str(e, "hash", ""), hash);
+    const int had = known ? (int)jget_num(e, "user", 0) : -1;
+    state_unlock();
+    if (known) return had;
+    bundle b;
+    memset(&b, 0, sizeof b);
+    str_copy(b.layout, sizeof b.layout, r->map->save_layout);
+    str_copy(b.game_id, sizeof b.game_id, game_id);
+    snprintf(api, sizeof api, "/api/saves/%d/content", save_id);
+    snprintf(zip, sizeof zip, "%s/tmp/peek-%d.zip", plat_data_dir(), save_id);
+    snprintf(tmp, sizeof tmp, "%s/tmp/unpack-peek-%d", plat_data_dir(), save_id);
+    http_resp resp;
+    int user = -1;
+    if (romm_download(api, zip, NULL, NULL, &resp) == 0) user = bundle_zip_has_user(&b, zip, tmp) > 0;
+    else LOGW("can't look into save %d: %s", save_id, resp.error);
+    unlink(zip);
+    if (user >= 0 && hash[0]) {
+        state_lock();
+        cJSON *s = state_entry_ensure("save_parts", key);
+        jset_num(s, "save_id", save_id);
+        jset_str(s, "hash", hash);
+        jset_num(s, "user", user);
+        state_unlock();
+    }
+    return user;
+}
+
+/* switch, ryujinx: a save just as its last sync left it but for its device
+ * save, which 1.4.2 and older never put in the zip: the game's first sync
+ * since the upgrade. Not a change of anyone's to argue about. */
+static int only_device_new(const local_file *f) {
+    if (!f->user_hash[0] || !strcmp(f->user_hash, f->hash)) return 0;
+    state_lock();
+    const cJSON *e = state_entry("saves", f->path);
+    const int same = e && !strcmp(jget_str(e, "hash", ""), f->user_hash);
+    state_unlock();
+    return same;
 }
 
 /* A plain save's name on RomM: its file's, but a DuckStation card's as the
@@ -2540,7 +2620,7 @@ static int do_upload(const scan_ctx *c, const local_file *f, int session_id, int
         else unlink(card_up);
     }
     if (ok) {
-        record_save(f, (int)jget_num(j, "id", 0), jget_str(j, "content_hash", f->hash));
+        record_save(f, (int)jget_num(j, "id", 0), jget_str(j, "content_hash", f->hash), jget_str(j, "content_hash", ""));
         if (ps2_sent[0]) ps2_note_synced(f->rom, ps2_sent, jget_str(j, "content_hash", f->hash));
         LOGI("uploaded %s (rom %d, slot %s)", f->path, f->rom_id, f->slot);
     }
@@ -2643,7 +2723,7 @@ static int do_download(const scan_ctx *c, int save_id, const char *dest, const l
      * come down again every time). Once the file changes, its own counts. */
     if (sent[0] && md5_file_hex(dest, now) == 0 && strcmp(now, sent) != 0) str_copy(hash, sizeof hash, sent);
     str_copy(rec.hash, sizeof rec.hash, hash);
-    record_save(&rec, save_id, hash);
+    record_save(&rec, save_id, hash, server_hash);
 
     cJSON *body = cJSON_CreateObject();
     cJSON_AddStringToObject(body, "device_id", c->device_id);
@@ -2669,6 +2749,27 @@ static const local_rom *find_rom(const scan_ctx *c, int rom_id, const char *emul
     for (int i = 0; i < c->nroms; i++) {
         const local_rom *r = &c->roms[i];
         if (r->rom_id != rom_id || !r->rules.sync_saves) continue;
+        if (emulator && str_ieq(r->map->emulator, emulator)) return r;
+        if (!any) any = r;
+    }
+    return any;
+}
+
+/* The game here whose save RomM keeps in slot: a slot of a core twin's own
+ * (profile_map.apart) is that twin's alone, and the others never go to one
+ * (an arcade .srm is no MAME NVRAM zip). Else as find_rom. */
+static const local_rom *rom_for_slot(const scan_ctx *c, int rom_id, const char *slot, const char *emulator) {
+    const local_rom *any = NULL;
+    for (int i = 0; i < c->nroms; i++) {
+        const local_rom *r = &c->roms[i];
+        if (r->rom_id != rom_id || !r->rules.sync_saves || !r->map->apart) continue;
+        char own[48];
+        bundle_slot(c, r->map, own, sizeof own);
+        if (!strcmp(own, slot ? slot : "")) return r;
+    }
+    for (int i = 0; i < c->nroms; i++) {
+        const local_rom *r = &c->roms[i];
+        if (r->rom_id != rom_id || !r->rules.sync_saves || r->map->apart) continue;
         if (emulator && str_ieq(r->map->emulator, emulator)) return r;
         if (!any) any = r;
     }
@@ -2968,30 +3069,41 @@ static int restore_missing_saves(scan_ctx *c, int only_rom) {
  * slot (or else anywhere) comes down. Each emulator is looked at on its own:
  * the sync sees the game's save in the first one, the same as RomM's, and
  * brings nothing to the second. One sharing a folder with the first finds the
- * saves already there. */
+ * saves already there. A Switch game with only its device save here (the
+ * game started, nobody saved yet) is missing its user's save: RomM's comes
+ * down when it has one, the device save backed up first. */
 static int restore_missing_bundles(scan_ctx *c, int only_rom) {
     int n = 0;
     for (int i = 0; i < c->nroms; i++) {
         const local_rom *r = &c->roms[i];
         if (!r->rules.sync_saves || !bundle_supported(r->map->save_layout) || (only_rom && r->rom_id != only_rom)) continue;
-        char id[24];
+        char id[24], here[33] = "";
         bundle b = {0};
         if (rom_game_id(r, id, sizeof id) != 0 || bundle_for_rom(r, id, &b) != 0) continue;
-        const int empty = b.n == 0;
+        const int empty = b.n == 0, device_only = bundle_device_only(&b);
+        if (device_only) bundle_hash(&b, here);
         bundle_free(&b);
-        if (!empty) continue;
+        if (!empty && !device_only) continue;
+        char slot[48];
+        bundle_slot(c, r->map, slot, sizeof slot);
         const cJSON *all = romm_saves_of(c, r->rom_id, 1);
         const cJSON *s, *mine = NULL, *any = NULL;
         cJSON_ArrayForEach(s, all) {
             if ((int)jget_num(s, "rom_id", 0) != r->rom_id) continue;
             const char *up = jget_str(s, "updated_at", "");
             if (!any || strcmp(up, jget_str(any, "updated_at", "")) > 0) any = s;
-            if (!strcmp(jget_str(s, "slot", ""), c->slot) && (!mine || strcmp(up, jget_str(mine, "updated_at", "")) > 0))
+            if (!strcmp(jget_str(s, "slot", ""), slot) && (!mine || strcmp(up, jget_str(mine, "updated_at", "")) > 0))
                 mine = s;
         }
-        const cJSON *pick = mine ? mine : any;
+        /* A slot of its own takes nothing from the others: the arcade
+         * entry's .srm isn't a MAME NVRAM zip. */
+        const cJSON *pick = mine ? mine : r->map->apart ? NULL : any;
         if (!pick) continue;
-        const int rc = do_download_bundle(c, (int)jget_num(pick, "id", 0), r, c->slot, 0, jget_str(pick, "content_hash", ""), 1);
+        /* Device saves alone on both sides are the sync's to settle. */
+        if (device_only && (!strcmp(jget_str(pick, "content_hash", ""), here) ||
+                            romm_has_user_save(r, id, (int)jget_num(pick, "id", 0), jget_str(pick, "content_hash", "")) != 1))
+            continue;
+        const int rc = do_download_bundle(c, (int)jget_num(pick, "id", 0), r, slot, 0, jget_str(pick, "content_hash", ""), 1);
         if (rc == 0) {
             n++;
             events_add("save", "downloaded", r->rom_id, b.dir, emu_name(r->map), "Missing here");
@@ -3009,7 +3121,7 @@ static int restore_missing_bundles(scan_ctx *c, int only_rom) {
  * game's by its saves (identity), not the card's timestamps. */
 static int same_bundle_group(const local_rom *a, const local_rom *b) {
     return a->rom_id == b->rom_id && !strcmp(a->map->save_layout, b->map->save_layout) && b->rules.sync_saves &&
-           !b->map->own_slot;
+           !b->map->own_slot && a->map->apart == b->map->apart && (!a->map->apart || !strcmp(a->map->emulator, b->map->emulator));
 }
 
 static int share_bundle_saves(scan_ctx *c, int only_rom) {
@@ -3023,7 +3135,7 @@ static int share_bundle_saves(scan_ctx *c, int only_rom) {
         for (int k = 0; k < i && first; k++) first = !same_bundle_group(a, &c->roms[k]);
         char id[24];
         if (!first || rom_game_id(a, id, sizeof id) != 0) continue;
-        struct { const local_rom *r; char print[33], dir[PATH_MAX_LEN]; time_t mtime; int synced; } copies[4];
+        struct { const local_rom *r; char print[33], dir[PATH_MAX_LEN]; time_t mtime; int synced, device_only; } copies[4];
         int nc = 0, newest = -1;
         for (int k = i; k < c->nroms && nc < 4; k++) {
             const local_rom *r = &c->roms[k];
@@ -3037,9 +3149,12 @@ static int share_bundle_saves(scan_ctx *c, int only_rom) {
                     copies[nc].r = r;
                     copies[nc].mtime = b.mtime;
                     copies[nc].synced = counts(f.path, r->map, b.mtime);
+                    copies[nc].device_only = f.device_only;
                     str_copy(copies[nc].print, sizeof copies[nc].print, print);
                     str_copy(copies[nc].dir, sizeof copies[nc].dir, b.dir);
-                    if (newest < 0 || beats(copies[nc].synced, b.mtime, copies[newest].synced, copies[newest].mtime))
+                    if (newest < 0 || (f.device_only != copies[newest].device_only
+                                           ? !f.device_only
+                                           : beats(copies[nc].synced, b.mtime, copies[newest].synced, copies[newest].mtime)))
                         newest = nc;
                     nc++;
                 }
@@ -3049,15 +3164,17 @@ static int share_bundle_saves(scan_ctx *c, int only_rom) {
         int differ = 0;
         for (int k = 0; k < nc; k++) differ |= strcmp(copies[k].print, copies[newest].print) != 0;
         if (nc < 2 || !differ) continue;
+        char slot[48];
+        bundle_slot(c, a->map, slot, sizeof slot);
         const cJSON *all = romm_saves_of(c, a->rom_id, 0);
         const cJSON *s, *pick = NULL;
         cJSON_ArrayForEach(s, all)
-            if ((int)jget_num(s, "rom_id", 0) == a->rom_id && !strcmp(jget_str(s, "slot", ""), c->slot) &&
+            if ((int)jget_num(s, "rom_id", 0) == a->rom_id && !strcmp(jget_str(s, "slot", ""), slot) &&
                 (!pick || strcmp(jget_str(s, "updated_at", ""), jget_str(pick, "updated_at", "")) > 0))
                 pick = s;
         for (int k = 0; pick && k < nc; k++) {
             if (k == newest || !strcmp(copies[k].print, copies[newest].print)) continue;
-            if (do_download_bundle(c, (int)jget_num(pick, "id", 0), copies[k].r, c->slot, 0,
+            if (do_download_bundle(c, (int)jget_num(pick, "id", 0), copies[k].r, slot, 0,
                                    jget_str(pick, "content_hash", ""), 1) == 0) {
                 n++;
                 LOGI("shared save: %s's saves from %s -> %s", id, copies[newest].r->map->profile_name,
@@ -3780,8 +3897,12 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
             state_lock();
             cJSON *e = state_entry("saves", f->path);
             int local_changed = !e || strcmp(jget_str(e, "hash", ""), f->hash) != 0;
+            /* Neither moved: RomM's is the version synced last, and this one
+             * is as that sync left it. Two forms of one save (a zip without
+             * the device save kept here), downloaded again forever otherwise. */
+            const int romm_same = e && !strcmp(jget_str(e, "server_hash", ""), server_hash);
             state_unlock();
-            action = local_changed ? "upload" : "download";
+            action = local_changed ? "upload" : romm_same ? "no_op" : "download";
         }
         if (!strcmp(action, "no_op")) {
             if (f) {
@@ -3789,7 +3910,7 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                 cJSON *e = state_entry("saves", f->path);
                 int changed = !e || strcmp(jget_str(e, "hash", ""), f->hash);
                 state_unlock();
-                if (changed) record_save(f, save_id, NULL);
+                if (changed) record_save(f, save_id, NULL, server_hash);
                 else {
                     state_lock();
                     state_entry_remove("conflicts", f->path);
@@ -3810,10 +3931,15 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
             cJSON *e = state_entry("saves", f->path);
             int local_dirty = !e || strcmp(jget_str(e, "hash", ""), f->hash) != 0;
             state_unlock();
-            if (local_dirty) {
+            if (local_dirty && !only_device_new(f)) {
                 is_conflict = 1;
                 want_down = 0;
             }
+        }
+        if (is_conflict && f && only_device_new(f)) {
+            /* Both moved, by RomM's clock; here only the device save, never synced before. */
+            is_conflict = 0;
+            want_down = 1;
         }
         if (want_up && f && save_id > 0 && server_hash[0] && strcmp(server_hash, f->hash) != 0) {
             /* The same trap the other way round: a file this device never synced,
@@ -3827,6 +3953,25 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
             if (unknown && !saved_in_last_run(f->map, f->mtime)) {
                 is_conflict = 1;
                 want_up = 0;
+            }
+        }
+        if ((want_up || is_conflict) && f && f->device_only && save_id > 0) {
+            /* The game's device save alone, and RomM's save may have the
+             * user's too. Sent, it'd be RomM's newest; RommPS 1.4.2 and older
+             * put whatever a zip holds in the user's folder, so their copy of
+             * the user's save would go with it. Never sent over one: RomM's
+             * comes down instead (this one backed up first), as a game with
+             * its user's save missing here gets it (restore_missing_bundles). */
+            const int has = romm_has_user_save(f->rom, f->game_id, save_id, server_hash);
+            if (has < 0) {
+                LOGW("%s: only its device save is here, and RomM's save can't be looked at: nothing sent", f->path);
+                res->skipped++;
+                continue;
+            }
+            if (has > 0) {
+                LOGI("%s: only its device save is here, RomM's save comes down", f->path);
+                want_up = overwrite = is_conflict = 0;
+                want_down = 1;
             }
         }
         if (is_conflict && f) {
@@ -3867,7 +4012,7 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
         } else if (want_down && upload_only) {
             res->deferred++;
         } else if (want_down) {
-            const local_rom *r = f ? f->rom : find_rom(&c, rom_id, jget_str(op, "emulator", NULL));
+            const local_rom *r = f ? f->rom : rom_for_slot(&c, rom_id, slot, jget_str(op, "emulator", NULL));
             if (!r) {
                 res->skipped++; /* game isn't on this console */
                 continue;
@@ -4340,7 +4485,11 @@ int sync_resolve_conflict(const char *path, const char *keep, char *err, int en)
         snprintf(err, (size_t)en, "the local save is gone");
         goto done;
     }
-    if (local) {
+    if (local && f->device_only &&
+        romm_has_user_save(f->rom, f->game_id, (int)jget_num(e, "save_id", 0), jget_str(e, "server_hash", "")) != 0) {
+        /* Kept, RomM would have no user's save of the game left (run_sync). */
+        snprintf(err, (size_t)en, "only the game's device save is here: keep RomM's");
+    } else if (local) {
         long st = 0;
         rc = do_upload(&c, f, 0, 1, &st);
         if (rc) snprintf(err, (size_t)en, "upload failed (HTTP %ld)", st);
@@ -4515,7 +4664,7 @@ cJSON *sync_preview(char *err, int en) {
                     preview_item(down, game, f->path, "replaces the local save (a backup is kept)");
                 continue;
             }
-            const local_rom *r = find_rom(&c, rom_id, jget_str(op, "emulator", NULL));
+            const local_rom *r = rom_for_slot(&c, rom_id, slot, jget_str(op, "emulator", NULL));
             if (!r) {
                 elsewhere++;
                 continue;
@@ -4643,7 +4792,7 @@ int sync_restore(const char *kind, int id, char *err, int en) {
     scan_saves(&c);
     int rom_id = (int)jget_num(meta, "rom_id", 0);
     const local_rom *r = is_state ? find_rom_for_state(&c, rom_id, jget_str(meta, "emulator", ""))
-                                  : find_rom(&c, rom_id, jget_str(meta, "emulator", NULL));
+                                  : rom_for_slot(&c, rom_id, jget_str(meta, "slot", c.slot), jget_str(meta, "emulator", NULL));
     if (!r && is_state && find_rom(&c, rom_id, NULL)) {
         snprintf(err, (size_t)en, "made by %s, which this %s's emulator can't load",
                  jget_str(meta, "emulator", "")[0] ? jget_str(meta, "emulator", "") : "an unknown emulator", plat_here());

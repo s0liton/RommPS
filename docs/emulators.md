@@ -326,3 +326,4 @@ From `platform/retroarch_cores.json`. Saves default to `<game>.srm` (`.sav`, `.r
 | Dolphin | wii | a zip per game (wii) |  |  |  |
 | Dolphin | any | a zip per game (gci) |  | one per game | A GCI folder: one file per save, so each game's own; synced as a zip of the game's .gci files. |
 | Azahar, Citra | any | a zip per game (3ds) |  |  |  |
+| MAME | any | a zip per game (folder) |  |  | Each game's NVRAM folder, <save folder>/mame/nvram/<set>/, synced as a zip of it (<set>.zip), the same as standalone MAME's, in a slot of its own (autosave-mame). The arcade entry's .srm saves sync as before, whichever core plays them. |

@@ -80,6 +80,16 @@ void bundle_free(bundle *b);
 
 /* RomM's hash for the zip this bundle would produce. */
 int bundle_hash(const bundle *b, char out[33]);
+/* The same, and in user the hash of that zip without the device save (switch,
+ * ryujinx; out's again for the others): all RommPS 1.4.2 and older synced. */
+int bundle_hashes(const bundle *b, char out[33], char user[33]);
+/* switch, ryujinx: 1 when the game's device save is all there is, without the
+ * user's (what a game leaves as it first starts, before anyone saves). */
+int bundle_device_only(const bundle *b);
+/* switch, ryujinx: whether a zip brings the user's save, not only the device
+ * save, the way bundle_replace would place it. Unpacks into tmp_dir to look,
+ * and clears it after. 1 or 0; -1 for a bad zip. */
+int bundle_zip_has_user(const bundle *b, const char *zip_path, const char *tmp_dir);
 int bundle_zip(const bundle *b, const char *zip_path);
 /* Replaces the bundle's files with the zip's contents. -1 for a zip it
  * can't use, -2 for one holding none of the game's saves (psvita, ps4,
