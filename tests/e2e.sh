@@ -1961,6 +1961,9 @@ fault hidden 0
 nxrom '{"id":936,"platform_id":90,"name":"Merge","fs_name":"Merge","files":[
   {"id":9361,"file_name":"Merge [0100DDDD00000000][v0].nsp","content":"ROM:Merge [0100DDDD00000000][v0].nsp"},
   {"id":9362,"file_name":"Merge [0100DDDD00000800][v65536].nsp","content":"ROM:Merge [0100DDDD00000800][v65536].nsp"}]}'
+# The list fails before the entries go, or a sync the watcher starts in between
+# sees the whole list and does its job early.
+fault list_error 100
 curl -skf -X POST "$SV/_admin/delete_rom" -d '{"ids":[934,935]}' >/dev/null
 sleep 1.1
 curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":936,\"slot\":\"autosave\",\"file_name\":\"0100DDDD00000000.zip\",\"content_b64\":\"$(python3 -c "
