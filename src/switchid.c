@@ -17,7 +17,7 @@
 #define MAX_ENTRIES 1024
 #define MAX_NAMES   (256 << 10)
 
-enum { NCA_PROGRAM = 0, NCA_DATA = 4, NCA_PUBLIC_DATA = 5 };
+enum { NCA_PROGRAM = 0, NCA_META = 1, NCA_DATA = 4, NCA_PUBLIC_DATA = 5 };
 
 static uint32_t le32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
 static uint64_t le64(const unsigned char *p) { return (uint64_t)le32(p) | (uint64_t)le32(p + 4) << 32; }
@@ -81,12 +81,26 @@ typedef struct {
     const unsigned char *key;
     uint64_t program; /* a Program NCA's title id: the game's, or its update's */
     uint64_t other;   /* another NCA's (meta, control), DLC's left out */
+    uint64_t first[4]; /* by switchid_kind: the first id of each kind, tickets and NCAs alike */
     int locked;       /* NCA headers left unread for want of the key */
 } scan;
 
 /* A game's or an update's id, not DLC's. DLC gets the game's id + 0x1000 +
  * its index (1 to 2000), so its last three digits are never 000 or 800. */
 static int game_or_update(uint64_t id) { return id && ((id & 0xFFF) == 0 || (id & 0xFFF) == 0x800); }
+
+switchid_kind switchid_kind_of(uint64_t id) {
+    const unsigned low = (unsigned)(id & 0x1FFF);
+    if (!id || low == 0x1000) return SWITCHID_NONE; /* 1000 is DLC's base, never a title of its own */
+    return low < 0x800 ? SWITCHID_GAME : low < 0x1000 ? SWITCHID_UPDATE : SWITCHID_DLC;
+}
+
+uint64_t switchid_game_of(uint64_t id) { return ((id & 0x1FFF) >= 0x1000 ? id - 0x1000 : id) & ~0xFFFULL; }
+
+static void note(scan *s, uint64_t id) {
+    const switchid_kind k = switchid_kind_of(id);
+    if (k != SWITCHID_NONE && !s->first[k]) s->first[k] = id;
+}
 
 static int nca_magic(const unsigned char *h) {
     return !memcmp(h, "NCA", 3) && (h[3] == '0' || h[3] == '2' || h[3] == '3');
@@ -107,6 +121,9 @@ static void nca_header(scan *s, uint64_t off) {
     }
     const unsigned type = h[0x05];
     const uint64_t id = le64(h + 0x10);
+    /* Only the meta NCA names what the package is: an update's Program NCA
+     * carries its game's id, since it patches that very program. */
+    if (type == NCA_META) note(s, id);
     if (type == NCA_PROGRAM && id && !s->program) s->program = id;
     else if (type != NCA_DATA && type != NCA_PUBLIC_DATA && game_or_update(id) && !s->other) s->other = id;
 }
@@ -175,18 +192,29 @@ static int xci_secure(int fd, uint64_t *at) {
     return -1;
 }
 
+/* Opens a game file into s: the files of an NSP, or of an XCI's secure
+ * partition, how many; -1 for an NCA or NCZ on its own, its header read
+ * already, or for none of those. s->fd < 0 when it won't open. */
+static int file_open(const char *path, scan *s, fs_entry **e) {
+    unsigned char magic[4];
+    uint64_t at = 0;
+    *e = NULL;
+    s->fd = open(path, O_RDONLY);
+    if (s->fd < 0) return -1;
+    if (read_at(s->fd, 0, magic, sizeof magic) == 0 && !memcmp(magic, "PFS0", 4)) return fs_list(s->fd, 0, "PFS0", e);
+    if (xci_secure(s->fd, &at) == 0) return fs_list(s->fd, at, "HFS0", e);
+    nca_header(s, 0);
+    return -1;
+}
+
 /* One file's base game id, 0 for none. A ticket's name first; the NCA
  * headers only when there's none. */
 static uint64_t file_title(const char *path, const unsigned char *key, int *locked) {
-    scan s = {open(path, O_RDONLY), key, 0, 0, 0};
-    if (s.fd < 0) return 0;
-    unsigned char magic[4];
-    uint64_t ticket = 0, at = 0;
+    scan s = {.key = key};
     fs_entry *e = NULL;
-    int n = -1;
-    if (read_at(s.fd, 0, magic, sizeof magic) == 0 && !memcmp(magic, "PFS0", 4)) n = fs_list(s.fd, 0, "PFS0", &e);
-    else if (xci_secure(s.fd, &at) == 0) n = fs_list(s.fd, at, "HFS0", &e);
-    else nca_header(&s, 0); /* an NCA or NCZ on its own */
+    uint64_t ticket = 0;
+    const int n = file_open(path, &s, &e);
+    if (s.fd < 0) return 0;
     for (int i = 0; i < n && !ticket; i++) {
         const uint64_t t = ticket_id(e[i].name);
         if (game_or_update(t)) ticket = t;
@@ -198,6 +226,46 @@ static uint64_t file_title(const char *path, const unsigned char *key, int *lock
     *locked += s.locked;
     const uint64_t id = ticket ? ticket : s.program ? s.program : s.other;
     return id & ~0xFFFULL;
+}
+
+/* Every title id a file names, into s. Its tickets and its meta NCAs say
+ * what the package is; a Program or Control NCA's id counts only in a file
+ * with neither (a lone NCA, an NSP stripped of its meta). */
+static void file_kinds(const char *path, scan *s) {
+    fs_entry *e = NULL;
+    scan f = {.key = s->key};
+    const int n = file_open(path, &f, &e);
+    if (f.fd < 0) return;
+    for (int i = 0; i < n; i++) note(&f, ticket_id(e[i].name));
+    for (int i = 0; i < n; i++)
+        if (ext_in_list(e[i].name, ".nca,.ncz")) nca_header(&f, e[i].off);
+    free(e);
+    close(f.fd);
+    if (!f.first[SWITCHID_GAME] && !f.first[SWITCHID_UPDATE] && !f.first[SWITCHID_DLC])
+        note(&f, f.program ? f.program : f.other);
+    for (int k = SWITCHID_GAME; k <= SWITCHID_DLC; k++)
+        if (!s->first[k]) s->first[k] = f.first[k];
+    if (!s->program) s->program = f.program;
+    if (!s->other) s->other = f.other;
+    s->locked += f.locked;
+}
+
+int switchid_title(const char *path, const unsigned char *header_key, uint64_t *id) {
+    scan s = {.key = header_key};
+    DIR *d = dir_exists(path) ? opendir(path) : NULL;
+    if (d) { /* a folder game: all of it, a game among its files makes it one */
+        struct dirent *de;
+        while (!s.first[SWITCHID_GAME] && (de = readdir(d))) {
+            char p[PATH_MAX_LEN];
+            path_join(p, sizeof p, path, de->d_name);
+            if (de->d_name[0] != '.' && file_exists(p)) file_kinds(p, &s);
+        }
+        closedir(d);
+    } else {
+        file_kinds(path, &s);
+    }
+    *id = s.first[SWITCHID_GAME] ? s.first[SWITCHID_GAME] : s.first[SWITCHID_UPDATE] ? s.first[SWITCHID_UPDATE] : s.first[SWITCHID_DLC];
+    return *id ? 0 : s.locked ? -2 : -1;
 }
 
 int switchid_from_file(const char *path, const unsigned char *header_key, char *out, size_t n) {

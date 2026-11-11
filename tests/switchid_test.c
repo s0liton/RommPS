@@ -262,11 +262,13 @@ static void test_files(void) {
     save("dlc.nsp", fs(0, dlc, 3));
     CHECK(!strcmp(id_of("dlc.nsp", KEY), "-1"));
 
-    /* No ticket: the NCA headers, the Program one over DLC's; without the key, -2. */
-    entry bare[] = {{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.nca", nca(DATA, SNAP_DLC, 0, 0)},
-                    {"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.cnmt.nca", nca(META, SNAP_DLC, 0, 0)},
-                    {"cccccccccccccccccccccccccccccccc.nca", nca(CONTROL, SNAP_UPDATE, 0, 0)},
-                    {"dddddddddddddddddddddddddddddddd.nca", nca(PROGRAM, SNAP_UPDATE, 0, 0)}};
+    /* No ticket: the NCA headers; without the key, -2. An update laid out as
+     * real ones are: its meta NCA names the update, its Program, Control and
+     * Manual NCAs the game they patch (Animal Crossing's v3.0.3, for one). */
+    entry bare[] = {{"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.cnmt.nca", nca(META, SNAP_UPDATE, 0, 0)},
+                    {"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.nca", nca(3, SNAP, 0, 0)},
+                    {"cccccccccccccccccccccccccccccccc.nca", nca(CONTROL, SNAP, 0, 0)},
+                    {"dddddddddddddddddddddddddddddddd.nca", nca(PROGRAM, SNAP, 0, 0)}};
     save("noticket.nsp", fs(0, bare, 4));
     CHECK(!strcmp(id_of("noticket.nsp", KEY), WANT));
     CHECK(!strcmp(id_of("noticket.nsp", NULL), "-2"));
@@ -338,6 +340,67 @@ static void test_files(void) {
     CHECK(!strcmp(id_of("missing.nsp", KEY), "-1"));
 }
 
+/* What switchid_title says: the id as it is, or "-1"/"-2". */
+static const char *title_of(const char *name, const unsigned char *key) {
+    static char out[32];
+    uint64_t id = 0;
+    const int rc = switchid_title(at(name), key, &id);
+    if (rc != 0) snprintf(out, sizeof out, "%d", rc);
+    else snprintf(out, sizeof out, "%016llX", (unsigned long long)id);
+    return out;
+}
+
+/* The ids as they are, for telling an update or DLC from a game: the files
+ * test_files made, read again. */
+static void test_titles(void) {
+    CHECK(switchid_kind_of(SNAP) == SWITCHID_GAME && switchid_kind_of(SNAP + 1) == SWITCHID_GAME);
+    CHECK(switchid_kind_of(SNAP_UPDATE) == SWITCHID_UPDATE && switchid_kind_of(SNAP_DLC) == SWITCHID_DLC);
+    CHECK(switchid_kind_of(0) == SWITCHID_NONE && switchid_kind_of(SNAP + 0x1000) == SWITCHID_NONE);
+    CHECK(switchid_game_of(SNAP_UPDATE) == SNAP && switchid_game_of(SNAP_DLC) == SNAP && switchid_game_of(SNAP + 1) == SNAP);
+    CHECK(switchid_game_of(0x0100F4300BF2C000ULL + 0x1FFF) == SNAP); /* the last DLC there can be */
+
+    CHECK(!strcmp(title_of("ticket.nsp", NULL), WANT));
+    CHECK(!strcmp(title_of("update.nsp", NULL), "0100F4300BF2C800")); /* "Some Game v3.0.3.nsp" */
+    CHECK(!strcmp(title_of("with-dlc.nsp", NULL), WANT)); /* the game, its DLC riding along */
+    CHECK(!strcmp(title_of("dlc.nsp", NULL), "0100F4300BF2D001"));
+    CHECK(!strcmp(title_of("dlc.nsp", KEY), "0100F4300BF2D001"));
+    /* No ticket: the meta NCA says it's the update, though its Program NCA
+     * names the game. */
+    CHECK(!strcmp(title_of("noticket.nsp", KEY), "0100F4300BF2C800"));
+    CHECK(!strcmp(title_of("noticket.nsp", NULL), "-2"));
+    CHECK(!strcmp(title_of("second.nsp", KEY), "0100F4300BF2C001"));
+    CHECK(!strcmp(title_of("game.xcz", KEY), "0100F4300BF2C800"));
+    CHECK(!strcmp(title_of("loose.nca", KEY), "0100F4300BF2C800"));
+    CHECK(!strcmp(title_of("Folder Game", KEY), WANT)); /* its DLC first in line, the game still wins */
+    CHECK(!strcmp(title_of("junk.nsp", KEY), "-1"));
+    CHECK(!strcmp(title_of("missing.nsp", KEY), "-1"));
+
+    /* An update's ticket on a file that holds the game too (some tools merge
+     * them): with the key, the game's NCA says it's a game. Without, the
+     * ticket is all there is to go by. */
+    entry merged[] = {{"0100F4300BF2C8000000000000000005.tik", bytes("ticket")},
+                      {"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.cnmt.nca", nca(META, SNAP_UPDATE, 0, 0)},
+                      {"cccccccccccccccccccccccccccccccc.cnmt.nca", nca(META, SNAP, 0, 0)},
+                      {"dddddddddddddddddddddddddddddddd.nca", nca(PROGRAM, SNAP, 0, 0)}};
+    save("merged.nsp", fs(0, merged, 4));
+    CHECK(!strcmp(title_of("merged.nsp", KEY), WANT));
+    CHECK(!strcmp(title_of("merged.nsp", NULL), "0100F4300BF2C800"));
+    CHECK(!strcmp(id_of("merged.nsp", NULL), WANT)); /* the game's id, as ever */
+    /* A cartridge carrying its update in the secure partition: a game. */
+    entry sec[] = {{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.nca", nca(PROGRAM, SNAP, 0, 0)},
+                   {"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.cnmt.nca", nca(META, SNAP_UPDATE, 0, 0)},
+                   {"cccccccccccccccccccccccccccccccc.cnmt.nca", nca(META, SNAP, 0, 0)},
+                   {"dddddddddddddddddddddddddddddddd.nca", nca(PROGRAM, SNAP, 0, 0)}};
+    save("with-update.xci", xci(sec, 4, 0));
+    CHECK(!strcmp(title_of("with-update.xci", KEY), WANT));
+    /* DLC with no ticket: its meta NCA. */
+    entry bare[] = {{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.nca", nca(DATA, SNAP_DLC, 0, 0)},
+                    {"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.cnmt.nca", nca(META, SNAP_DLC, 0, 0)}};
+    save("bare-dlc.nsp", fs(0, bare, 2));
+    CHECK(!strcmp(title_of("bare-dlc.nsp", KEY), "0100F4300BF2D001"));
+    CHECK(!strcmp(id_of("bare-dlc.nsp", KEY), "-1")); /* switchid_from_file names games only */
+}
+
 static void test_keys(void) {
     unsigned char key[32];
     char hex[65], text[512];
@@ -370,6 +433,7 @@ int main(void) {
     test_xts_vectors();
     test_keys();
     test_files();
+    test_titles();
     remove_tree(g_dir);
     if (failures) {
         fprintf(stderr, "%d failed\n", failures);
