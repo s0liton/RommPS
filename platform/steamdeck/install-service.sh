@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Installs RomM Sync, RommDeck's background service, from a romm-sync binary:
 # a copy in ~/.local/share/rommdeck (a path that stays put, unlike an
-# AppImage's) and a systemd user unit that starts it with the session.
-# Nothing happens when that copy is already this one, so the AppImage runs it
-# at every launch to keep the service up to date. Settings and pairing
-# (~/.local/share/romm-sync) are never touched.
+# AppImage's) and a systemd user unit that starts it with the session. The
+# licences beside the binary (licenses/) go with it, so they outlive the
+# AppImage too. Nothing happens when that copy is already this one, so the
+# AppImage runs it at every launch to keep the service up to date. Settings
+# and pairing (~/.local/share/romm-sync) are never touched.
 #
 #   install-service.sh /path/to/romm-sync
 set -euo pipefail
@@ -13,6 +14,7 @@ SRC="${1:?usage: install-service.sh /path/to/romm-sync}"
 DEST="${XDG_DATA_HOME:-$HOME/.local/share}/rommdeck"
 UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT="$UNIT_DIR/romm-sync.service"
+LICENSES="$(dirname "$SRC")/licenses"
 
 unit_text() {
     cat <<EOF
@@ -30,6 +32,15 @@ RestartSec=10
 WantedBy=default.target
 EOF
 }
+
+# The licences, when these are new ones (components.json names the build).
+if [[ -d "$LICENSES" ]] && ! cmp -s "$LICENSES/components.json" "$DEST/licenses/components.json"; then
+    mkdir -p "$DEST"
+    rm -rf "$DEST/licenses.new"
+    cp -a "$LICENSES" "$DEST/licenses.new"
+    rm -rf "$DEST/licenses"
+    mv "$DEST/licenses.new" "$DEST/licenses"
+fi
 
 if cmp -s "$SRC" "$DEST/romm-sync" && [[ -f "$UNIT" ]] && [[ "$(unit_text)" == "$(cat "$UNIT")" ]]; then
     exit 0
