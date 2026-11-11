@@ -36,7 +36,7 @@ permissions:
   contents: write
 
 jobs:
-  payloads:
+  version:
     if: >-
       github.event_name == 'push' ||
       (github.event.pull_request.merged &&
@@ -45,6 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
       sha: ${{ steps.version.outputs.sha }}
     steps:
       - name: Resolve version
@@ -71,6 +72,7 @@ jobs:
             exit 0
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
@@ -107,77 +109,24 @@ jobs:
             exit 1
           fi
 
-      - uses: docker/setup-buildx-action@v3
-        if: steps.version.outputs.tag
-
-      # Same images tools/ps5-build.sh and tools/ps4-build.sh use, cached between
-      # runs. The cache only saves time, so failing to write it must not fail the release.
-      - uses: docker/build-push-action@v6
-        if: steps.version.outputs.tag
-        with:
-          context: platform/ps5/docker
-          tags: romm-sync-ps5sdk:v0.43
-          load: true
-          cache-from: type=gha,scope=ps5
-          cache-to: type=gha,mode=max,scope=ps5,ignore-error=true
-
-      - uses: docker/build-push-action@v6
-        if: steps.version.outputs.tag
-        with:
-          context: platform/ps4/docker
-          tags: romm-sync-ps4sdk:v0.9-crt1352-oo0.5.4
-          load: true
-          cache-from: type=gha,scope=ps4
-          cache-to: type=gha,mode=max,scope=ps4,ignore-error=true
-
-      - name: Build payloads
-        if: steps.version.outputs.tag
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          tools/ps5-build.sh VERSION="${TAG#v}"
-          tools/ps4-build.sh ps4-pkg VERSION="${TAG#v}"
-
-      # A manifest and signature per console let the payload verify in-app
-      # updates (src/update.c): manifest.json/.sig for romm-sync.elf (PS5),
-      # manifest-ps4.json/.sig for romm-sync-ps4.elf. The secret is the
-      # 64-hex-character key from tools/release-sign.c; "check" fails unless
-      # the payload trusts that key.
-      - name: Package and sign
-        if: steps.version.outputs.tag
-        env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-          TAG: ${{ steps.version.outputs.tag }}
-        run: |
-          if [ -z "$RELEASE_SIGNING_KEY" ]; then
-            echo "::error::RELEASE_SIGNING_KEY secret is not set; in-app updates need a signed release."
-            exit 1
-          fi
-          make tools
-          mkdir dist
-          cp build/ps5/romm-sync.elf build/ps4/romm-sync-ps4.elf build/ps4/romm-sync-ps4.pkg dist/
-          sign() {
-            build/host/release-sign manifest "$TAG" "dist/$1" > "dist/$2.json"
-            build/host/release-sign sign "dist/$2.json" > "dist/$2.sig"
-            build/host/release-sign check "dist/$2.json" "dist/$2.sig"
-          }
-          sign romm-sync.elf manifest
-          sign romm-sync-ps4.elf manifest-ps4
-
-      - uses: actions/upload-artifact@v4
-        if: steps.version.outputs.tag
-        with:
-          name: payloads
-          path: dist/
-          if-no-files-found: error
+  # The same build as the dev builds (dev.yml), signed for in-app updates.
+  payloads:
+    needs: version
+    if: needs.version.outputs.tag
+    uses: ./.github/workflows/payloads.yml
+    with:
+      sha: ${{ needs.version.outputs.sha }}
+      version: ${{ needs.version.outputs.version }}
+      sign: true
+    secrets:
+      RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
 
   app:
-    needs: payloads
-    if: needs.payloads.outputs.tag
+    needs: [version, payloads]
     uses: ./.github/workflows/app.yml
     with:
-      sha: ${{ needs.payloads.outputs.sha }}
-      tag: ${{ needs.payloads.outputs.tag }}
+      sha: ${{ needs.version.outputs.sha }}
+      tag: ${{ needs.version.outputs.tag }}
       payloads: payloads
 
   # Only once the payloads and RommPS have both built. gh uploads every file
@@ -185,16 +134,16 @@ jobs:
   # the tag on the target commit too; a tag pushed by GITHUB_TOKEN does not
   # re-trigger this workflow, so there's no double release.
   publish:
-    needs: [payloads, app]
+    needs: [version, payloads, app]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      TAG: ${{ needs.payloads.outputs.tag }}
-      SHA: ${{ needs.payloads.outputs.sha }}
+      TAG: ${{ needs.version.outputs.tag }}
+      SHA: ${{ needs.version.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.payloads.outputs.sha }}
+          ref: ${{ needs.version.outputs.sha }}
 
       # Only what's published: the Docker builds upload records of their own,
       # and one failing to come down shouldn't hold the release back.

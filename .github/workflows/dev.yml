@@ -1,0 +1,127 @@
+# Dev builds, for testers. Every push to the dev branch builds the payloads and
+# RommPS exactly as a release does (payloads.yml, app.yml) and publishes them as
+# one pre-release, tagged dev-build, replacing the one before.
+#
+#   - The version is the next patch after the latest release plus the run
+#     number: after v1.4.2, 1.4.3-dev.12. Newer than 1.4.2, older than 1.4.3
+#     (src/version.h), so whichever release comes next installs over it the
+#     usual way, and nobody has to clean up after testing.
+#   - RommPS keeps the latest release's contentVersion (tools/package-app.sh),
+#     so ProsperoStore still offers the next release over it.
+#   - GitHub never makes a pre-release the latest release, and the in-app
+#     update (src/update.c) and store.yml only look at that one. Nor does it
+#     start release.yml or presets.yml: no v tag, nothing pushed to main, and
+#     a tag made with the workflow's own token starts no workflow anyway.
+#   - ProsperoStore's catalog bot does look at pre-releases, but skips a tag
+#     without a digit. Keep it that way. The zip is renamed so RecompStore,
+#     which lists every release with a PPSA76677.zip, doesn't offer it either.
+#   - The tag isn't "dev": a tag named like the branch makes git refuse a
+#     plain `git push origin dev` once it's been fetched.
+#   - Not signed. Nothing installs a dev build by itself (in-app updates only
+#     take releases), so the release key stays out of a branch build.
+name: Dev build
+
+on:
+  push:
+    branches: [dev]
+
+permissions:
+  contents: write
+
+# A newer push makes the build in progress pointless.
+concurrency:
+  group: dev-build
+  cancel-in-progress: true
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
+    steps:
+      - name: The next patch after the latest release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq .tag_name)
+          if ! [[ "$latest" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::the latest release is '$latest', not a vX.Y.Z"
+            exit 1
+          fi
+          version="${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))-dev.$GITHUB_RUN_NUMBER"
+          echo "Dev build $version, after ${latest#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=${latest#v}" >> "$GITHUB_OUTPUT"
+
+  tests:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  # The PS4 package can't say "dev" either: it keeps the release's version.
+  payloads:
+    needs: version
+    uses: ./.github/workflows/payloads.yml
+    with:
+      sha: ${{ github.sha }}
+      version: ${{ needs.version.outputs.version }}
+      pkg_version: ${{ needs.version.outputs.release }}
+
+  app:
+    needs: [version, payloads]
+    uses: ./.github/workflows/app.yml
+    with:
+      sha: ${{ github.sha }}
+      tag: v${{ needs.version.outputs.version }}
+      payloads: payloads
+
+  publish:
+    needs: [version, tests, payloads, app]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: dev-build
+      VERSION: ${{ needs.version.outputs.version }}
+      RELEASE: ${{ needs.version.outputs.release }}
+    steps:
+      # All of it, tags included: the notes list the commits since the release.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: payloads
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: rommps
+          path: dist
+
+      # The old build goes first, tag and all, so the new tag lands on this
+      # commit. gh uploads every file before the new one shows up.
+      - name: Publish the dev build
+        run: |
+          for file in romm-sync.elf romm-sync-ps4.elf romm-sync-ps4.pkg PPSA76677.zip; do
+            [ -s "dist/$file" ] || { echo "::error::dist/$file is missing"; exit 1; }
+          done
+          mv dist/PPSA76677.zip dist/PPSA76677-dev.zip
+          (cd dist && sha256sum * > SHA256SUMS)
+          {
+            echo "A test build of what comes after $RELEASE. The next release installs over it like any update."
+            echo
+            echo "- PS5: unzip PPSA76677-dev.zip, copy its PPSA76677 folder to /data/homebrew/ and open RommPS."
+            echo "- PS4: install romm-sync-ps4.pkg and open RommPS, or copy romm-sync-ps4.elf to /data/payloads/."
+            echo
+            echo "Changes since $RELEASE:"
+            echo
+            git log --no-merges --format='- %s (%h)' "v$RELEASE..$GITHUB_SHA"
+          } > "$RUNNER_TEMP/notes.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --cleanup-tag --yes
+          fi
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1 || true
+          gh release create "$TAG" dist/* --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Dev build $VERSION" --notes-file "$RUNNER_TEMP/notes.md"

@@ -47,10 +47,12 @@ OO          ?= $(OO_PS4_TOOLCHAIN)
 PS4_TITLE_ID   := ROMM00002
 PS4_CONTENT_ID := IV0000-$(PS4_TITLE_ID)_00-ROMMSYNCPS400000
 # The package's version follows the release, so a newer one installs as an
-# update: 1.2.2 is 01.22 (one digit each for minor and patch), dev builds 01.00.
-PS4_PKG_VER    := $(shell echo '$(or $(VERSION),1.0.0)' | awk -F'[.-]' '{ if ($$2 > 9 || $$3 > 9) exit 1; printf "%02d.%d%d", $$1, $$2, $$3 }')
+# update: 1.2.2 is 01.22 (one digit each for minor and patch), untagged builds
+# 01.00. A dev build of 1.2.3 (VERSION=1.2.3-dev.4) has no room for "dev", so
+# it's given PKG_VERSION=1.2.2, the release before it: 1.2.3 still installs over it.
+PS4_PKG_VER    := $(shell echo '$(or $(PKG_VERSION),$(VERSION),1.0.0)' | awk -F'[.-]' '{ if ($$2 > 9 || $$3 > 9) exit 1; printf "%02d.%d%d", $$1, $$2, $$3 }')
 ifeq ($(PS4_PKG_VER),)
-$(error VERSION $(VERSION) doesn't fit the package's NN.NN version)
+$(error VERSION $(or $(PKG_VERSION),$(VERSION)) doesn't fit the package's NN.NN version)
 endif
 PS4_PKG_DIR    := build/ps4/pkg
 PS4_PKG        := build/ps4/romm-sync-ps4.pkg

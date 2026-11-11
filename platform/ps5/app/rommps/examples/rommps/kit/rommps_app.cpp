@@ -26,6 +26,11 @@
 #include <cstdio>
 #include <memory>
 
+// The payload's own rules (src/version.c, built in by ps5/CMakeLists.txt), so
+// RommPS and RomM Sync agree on which copy is newer: -1, 0 or 1, and "1.4.3"
+// beats "1.4.3-dev.12". One that isn't a version ("dev", "") counts as 0.0.0.
+extern "C" int version_cmp(const char *a, const char *b);
+
 namespace rommps
 {
 
@@ -43,19 +48,6 @@ constexpr std::size_t kCoverTextures = 360; // covers kept as textures (about 13
 constexpr std::size_t kListsKept = 24; // game lists kept at once: every tile on the platforms page, and more
 
 void *g_renderer = nullptr;
-
-// -1, 0 or 1 as a is older, the same as or newer than b ("1.2.3"); one that
-// isn't a version ("dev", "") counts as 0.0.0.
-int version_cmp(const std::string &a, const std::string &b)
-{
-    int x[3] = {}, y[3] = {};
-    std::sscanf(a.c_str(), "%d.%d.%d", &x[0], &x[1], &x[2]);
-    std::sscanf(b.c_str(), "%d.%d.%d", &y[0], &y[1], &y[2]);
-    for (int i = 0; i < 3; ++i)
-        if (x[i] != y[i])
-            return x[i] < y[i] ? -1 : 1;
-    return 0;
-}
 
 // RomM's platform logos are .ico files holding a PNG (256x256): bytes and len
 // are moved onto the biggest PNG inside, which stb_image reads. Anything else
@@ -678,20 +670,14 @@ void App::install_autostart(Api::Callback done)
     });
 }
 
-// "1.0.2" < "1.1.0", number by number. A build without a version ("dev")
-// counts as new enough.
+// "1.0.2" < "1.1.0" < "1.1.1-dev.4" < "1.1.1". A build without a version
+// ("dev") counts as new enough.
 bool App::payload_too_old() const
 {
     const std::string &v = status_.version;
     if (v.empty() || !std::isdigit(static_cast<unsigned char>(v[0])))
         return false;
-    int have[3] = {}, want[3] = {};
-    std::sscanf(v.c_str(), "%d.%d.%d", &have[0], &have[1], &have[2]);
-    std::sscanf(kMinPayload, "%d.%d.%d", &want[0], &want[1], &want[2]);
-    for (int i = 0; i < 3; ++i)
-        if (have[i] != want[i])
-            return have[i] < want[i];
-    return false;
+    return version_cmp(v.c_str(), kMinPayload) < 0;
 }
 
 // RomM Sync holds a lock on this file for as long as it runs (1.1.1 on); a
@@ -754,7 +740,7 @@ void App::refresh_status()
             say("Updating RommPS's background service to " + std::string(kMinPayload));
             start_payload();
         }
-        else if (!repaired_ && version_cmp(status_.version, kMinPayload) == 0)
+        else if (!repaired_ && version_cmp(status_.version.c_str(), kMinPayload) == 0)
         {
             repaired_ = true;
             repair_autostart();

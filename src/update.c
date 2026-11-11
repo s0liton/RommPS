@@ -36,6 +36,8 @@
 #include "update_keys.h"
 #include "util.h"
 
+/* GitHub's latest release is never a pre-release, so the dev builds
+ * (.github/workflows/dev.yml) don't reach anyone through here. */
 #ifndef RELEASES_URL /* overridable for test builds */
 #define RELEASES_URL "https://api.github.com/repos/s0liton/RommPS/releases/latest"
 #endif
@@ -65,19 +67,11 @@ static const char *release_url(void) {
     return u && *u ? u : RELEASES_URL;
 }
 
-/* "v1.2.3" or "1.2.3-dev" into numbers. Anything after the patch is ignored. */
-static int parse_version(const char *s, int v[3]) {
-    v[0] = v[1] = v[2] = 0;
-    if (*s == 'v') s++;
-    return sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]) >= 2 ? 0 : -1;
-}
-
+/* "1.4.3" is newer than "1.4.3-dev.12", the dev build before it, so a dev
+ * build is offered the release that replaces it. One that isn't a version
+ * never is. */
 static int newer_than(const char *a, const char *b) {
-    int x[3], y[3];
-    if (parse_version(a, x) || parse_version(b, y)) return 0;
-    for (int i = 0; i < 3; i++)
-        if (x[i] != y[i]) return x[i] > y[i];
-    return 0;
+    return version_valid(a) && version_valid(b) && version_cmp(a, b) > 0;
 }
 
 static int busy(ustate s) { return s != U_IDLE && s != U_ERROR && s != U_PENDING; }
