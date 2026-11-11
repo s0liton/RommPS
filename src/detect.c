@@ -7,7 +7,7 @@
  *
  * Standalone emulators come from the console's catalog (plat_info, e.g.
  * platform/ps4/emulators.json): one is offered when its app is installed or
- * one of its folders exists. Each entry is
+ * one of its folders holds something of its own. Each entry is
  *   {"id", "name", "title_ids": [...], "detect": [paths], "profile": {...}}
  * where the profile uses the system keys of DB_MAP below for its platforms. */
 #include "detect.h"
@@ -406,6 +406,112 @@ static int app_installed(const char *title_id) {
     return 0;
 }
 
+/* The folder itself or anything in it. */
+static int within(const char *path, const char *folder) {
+    const size_t l = strlen(folder);
+    return l && !strncmp(path, folder, l) && (path[l] == 0 || path[l] == '/');
+}
+
+/* One of the folders a preset has RommPS fill, up to its first variable
+ * ("{root}/states/{game_id}": the states folder). */
+static void add_folder(cJSON *out, const char *id, const char *dir) {
+    char f[PATH_MAX_LEN];
+    str_copy(f, sizeof f, dir);
+    char *var = strchr(f, '{');
+    if (var) {
+        *var = 0;
+        char *slash = strrchr(f, '/');
+        if (slash) *slash = 0;
+        else f[0] = 0;
+    }
+    size_t l = strlen(f);
+    while (l > 1 && f[l - 1] == '/') f[--l] = 0;
+    if (f[0] != '/' || !f[1]) return;
+    cJSON *pair = cJSON_CreateArray();
+    cJSON_AddItemToArray(pair, cJSON_CreateString(id));
+    cJSON_AddItemToArray(pair, cJSON_CreateString(f));
+    cJSON_AddItemToArray(out, pair);
+}
+
+/* Every folder the catalog's presets have RommPS make or write in (games,
+ * saves, states, BIOS), with its emulator: [[id, folder], ...]. */
+static cJSON *catalog_folders(const cJSON *catalog) {
+    cJSON *out = cJSON_CreateArray();
+    const cJSON *e;
+    cJSON_ArrayForEach(e, catalog) {
+        const char *id = jget_str(e, "id", "");
+        const cJSON *preset = cJSON_GetObjectItemCaseSensitive(e, "profile");
+        if (!id[0] || !cJSON_IsObject(preset)) continue;
+        cJSON *one = cJSON_CreateArray(), *p = cJSON_Duplicate(preset, 1);
+        jset_str(p, "id", id);
+        cJSON_DeleteItemFromObjectCaseSensitive(p, "enabled");
+        cJSON_AddItemToArray(one, p);
+        profile_map *maps = NULL;
+        const int n = profiles_expand(one, &maps);
+        for (int i = 0; i < n; i++) {
+            const profile_map *m = &maps[i];
+            const char *dirs[] = {m->rom_dir, m->update_dir, m->dlc_dir, m->save_dir, m->state_dir, m->bios_dir, m->n64_split_dir};
+            for (size_t k = 0; k < sizeof dirs / sizeof dirs[0]; k++) add_folder(out, id, dirs[k]);
+            char list[sizeof m->bundle_dirs], *save = NULL;
+            str_copy(list, sizeof list, m->bundle_dirs);
+            for (char *b = strtok_r(list, ",", &save); b; b = strtok_r(NULL, ",", &save)) add_folder(out, id, b);
+        }
+        profiles_free(maps);
+        cJSON_Delete(one);
+    }
+    return out;
+}
+
+/* Whether a "detect" folder says its emulator is here. RommPS makes folders
+ * in other emulators' trees (SwanStationPS5 plays the games in
+ * /data/PSXS5/games, so a download for it makes /data/PSXS5), so a folder
+ * counts only for what RommPS never puts there: the emulator's config, its
+ * logs, the app itself. 1 when it holds some, or nothing on the way to
+ * another emulator's folders (an emulator's own layout); -1 when it holds
+ * only those and the folders RommPS fills for this one (saves synced to a
+ * profile made from it before). */
+static int detect_dir_shows(const char *dir, const char *id, const cJSON *ours) {
+    const cJSON *f;
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    struct dirent *de;
+    int all_ours = 1, theirs = 0;
+    while (all_ours && (de = readdir(d))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        char p[PATH_MAX_LEN];
+        path_join(p, sizeof p, dir, de->d_name);
+        int ours_too = 0;
+        cJSON_ArrayForEach(f, ours) {
+            if (!within(cJSON_GetArrayItem(f, 1)->valuestring, p)) continue;
+            ours_too = 1;
+            theirs |= strcmp(cJSON_GetArrayItem(f, 0)->valuestring, id) != 0;
+        }
+        all_ours = ours_too; /* else something RommPS never makes: the emulator's own */
+    }
+    closedir(d);
+    return all_ours && theirs ? -1 : 1;
+}
+
+/* A catalog emulator here: 1 when its app is installed (title_id gets its
+ * id) or a "detect" folder says so; -1 when its folders hold only what
+ * RommPS made (detect_dir_shows); 0 when there's nothing at all. */
+static int standalone_found(const cJSON *e, const cJSON *ours, char *title_id, size_t n) {
+    const cJSON *x;
+    int ours_only = 0;
+    title_id[0] = 0;
+    cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "title_ids"))
+        if (cJSON_IsString(x) && app_installed(x->valuestring)) {
+            str_copy(title_id, n, x->valuestring);
+            return 1;
+        }
+    cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "detect")) {
+        if (!cJSON_IsString(x) || !dir_exists(x->valuestring)) continue;
+        if (detect_dir_shows(x->valuestring, jget_str(e, "id", ""), ours) > 0) return 1;
+        ours_only = 1;
+    }
+    return ours_only ? -1 : 0;
+}
+
 /* Presets typically are {"format", "version", "console" "emulators": [....]}*/
 static cJSON *catalog_from(cJSON *file) {
     if (cJSON_IsArray(file)) return file;
@@ -443,19 +549,13 @@ const cJSON *detect_catalog_entry(const char *id) {
 }
 
 static void add_standalone(cJSON *out) {
-    cJSON *catalog = emulator_catalog();
-    const cJSON *e, *x;
+    cJSON *catalog = emulator_catalog(), *ours = catalog_folders(catalog);
+    const cJSON *e;
     cJSON_ArrayForEach(e, catalog) {
-        char found[16] = "";
-        int present = 0;
-        cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "title_ids"))
-            if (!present && cJSON_IsString(x) && app_installed(x->valuestring)) {
-                str_copy(found, sizeof found, x->valuestring);
-                present = 1;
-            }
-        cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "detect"))
-            if (!present && cJSON_IsString(x) && dir_exists(x->valuestring)) present = 1;
-        if (!present) continue;
+        char found[16];
+        const int present = standalone_found(e, ours, found, sizeof found);
+        if (present < 0) LOGI("not offering %s: its folder holds only what RommPS put there", jget_str(e, "name", ""));
+        if (present <= 0) continue;
         /* Found, but with no preset yet: setup offers it with folders the user
          * picks (a custom profile), not this profile. */
         const int ready = !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(e, "ready"));
@@ -480,6 +580,7 @@ static void add_standalone(cJSON *out) {
              ready ? "" : ", no preset yet");
         cJSON_AddItemToArray(out, c);
     }
+    cJSON_Delete(ours);
     cJSON_Delete(catalog);
 }
 
@@ -759,8 +860,83 @@ static int add_new_platforms(cJSON *profiles) {
     return added;
 }
 
+/* Takes key off a profile's list ("exclude", "extra"). */
+static void unlist(cJSON *p, const char *list, const char *key) {
+    cJSON *a = cJSON_GetObjectItemCaseSensitive(p, list);
+    for (int i = cJSON_GetArraySize(a) - 1; i >= 0; i--)
+        if (cJSON_IsString(cJSON_GetArrayItem(a, i)) && str_ieq(cJSON_GetArrayItem(a, i)->valuestring, key))
+            cJSON_DeleteItemFromArray(a, i);
+    if (a && !cJSON_GetArraySize(a)) cJSON_DeleteItemFromObjectCaseSensitive(p, list);
+}
+
+static int lists(const cJSON *p, const char *list, const char *key) {
+    const cJSON *x;
+    cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(p, list))
+        if (cJSON_IsString(x) && str_ieq(x->valuestring, key)) return 1;
+    return 0;
+}
+
+/* A system whose main emulator went: the first other one that plays it as
+ * an extra takes it over, else the first that left it to the one gone. */
+static void hand_over(cJSON *profiles, const char *key, const char *gone) {
+    cJSON *p, *pe, *next = NULL;
+    for (int pass = 0; pass < 3 && !next; pass++)
+        cJSON_ArrayForEach(p, profiles) {
+            int plays = 0;
+            cJSON_ArrayForEach(pe, cJSON_GetObjectItemCaseSensitive(p, "platforms")) plays |= !strcmp(profiles_system_key(pe), key);
+            if (!plays || cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(p, "enabled"))) continue;
+            const int extra = lists(p, "extra", key), excluded = profiles_excludes(p, key);
+            if (pass == 0 && !extra && !excluded) return; /* it has a main emulator still */
+            if ((pass == 1 && extra && !excluded) || (pass == 2 && excluded)) {
+                next = p;
+                break;
+            }
+        }
+    if (!next) return;
+    unlist(next, "extra", key);
+    unlist(next, "exclude", key);
+    LOGI("the %s profile plays %s now, in place of %s", jget_str(next, "name", ""), key, gone);
+}
+
+/* Standalone emulators setup took for installed from folders RommPS made
+ * itself (PSXS5, from the /data/PSXS5/games SwanStationPS5's games go in):
+ * their profiles go, files and all left where they are. A system one was
+ * the main emulator for goes to the next one that plays it. */
+static int drop_phantoms(cJSON *profiles) {
+    cJSON *catalog = emulator_catalog(), *ours = NULL;
+    int dropped = 0;
+    cJSON *p = profiles ? profiles->child : NULL;
+    while (p) {
+        cJSON *next = p->next;
+        const cJSON *e = NULL, *c;
+        cJSON_ArrayForEach(c, catalog) if (!strcmp(jget_str(c, "id", ""), jget_str(p, "id", ""))) e = c;
+        if (e && !ours) ours = catalog_folders(catalog);
+        char tid[16];
+        if (e && standalone_found(e, ours, tid, sizeof tid) < 0) {
+            char name[64], mains[8][32];
+            int nmain = 0;
+            str_copy(name, sizeof name, jget_str(p, "name", jget_str(p, "id", "")));
+            const cJSON *pe;
+            const int on = !cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(p, "enabled"));
+            cJSON_ArrayForEach(pe, cJSON_GetObjectItemCaseSensitive(p, "platforms")) {
+                const char *key = profiles_system_key(pe);
+                if (on && key[0] && nmain < 8 && !profiles_excludes(p, key) && !lists(p, "extra", key))
+                    str_copy(mains[nmain++], sizeof mains[0], key);
+            }
+            LOGI("%s isn't installed (its folder holds only what RommPS put there): its profile is removed, its files stay", name);
+            cJSON_Delete(cJSON_DetachItemViaPointer(profiles, p));
+            for (int i = 0; i < nmain; i++) hand_over(profiles, mains[i], name);
+            dropped++;
+        }
+        p = next;
+    }
+    cJSON_Delete(ours);
+    cJSON_Delete(catalog);
+    return dropped;
+}
+
 int detect_refresh_profiles(cJSON *profiles) {
-    int changed = 0;
+    int changed = drop_phantoms(profiles);
     cJSON *found = NULL;
     cJSON *each;
     cJSON_ArrayForEach(each, profiles) changed += fill_from_catalog(each) > 0;
