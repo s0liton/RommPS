@@ -1985,7 +1985,14 @@ static void nx_settle(const profile_map *maps, int n) {
                 dir_exists(to) || !file_exists(paths[k]) || plat_is_mount(m->rom_dir))
                 continue;
             if (!emulator_closed(m)) {
-                LOGI("%s moves to %s once %s is closed", name, into, m->profile_name);
+                /* Said once per file while it waits, not at every sync. */
+                static cJSON *told;
+                state_lock();
+                if (!told) told = cJSON_CreateObject();
+                const int first = told && !cJSON_GetObjectItemCaseSensitive(told, paths[k]);
+                if (first) cJSON_AddTrueToObject(told, paths[k]);
+                state_unlock();
+                if (first) LOGI("%s moves to %s once %s is closed", name, into, m->profile_name);
                 continue;
             }
             if (mkdir_p(into) != 0 || move_file(paths[k], to) != 0) {

@@ -107,15 +107,21 @@ static void *check_thread(void *arg) {
     http_resp r = {0};
     cJSON *j = NULL;
     char err[256] = "";
+    int none = 0; /* a project before its first release: a fact, not a fault */
     if (http_get_verified(release_url(), &r) != 0) snprintf(err, sizeof err, "can't reach GitHub: %s", r.error);
-    else if (r.status == 404) snprintf(err, sizeof err, "no releases published yet");
+    else if (r.status == 404) none = snprintf(err, sizeof err, "no releases published yet") > 0;
     else if (r.status != 200) snprintf(err, sizeof err, "GitHub answered with HTTP %ld", r.status);
     else if (!(j = cJSON_Parse(r.body)) || !jget_str(j, "tag_name", "")[0]) snprintf(err, sizeof err, "unexpected reply from GitHub");
     http_resp_free(&r);
 
     pthread_mutex_lock(&g_lock);
     g_checked_at = time(NULL);
-    if (err[0]) {
+    if (none) {
+        str_copy(g_error, sizeof g_error, err);
+        g_state = U_ERROR;
+        g_message[0] = 0;
+        LOGI("update check: %s", err);
+    } else if (err[0]) {
         set_error("%s", err);
     } else {
         const cJSON *assets = cJSON_GetObjectItemCaseSensitive(j, "assets");
