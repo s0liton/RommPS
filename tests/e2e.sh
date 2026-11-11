@@ -234,6 +234,19 @@ curl -s -o /dev/null -w "%{http_code}" "$API/api/roms?collection_kind=nope&colle
 for bad in abc -1 0 7x 99999999999; do
   curl -s -o /dev/null -w "%{http_code}" "$API/api/roms?collection_id=$bad" | grep -qx 400 || fail "collection id $bad must be refused"
 done
+# RomM failing on a collection's games (a 500, as on Oct 29 for every
+# franchise): said once, and RomM isn't asked again until someone asks.
+fails() { curl -sf "http://127.0.0.1:$MOCK_PORT/_admin/dump" | python3 -c "import json,sys; print(json.load(sys.stdin)['collection_fails'])"; }
+curl -sf -X POST "http://127.0.0.1:$MOCK_PORT/_admin/fail_collection" -d '{"id":"franchise-Metroid"}' >/dev/null
+r=$(curl -s -w ' %{http_code}' "$API/api/roms?collection_kind=virtual&collection_id=franchise-Metroid")
+[[ "$r" == *"(HTTP 500)"*" 502" ]] || fail "a collection RomM fails on must say so: $r"
+r=$(curl -s -w ' %{http_code}' -X POST "$API/api/download" -d '{"collection_kind":"virtual","collection_id":"franchise-Metroid"}')
+[[ "$r" == *"(HTTP 500)"*" 400" ]] || fail "installing a collection RomM fails on must say so: $r"
+sleep 3
+[[ "$(fails)" == 2 ]] || fail "a collection RomM fails on must be asked for once a request, never again on its own: $(fails) requests"
+curl -sf -X POST "http://127.0.0.1:$MOCK_PORT/_admin/fail_collection" -d '{"id":""}' >/dev/null
+cg=$(curl -sf "$API/api/roms?collection_kind=virtual&collection_id=franchise-Metroid" | python3 -c "import json,sys; j=json.load(sys.stdin); print(j['total'], [g['name'] for g in j['items']])")
+[[ "$cg" == "1 ['Super Metroid']" ]] || fail "asked again by hand, the collection's games must come: $cg"
 
 echo "3. nothing changed, nothing transferred"
 post /api/sync >/dev/null; wait_sync 3

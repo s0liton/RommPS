@@ -105,6 +105,8 @@ DB = {
     "play_sessions": [{"id": 1, "rom_id": 11, "duration_ms": 3600000}, {"id": 2, "rom_id": 11, "duration_ms": 1800000}],
     "cover_ts": {},   # rom id -> its cover's change stamp
     "asset_hits": 0,  # cover requests served
+    "fail_collection": "",  # a collection whose games RomM answers with a 500 (Oct 29, franchises)
+    "collection_fails": 0,  # those asked for
     "device_name": None,  # what the client last renamed its device to
     "next_id": 100,
 }
@@ -398,6 +400,10 @@ class H(BaseHTTPRequestHandler):
                 # The next n requests for a piece of a file (Range with an end) get a 429.
                 DB["busy"] = int(self.json_body()["n"])
                 return self.reply(200, {"ok": True})
+            if p == "/_admin/fail_collection" and method == "POST":
+                # Its games' list fails with a 500 until set back to "".
+                DB["fail_collection"], DB["collection_fails"] = self.json_body().get("id", ""), 0
+                return self.reply(200, {"ok": True})
             if p == "/_admin/collections_scope" and method == "POST":
                 # A token from a pairing that didn't ask for collections.read.
                 DB["no_collections"] = not self.json_body().get("granted", True)
@@ -427,6 +433,7 @@ class H(BaseHTTPRequestHandler):
                                         "states": [save_public(s) for s in DB["states"].values()],
                                         "sessions": DB["sessions"],
                                         "asset_hits": DB["asset_hits"], "device_name": DB["device_name"],
+                                        "collection_fails": DB["collection_fails"],
                                         "cards": [{"name": c["name"], "emulator": c["emulator"], "versions": len(c["versions"]),
                                                    "latest": card_latest(c), "latest_md5": card_latest_md5(c)}
                                                   for c in DB["cards"].values()]})
@@ -461,6 +468,9 @@ class H(BaseHTTPRequestHandler):
                 ids = [int(x) for x in q.get("platform_ids", [])]
                 term = (qs("search_term") or "").lower()
                 coll, smart, virtual = qs("collection_id"), qs("smart_collection_id"), qs("virtual_collection_id")
+                if DB["fail_collection"] and DB["fail_collection"] in (coll, smart, virtual):
+                    DB["collection_fails"] += 1
+                    return self.reply(500, {"detail": "Internal Server Error"})
                 in_coll = next((c["rom_ids"] for c in DB["collections"] if str(c["id"]) == coll), []) if coll else None
                 if smart:
                     in_coll = next((c["rom_ids"] for c in DB["smart_collections"] if str(c["id"]) == smart), [])

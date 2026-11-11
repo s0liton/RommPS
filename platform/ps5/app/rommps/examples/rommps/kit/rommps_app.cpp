@@ -983,6 +983,20 @@ void App::ensure(GameList &list, int first, int last)
     }
 }
 
+bool App::retry(GameList &list)
+{
+    bool any = false;
+    for (unsigned char &p : list.pages)
+        if (p == 3)
+        {
+            p = 0;
+            any = true;
+        }
+    if (any)
+        list.error.clear();
+    return any;
+}
+
 void App::send_page(const std::string &key, int page)
 {
     auto found = lists_.find(key);
@@ -1005,9 +1019,13 @@ void App::send_page(const std::string &key, int page)
             GameList &l = *it->second.list;
             if (!r.ok())
             {
+                // Said once, and asked for again only when the user says so
+                // (App::retry). Asking again whenever it was looked at meant
+                // asking every frame, which RomM's 500s on franchise
+                // collections (Oct 29) did nothing to discourage.
                 l.error = plain(r.message().c_str());
                 if (static_cast<int>(l.pages.size()) > page)
-                    l.pages[static_cast<std::size_t>(page)] = 0; // asked again when looked at
+                    l.pages[static_cast<std::size_t>(page)] = 3;
                 return;
             }
             std::unique_ptr<cJSON, void (*)(cJSON *)> j(r.json(), cJSON_Delete);
