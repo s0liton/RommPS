@@ -89,6 +89,9 @@ typedef struct {
     conflict_policy policy;
     cJSON *romm_saves; /* RomM's saves of each game asked about, this sync: {"<rom id>": [...]} */
     cJSON *romm_has;   /* the games RomM has any save of, from negotiate: {"<rom id>": true}; NULL: unknown */
+    cJSON *nx_files;   /* RomM's Switch games by their files' names, listed when first asked (nx_find_file) */
+    char nx_for[512];  /* the platforms nx_files lists */
+    int nx_failed;     /* RomM didn't answer for all of it */
 } scan_ctx;
 
 static pthread_mutex_t g_run_lock = PTHREAD_MUTEX_INITIALIZER; /* one sync at a time */
@@ -359,13 +362,58 @@ static int match_server_rom(const cJSON *it, const cJSON *page, int first, void 
     return 0;
 }
 
-/* The RomM game whose file name matches a local file or folder. */
-static cJSON *resolve_rom_on_server(const scan_ctx *c, const profile_map *m, const char *name,
-                                    int is_dir) {
+/* A Switch game's files go straight into the games folder (library.c), so
+ * one RomM keeps as a folder, the game with its update say, can't be found
+ * by the folder's name. It's found by its file's, among the files of every
+ * Switch game RomM has: listed once a sync, and only when a file asks. Each
+ * file stands for its game as record_local_rom wants it. */
+static void nx_list_file(cJSON *idx, const cJSON *it, const char *file) {
+    if (!file[0] || cJSON_GetObjectItemCaseSensitive(idx, file)) return; /* the first game holding it keeps it */
+    char stem[256];
+    path_stem(stem, sizeof stem, file);
+    cJSON *g = cJSON_AddObjectToObject(idx, file);
+    cJSON_AddNumberToObject(g, "id", jget_num(it, "id", 0));
+    cJSON_AddNumberToObject(g, "platform_id", jget_num(it, "platform_id", 0));
+    cJSON_AddStringToObject(g, "name", jget_str(it, "name", ""));
+    cJSON_AddStringToObject(g, "path_cover_small", jget_str(it, "path_cover_small", ""));
+    cJSON_AddStringToObject(g, "fs_name", file);
+    cJSON_AddStringToObject(g, "fs_name_no_ext", stem);
+}
+
+static int nx_list_game(const cJSON *it, const cJSON *page, int first, void *ctx) {
+    (void)page, (void)first;
+    if (!it) return 0;
+    const cJSON *files = cJSON_GetObjectItemCaseSensitive(it, "files"), *f;
+    if (cJSON_GetArraySize(files) == 0) nx_list_file(ctx, it, jget_str(it, "fs_name", "")); /* a game that's one file */
+    cJSON_ArrayForEach(f, files) nx_list_file(ctx, it, path_basename(jget_str(f, "file_name", "")));
+    return 0;
+}
+
+/* RomM's game holding a Switch file of this name, a copy, or NULL. */
+static cJSON *nx_find_file(scan_ctx *c, const char *platforms, const char *name) {
+    if (!c->nx_files || strcmp(c->nx_for, platforms) != 0) {
+        char path[1024];
+        long st = 0;
+        cJSON_Delete(c->nx_files);
+        c->nx_files = cJSON_CreateObject();
+        str_copy(c->nx_for, sizeof c->nx_for, platforms);
+        /* RomM 5.4 lists a game's files only when asked. */
+        snprintf(path, sizeof path, "/api/roms?with_files=true&with_total=false&with_char_index=false" ROMS_LEAN "%s", platforms);
+        if (romm_list(path, 0, 5000, nx_list_game, c->nx_files, &st) < 0) LOGW("could not list RomM's Switch games (HTTP %ld)", st);
+        c->nx_failed = st == 0 || st >= 500;
+    }
+    const cJSON *g = cJSON_GetObjectItemCaseSensitive(c->nx_files, name);
+    return g ? cJSON_Duplicate(g, 1) : NULL;
+}
+
+/* The RomM game whose file name matches a local file or folder. *asked is
+ * 0 when RomM didn't answer: that's no miss, it's asked again next time. */
+static cJSON *resolve_rom_on_server(scan_ctx *c, const profile_map *m, const char *name, int is_dir, int *asked) {
     int ids[16];
     int nids = platform_ids_for_map(c, m, ids, 16);
+    *asked = 1;
     if (nids == 0) return NULL;
-    char stem[256], path[2048];
+    char stem[256], path[2048], platforms[512] = "";
     if (is_dir)
         str_copy(stem, sizeof stem, name);
     else
@@ -373,16 +421,22 @@ static cJSON *resolve_rom_on_server(const scan_ctx *c, const profile_map *m, con
     char *q = url_q(stem);
     int o = snprintf(path, sizeof path, "/api/roms?search_term=%s&with_total=false&with_char_index=false" ROMS_LEAN, q);
     free(q);
-    for (int i = 0; i < nids; i++) o += snprintf(path + o, sizeof path - (size_t)o, "&platform_ids=%d", ids[i]);
+    for (int i = 0, k = 0; i < nids; i++)
+        k += snprintf(platforms + k, sizeof platforms - (size_t)k, "&platform_ids=%d", ids[i]);
+    snprintf(path + o, sizeof path - (size_t)o, "%s", platforms);
 
     struct server_rom_match match = {name, stem, NULL, NULL};
     long st = 0;
     romm_list(path, 0, 50, match_server_rom, &match, &st);
+    *asked = st > 0 && st < 500;
     if (match.exact) {
         cJSON_Delete(match.by_stem);
         return match.exact;
     }
-    return match.by_stem;
+    if (match.by_stem || is_dir || !*asked || !profile_map_handles(m, "switch", NULL)) return match.by_stem;
+    cJSON *held = nx_find_file(c, platforms, name);
+    *asked = held || !c->nx_failed;
+    return held;
 }
 
 /* Whether a comma separated list has item. */
@@ -406,6 +460,13 @@ static void record_local_rom(const char *path, int rom_id, const profile_map *m,
     jset_str(e, "name", name);
     jset_str(e, "fs_name", fs_name);
     if (md5 && md5[0]) jset_str(e, "md5", md5);
+    /* Found again after RomM let its game go (forget_gone): the update and
+     * DLC that came with that one come with this one, and go with it. */
+    const int was = (int)jget_num(e, "gone_id", 0);
+    cJSON *x;
+    if (was > 0 && was != rom_id)
+        cJSON_ArrayForEach(x, state_section("roms")) if ((int)jget_num(x, "with", 0) == was) jset_num(x, "with", rom_id);
+    cJSON_DeleteItemFromObjectCaseSensitive(e, "gone_id");
     cJSON *stems = cJSON_CreateArray();
     for (int i = 0; i < r->nstems; i++) cJSON_AddItemToArray(stems, cJSON_CreateString(r->stems[i]));
     if (cJSON_GetObjectItemCaseSensitive(e, "stems"))
@@ -493,6 +554,27 @@ static int fix_bare_rom(const profile_map *m, const char *path, int rom_id) {
     return done;
 }
 
+/* A Switch game's update or DLC, in a games folder it shares with games
+ * (the update_dir default): by the title id in its name (an update's ends in
+ * 800, a DLC's is past the game's 1000), or as the download that brought it
+ * said ("with"). Not a game: its saves are its game's, and going up again
+ * under its own RomM id is a second copy nobody asked for. */
+static int nx_addon(const profile_map *m, const char *path) {
+    if (!profile_map_handles(m, "switch", NULL)) return 0;
+    const char *name = path_basename(path);
+    for (const char *b = strchr(name, '['); b; b = strchr(b + 1, '[')) {
+        if (strspn(b + 1, "0123456789abcdefABCDEF") != 16 || b[17] != ']') continue;
+        const unsigned low = (unsigned)(strtoull(b + 1, NULL, 16) & 0x1FFF);
+        if (low == 0x800 || low > 0x1000) return 1;
+        break;
+    }
+    state_lock();
+    const cJSON *e = state_entry("roms", path);
+    const int with = e && jget_num(e, "with", 0) > 0;
+    state_unlock();
+    return with;
+}
+
 static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
     DIR *d = opendir(m->rom_dir);
     if (!d) return;
@@ -504,6 +586,7 @@ static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
         path_join(path, sizeof path, m->rom_dir, de->d_name);
         int is_dir = dir_exists(path);
         if (!is_dir && !file_exists(path)) continue;
+        if (nx_addon(m, path)) continue;
 
         /* Several platforms of one emulator can share a folder. Other
          * emulators playing the same folder (an extra with a mount, or one
@@ -594,7 +677,8 @@ static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
 
         /* Ask RomM about new files. Misses are retried after a day. */
         if (!rom_id && (!miss_at || now - miss_at > 86400)) {
-            cJSON *srv = resolve_rom_on_server(c, m, de->d_name, is_dir);
+            int asked;
+            cJSON *srv = resolve_rom_on_server(c, m, de->d_name, is_dir, &asked);
             state_lock();
             if (srv) {
                 rom_id = (int)jget_num(srv, "id", 0);
@@ -602,7 +686,7 @@ static void scan_rom_dir(scan_ctx *c, const profile_map *m) {
                 str_copy(r.md5, sizeof r.md5, jget_str(srv, "md5_hash", ""));
                 record_local_rom(path, rom_id, m, srv, r.md5, &r);
                 LOGI("matched %s -> RomM rom %d", path, rom_id);
-            } else {
+            } else if (asked) {
                 cJSON *ne = state_entry_ensure("roms", path);
                 char dirs[256];
                 const char *had = jget_str(ne, "miss_dirs", "");
@@ -1052,6 +1136,7 @@ static int scan_prepare(scan_ctx *c) {
 static void scan_free(scan_ctx *c) {
     cJSON_Delete(c->romm_saves);
     cJSON_Delete(c->romm_has);
+    cJSON_Delete(c->nx_files);
     profiles_free(c->maps);
     free(c->roms);
     free(c->saves);
@@ -1506,18 +1591,157 @@ static int switch_title(const char *path, char *out, size_t n) {
 }
 
 /* RomM no longer has the game this file was matched to (a rescan gives games
- * new ids): the match goes, and the next sync finds it again by name. */
-static void forget_gone_rom(const local_rom *r) {
+ * new ids, a merge folds two into one): the match goes, and the next scan
+ * finds it again by name. What was synced with that game goes too: its saves
+ * meet the game they're matched to next as a device's that never synced
+ * them, not with a history that was another game's. gone_id keeps the old
+ * id for the update and DLC that came with it (record_local_rom). */
+static void forget_gone(const char *path, int rom_id) {
     state_lock();
-    cJSON *e = state_entry("roms", r->path);
-    const int had = e && (int)jget_num(e, "rom_id", 0) == r->rom_id;
+    cJSON *e = state_entry("roms", path);
+    const int had = e && (int)jget_num(e, "rom_id", 0) == rom_id, addon = had && jget_num(e, "with", 0) > 0;
     if (had) {
         jset_num(e, "rom_id", 0);
+        jset_num(e, "gone_id", rom_id);
         cJSON_DeleteItemFromObjectCaseSensitive(e, "game_id");
         cJSON_DeleteItemFromObjectCaseSensitive(e, "miss_at");
+        static const char *const synced[] = {"saves", "states", "conflicts"};
+        for (size_t i = 0; i < sizeof synced / sizeof *synced; i++) {
+            cJSON *sec = state_section(synced[i]), *x = sec->child;
+            while (x) {
+                cJSON *next = x->next;
+                if ((int)jget_num(x, "rom_id", 0) == rom_id) cJSON_Delete(cJSON_DetachItemViaPointer(sec, x));
+                x = next;
+            }
+        }
     }
     state_unlock();
-    if (had) LOGI("%s: RomM no longer has game %d, looked for again by name", path_basename(r->path), r->rom_id);
+    /* An update or DLC isn't looked for: it follows its game. */
+    if (had) LOGI("%s: RomM no longer has game %d%s", path_basename(path), rom_id, addon ? "" : ", looked for again by name");
+}
+
+static void forget_gone_rom(const local_rom *r) { forget_gone(r->path, r->rom_id); }
+
+/* Games RomM still has though its list left them out (hidden from it, or on
+ * another platform now), so they aren't asked about at every sync. Under
+ * g_run_lock. */
+static struct { int id; time_t at; } g_kept[32];
+static int g_kept_next;
+
+static int kept_lately(int id, time_t now) {
+    for (size_t i = 0; i < sizeof g_kept / sizeof *g_kept; i++)
+        if (g_kept[i].id == id && now - g_kept[i].at < 86400) return 1;
+    return 0;
+}
+
+static int cmp_int(const void *a, const void *b) {
+    const int x = *(const int *)a, y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
+typedef struct {
+    int *ids, n;
+    int whole;
+} rom_index;
+
+/* rom_id_index: every game the list holds, whatever the page. Taken only
+ * when it holds as many as the list's total says, and some. */
+static int take_rom_index(const cJSON *it, const cJSON *page, int first, void *ctx) {
+    (void)it;
+    rom_index *x = ctx;
+    const cJSON *all = cJSON_GetObjectItemCaseSensitive(page, "rom_id_index"), *total = cJSON_GetObjectItemCaseSensitive(page, "total"), *id;
+    const int n = cJSON_GetArraySize(all);
+    if (!first || x->ids || !cJSON_IsArray(all) || !cJSON_IsNumber(total) || (int)total->valuedouble != n || n == 0) return 1;
+    if (!(x->ids = malloc(sizeof *x->ids * (size_t)n))) return 1;
+    cJSON_ArrayForEach(id, all) if (cJSON_IsNumber(id) && id->valuedouble >= 1) x->ids[x->n++] = (int)id->valuedouble;
+    x->whole = x->n == n;
+    qsort(x->ids, (size_t)x->n, sizeof *x->ids, cmp_int);
+    return 1;
+}
+
+#define GONE_ASKS 16 /* games asked about one at a time, a sync; the rest wait */
+
+/* Each sync, the games here are checked against RomM's list of their
+ * platforms' games. One a merge or a rescan took away is let go and matched
+ * again by name, even when no request for it ever came back 404 (an upload a
+ * proxy turned away first, a game id known since). Only a whole list counts,
+ * and only RomM's own 404 for the game lets one go: an outage, a list cut
+ * short or an empty one, a game the list hides, never do. Returns how many
+ * files were let go. */
+static int forget_gone_roms(void) {
+    typedef struct { int id, platform; char *path; } here;
+    here *all = NULL;
+    int n = 0, cap = 0, np = 0, gone = 0, platforms[64];
+    const cJSON *e;
+    state_lock();
+    cJSON_ArrayForEach(e, state_section("roms")) {
+        const int id = (int)jget_num(e, "rom_id", 0), platform = (int)jget_num(e, "platform_id", 0);
+        if (id <= 0 || platform <= 0) continue;
+        if (n == cap) {
+            here *grown = realloc(all, sizeof *all * (size_t)(cap ? cap * 2 : 64));
+            if (!grown) break;
+            all = grown;
+            cap = cap ? cap * 2 : 64;
+        }
+        all[n] = (here){id, platform, strdup(e->string)};
+        if (all[n].path) n++;
+    }
+    state_unlock();
+    /* Off the lock: a sleeping drive holds nobody up. */
+    char path[1536];
+    int o = snprintf(path, sizeof path, "/api/roms?with_char_index=false&with_filter_values=false&with_rom_id_index=true");
+    for (int i = 0; i < n; i++) {
+        int listed = 0;
+        for (int k = 0; k < np; k++) listed |= platforms[k] == all[i].platform;
+        const int full = np == 64 || o + 32 > (int)sizeof path; /* a platform left out: its games aren't judged */
+        if ((!file_exists(all[i].path) && !dir_exists(all[i].path)) || (!listed && full)) {
+            all[i].id = 0;
+        } else if (!listed) {
+            platforms[np++] = all[i].platform;
+            o += snprintf(path + o, sizeof path - (size_t)o, "&platform_ids=%d", all[i].platform);
+        }
+    }
+    rom_index idx = {NULL, 0, 0};
+    long st = 0;
+    if (np) romm_list(path, 0, 1, take_rom_index, &idx, &st);
+    if (np && !idx.whole) LOGD("RomM's list of games didn't come whole (HTTP %ld): none let go", st);
+    const time_t now = time(NULL);
+    int asked[GONE_ASKS], na = 0;
+    for (int i = 0; idx.whole && i < n && na < GONE_ASKS; i++) {
+        const int id = all[i].id;
+        int dup = 0;
+        for (int k = 0; k < na; k++) dup |= asked[k] == id;
+        if (id <= 0 || dup || bsearch(&id, idx.ids, (size_t)idx.n, sizeof *idx.ids, cmp_int) || kept_lately(id, now)) continue;
+        asked[na++] = id;
+        char api[64];
+        long rst = 0;
+        snprintf(api, sizeof api, "/api/roms/%d", id);
+        cJSON *rom = romm_call("GET", api, NULL, &rst);
+        /* RomM's own answer ({"detail": ...}), not a proxy's page. */
+        if (rst == 404 && cJSON_IsString(cJSON_GetObjectItemCaseSensitive(rom, "detail"))) {
+            for (int k = i; k < n; k++)
+                if (all[k].id == id) {
+                    forget_gone(all[k].path, id);
+                    gone++;
+                }
+        } else if (rst == 200 && rom) {
+            g_kept[g_kept_next].id = id;
+            g_kept[g_kept_next].at = now;
+            g_kept_next = (g_kept_next + 1) % (int)(sizeof g_kept / sizeof *g_kept);
+            /* On another platform now: the list it's on next time. */
+            const int on = (int)jget_num(rom, "platform_id", 0);
+            cJSON *x;
+            state_lock();
+            cJSON_ArrayForEach(x, state_section("roms")) if (on > 0 && (int)jget_num(x, "rom_id", 0) == id) jset_num(x, "platform_id", on);
+            state_unlock();
+        }
+        cJSON_Delete(rom);
+        if (rst == 0) break; /* RomM stopped answering: the rest wait */
+    }
+    for (int i = 0; i < n; i++) free(all[i].path);
+    free(all);
+    free(idx.ids);
+    return gone;
 }
 
 /* The game's id: from the disc image, RomM (title_id, 5.3+), or its PSP saves. */
@@ -3538,7 +3762,14 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
     forget_other_server();
     scan_ctx c;
     set_phase("scanning local files");
-    if (scan_prepare(&c) != 0) {
+    int ready = scan_prepare(&c) == 0;
+    /* Games RomM let go are matched again before anything moves, so their
+     * saves sync with what they're matched to now, this time. */
+    if (ready && !only_rom && forget_gone_roms() > 0) {
+        scan_free(&c);
+        ready = scan_prepare(&c) == 0;
+    }
+    if (!ready) {
         snprintf(res->error, sizeof res->error, "%s",
                  c.server_status == 0 && http_out_of_memory() ? "out of memory" : "cannot reach RomM server");
         res->unreachable = c.server_status == 0;

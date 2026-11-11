@@ -1747,6 +1747,82 @@ syncnow
 syncnow
 [[ "$(last uploaded)" == 0 && "$(last downloaded)" == 0 ]] || fail "two Switch emulators in step kept moving saves: $(last uploaded) up, $(last downloaded) down"
 
+echo "    a game and its update merged into one RomM folder, the old two deleted: let go only when RomM's list says so, then matched again"
+# The extra keeps updates beside its games (no update_dir): an update there isn't a game of its own.
+nxrom '{"id":935,"platform_id":90,"name":"Merge","fs_name":"Merge [0100DDDD00000000][v0].nsp"}'
+nxrom '{"id":934,"platform_id":90,"name":"Merge","fs_name":"Merge [0100DDDD00000800][v65536].nsp"}'
+post /api/download '{"rom_id":935,"name":"Merge"}' >/dev/null
+[[ "$(nxdone 935)" == done ]] || fail "the Switch download didn't finish"
+for _ in $(seq 1 40); do [[ -e "$NX2/roms/Merge [0100DDDD00000800][v65536].nsp" ]] && break; sleep 0.25; done
+[[ -f "$NX/updates/Merge [0100DDDD00000800][v65536].nsp" && -e "$NX2/roms/Merge [0100DDDD00000800][v65536].nsp" ]] \
+  || fail "the update goes to both emulators: $(find "$NX" "$NX2" -name 'Merge*')"
+mkdir -p "$NS/$U1/0100DDDD00000000"; printf 'merge-console' > "$NS/$U1/0100DDDD00000000/SaveData.bin"
+syncnow
+merges() { curl -skf "$SV/_admin/dump" | python3 -c "
+import json,sys; print(sorted(s['rom_id'] for s in json.load(sys.stdin)['saves'] if s['rom_id'] in (934, 935, 936)))"; }
+[[ "$(merges)" == "[935]" ]] || fail "the game's save goes up once, to the game, never to its update: $(merges)"
+romid() { python3 -c "import json,sys; e=json.load(open(sys.argv[1]))['roms'].get(sys.argv[2], {}); print(e.get('rom_id'), e.get('with', ''))" "$T/data/state.json" "$1"; }
+# Each fault holds until cleared ("n": 0), so a sync the watcher starts meets it too.
+fault() { curl -skf -X POST "$SV/_admin/fault" -d "{\"mode\":\"$1\",\"n\":${2:-100}${3:+,\"ids\":$3}}" >/dev/null || fail "mock fault: $*"; }
+# A game RomM's list leaves out (the user hid it) but that RomM still has: kept.
+fault hidden 100 '[905]'
+syncnow
+fault hidden 0
+[[ "$(romid "$NX/roms/Sword [0100ABCD12340000][v0].nsp")" == "905 " ]] || fail "a game hidden from RomM's list was let go"
+[[ "$(merges)" == "[935]" ]] || fail "the extra, holding the save now, sent it to the update too: $(merges)"
+# The merge: one folder holding both files, the old two deleted (their saves with them). Another
+# device's save is on the new one; a proxy turns this console's uploads away before RomM sees them.
+nxrom '{"id":936,"platform_id":90,"name":"Merge","fs_name":"Merge","files":[
+  {"id":9361,"file_name":"Merge [0100DDDD00000000][v0].nsp","content":"ROM:Merge [0100DDDD00000000][v0].nsp"},
+  {"id":9362,"file_name":"Merge [0100DDDD00000800][v65536].nsp","content":"ROM:Merge [0100DDDD00000800][v65536].nsp"}]}'
+# The list fails before the entries go, or a sync the watcher starts in between
+# sees the whole list and does its job early.
+fault list_error 100
+curl -skf -X POST "$SV/_admin/delete_rom" -d '{"ids":[934,935]}' >/dev/null
+sleep 1.1
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":936,\"slot\":\"autosave\",\"file_name\":\"0100DDDD00000000.zip\",\"content_b64\":\"$(python3 -c "
+import base64,io,zipfile
+b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('0100DDDD00000000/SaveData.bin','merge-from-pc'); z.close()
+print(base64.b64encode(b.getvalue()).decode())")\"}" >/dev/null
+fault upload_413
+# RomM's list failing, cut short, or RomM failing to answer for the games: nothing is let go. The
+# next fault is on before the last is cleared, so no sync ever runs without one.
+was=""
+for f in list_error list_short get_error; do
+  fault "$f" 100 "$([[ $f == get_error ]] && echo '[934,935]')"
+  [[ -z "$was" ]] || fault "$was" 0
+  was=$f
+  syncnow
+  [[ "$(romid "$NX/roms/Merge [0100DDDD00000000][v0].nsp")/$(romid "$NX2/roms/Merge [0100DDDD00000000][v0].nsp")" == "935 /935 " ]] \
+    || fail "a game was let go on $f: $(romid "$NX/roms/Merge [0100DDDD00000000][v0].nsp")"
+  [[ "$(romid "$NX/updates/Merge [0100DDDD00000800][v65536].nsp")" == "934 935" ]] || fail "an update was let go on $f"
+done
+grep -q "RomM no longer has game 93[45]" "$T/daemon.log" && fail "a game was let go without RomM's word"
+# RomM's whole list: both are let go, the game is found in the folder by its file's name, in both emulators.
+fault "$was" 0
+syncnow
+grep -q "Merge \[0100DDDD00000000\]\[v0\].nsp: RomM no longer has game 935, looked for again by name" "$T/daemon.log" \
+  || fail "the game RomM deleted wasn't let go"
+for p in "$NX/roms/Merge [0100DDDD00000000][v0].nsp" "$NX2/roms/Merge [0100DDDD00000000][v0].nsp"; do
+  [[ "$(romid "$p")" == "936 " ]] || fail "the game wasn't matched to RomM's folder holding it: $p $(romid "$p")"
+done
+for p in "$NX/updates/Merge [0100DDDD00000800][v65536].nsp" "$NX2/roms/Merge [0100DDDD00000800][v65536].nsp"; do
+  [[ "$(romid "$p")" == "0 936" ]] || fail "the update must follow its game, not be a game: $p $(romid "$p")"
+done
+# This console never synced the new one's save: a conflict to settle, nothing overwritten either way.
+[[ "$(merges)" == "[936]" ]] || fail "nothing of this console's may go up to the new game unasked: $(merges)"
+[[ "$(cat "$NS/$U1/0100DDDD00000000/SaveData.bin")" == merge-console ]] || fail "the console's save was overwritten unasked"
+cpath=$(python3 -c "import json,sys; print(next((k for k, v in json.load(open(sys.argv[1])).get('conflicts', {}).items() if v.get('rom_id') == 936), ''))" "$T/data/state.json")
+[[ -n "$cpath" ]] || fail "the new game's save must come as a conflict: $(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('conflicts'))" "$T/data/state.json")"
+fault upload_413 0
+post /api/conflicts/resolve "{\"path\":\"$cpath\",\"keep\":\"server\"}" >/dev/null || fail "resolve failed"
+syncnow
+[[ "$(cat "$NS/$U1/0100DDDD00000000/SaveData.bin")/$(cat "$NS2/$U1/0100DDDD00000000/SaveData.bin" 2>/dev/null)" == merge-from-pc/merge-from-pc ]] \
+  || fail "the new game's save must come down to both emulators: $(cat "$NS/$U1/0100DDDD00000000/SaveData.bin")"
+[[ "$(merges)" == "[936]" ]] || fail "settled, the save stays one on RomM: $(merges)"
+post /api/delete '{"rom_id":936}' >/dev/null
+[[ -z "$(find "$NX" "$NX2" -name 'Merge*')" ]] || fail "removing the game removes its update, in both emulators: $(find "$NX" "$NX2" -name 'Merge*')"
+
 echo "28c. Xbox saves: E:\\UDATA\\<title id> inside xemu's hard disk image, as RomM's save unit; never while xemu runs"
 XB="$T/homebrew/PPSA97358"; XS="$T/xbsave"; mkdir -p "$XB/games" "$XB/hdd" "$XS/006412E217B6"
 python3 "$ROOT/tests/make_disc.py" xiso "$XB/games/Halo (USA).xiso.iso" 4D530004
