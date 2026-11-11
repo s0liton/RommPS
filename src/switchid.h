@@ -23,6 +23,22 @@
  * the key. */
 int switchid_from_file(const char *path, const unsigned char *header_key, char *out, size_t n);
 
+/* What a title id is, by its last digits: a game's ends in 000 (a second
+ * program's in 001 on), its update's in 800, its DLC's past the game's 1000. */
+typedef enum { SWITCHID_NONE, SWITCHID_GAME, SWITCHID_UPDATE, SWITCHID_DLC } switchid_kind;
+switchid_kind switchid_kind_of(uint64_t id);
+/* The base game's id for any of its titles: 0100F4300BF2C000 for its update
+ * 0100F4300BF2C800 and its DLC 0100F4300BF2D001. */
+uint64_t switchid_game_of(uint64_t id);
+
+/* The title id a file is, as it is, where switchid_from_file only names the
+ * game: an update's own (ending in 800), DLC's (1001 on), so "Some Game
+ * v3.0.3.nsp" can be told for the update it is. A file (or folder) holding
+ * the game is the game, whatever rides along with it; an update beats DLC.
+ * Tickets first, then NCA headers, which take header_key. 0, -1 or -2 as
+ * above. */
+int switchid_title(const char *path, const unsigned char *header_key, uint64_t *id);
+
 /* prod.keys' header_key: two AES-128 keys, 32 bytes. 0, or -1 without one. */
 int switchid_header_key(const char *prod_keys, unsigned char key[32]);
 

@@ -368,7 +368,9 @@ class H(BaseHTTPRequestHandler):
             if p == "/_admin/rom" and method == "POST":  # e.g. a game RomM keeps as a folder holding one file
                 b = self.json_body()
                 for f in b.get("files", []):
-                    f["content"] = f["content"].encode()
+                    import base64
+                    f["content"] = base64.b64decode(f["content_b64"]) if "content_b64" in f else f["content"].encode()
+                    f.pop("content_b64", None)
                 DB["roms"][b["id"]] = b
                 return self.reply(200, rom_public(b))
             if p == "/_admin/virtual" and method == "POST":  # one RomM makes from metadata
