@@ -792,7 +792,7 @@ syncnow
 [[ "$(cat "$T/gcA/states/GMSE01/slot1.state" 2>/dev/null)" == "dolphin-bare-state" ]] || fail "a deleted state must come back bare, in its own emulator's form"
 
 echo "16c. an extra that reads its own app folder plays the main emulator's games through a mount, not copies"
-XA="$MB/TEST00002"; mkdir -p "$XA/games" "$XA/data/saves"
+XA="$MB/TEST00002"; mkdir -p "$XA/games" "$XA/data/saves" "$XA/sce_sys"   # an app's folder: its own sce_sys says it's there
 python3 - "$T/catalog.json" "$XA" <<'PY'
 import json, sys
 cat = json.load(open(sys.argv[1]))
@@ -2191,6 +2191,54 @@ keys=$(python3 -c "import json,sys; print(list(json.load(open(sys.argv[1]))['sav
 [[ -f "$T/moved/gba/bios/boot.bin" && -f "$T/movedgba/bios/boot.bin" ]] || fail "a system whose move was put off must keep both its folders"
 [[ "$(cd "$T/moved/gbc" && find . -type f)" == "./bios/mine.bin" && -f "$T/movedgbc/bios/boot.bin" ]] \
   || fail "only the copies may go from a system's old folder, never the folder in use: $(find "$T/moved/gbc" "$T/movedgbc")"
+
+echo "30b4. folders RommPS made for another emulator don't make one installed; a profile set up from them goes, its files stay"
+# PSXS5 and SwanStationPS5: SwanStationPS5 plays the games in PSXS5's folder,
+# so a download for it made /data/PSXS5, which 1.3.0 took for PSXS5 (here
+# Ghost-like, its app not installed) and set up as the main PS1 emulator.
+D6="$T/data6"; mkdir -p "$D6" "$T/ghost/games" "$T/ghost/saves" "$T/swanghost/saves" "$T/kept/games" "$T/kept/saves"
+python3 - "$T/catalog6.json" "$D6/config.json" "$T" <<'PY'
+import json, sys
+t = sys.argv[3]
+psx, n64 = [{"romm": ["psx", "ps1"], "dir": "psx"}], [{"romm": ["n64"], "dir": "n64"}]
+json.dump([
+    {"id": "ghostlike", "name": "Ghost-like", "title_ids": ["TEST00031"], "detect": [t + "/ghost"],
+     "profile": {"root": t + "/ghost", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "platforms": psx}},
+    {"id": "swanghost", "name": "Swan-ghost", "detect": [t + "/swanghost"],
+     "profile": {"root": t + "/swanghost", "rom_dir": t + "/ghost/games", "save_dir": "{root}/saves", "platforms": psx}},
+    {"id": "keptlike", "name": "Kept-like", "detect": [t + "/kept"],
+     "profile": {"root": t + "/kept", "rom_dir": "{root}/games", "save_dir": "{root}/saves", "platforms": n64}},
+    {"id": "keptswan", "name": "Kept-swan", "detect": [t + "/keptswan"],
+     "profile": {"root": t + "/keptswan", "rom_dir": t + "/kept/games", "save_dir": "{root}/saves", "platforms": n64}}],
+    open(sys.argv[1], "w"))
+json.dump({"web_port": 8789, "sync_interval_min": 0, "profiles_custom": True, "profiles": [
+    {"id": "ghostlike", "name": "Ghost-like", "enabled": True, "root": t + "/ghost", "platforms": psx},
+    {"id": "swanghost", "name": "Swan-ghost", "enabled": True, "root": t + "/swanghost", "extra": ["psx"], "platforms": psx},
+    {"id": "keptlike", "name": "Kept-like", "enabled": True, "root": t + "/kept", "platforms": n64}]}, open(sys.argv[2], "w"))
+PY
+printf 'ROM' > "$T/ghost/games/Test Quest (USA).bin"; printf 'card' > "$T/ghost/saves/SLUS-12345_1.mcd"
+printf 'emulator=1\n' > "$T/kept/kept.ini"   # the emulator's own, which RommPS never writes
+sixth() {
+  ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$D6" ROMM_SYNC_AUTOSTART="$T/etaHEN6" \
+    ROMM_SYNC_CATALOG="$T/catalog6.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" \
+    "$ROOT/build/host/romm-sync" >>"$D6/daemon.log" 2>&1 &
+  local pid=$!; sleep 3; kill $pid; wait $pid 2>/dev/null || true
+}
+sixth
+got=$(python3 -c "
+import json,sys
+for p in json.load(open(sys.argv[1]))['profiles']: print(p['id'], p.get('extra', []), p.get('exclude', []))" "$D6/config.json")
+[[ "$got" == $'swanghost [] []\nkeptlike [] []' ]] || fail "a profile set up from RommPS's folders must go, its system to the emulator left: $got"
+grep -q "the Swan-ghost profile plays psx now, in place of Ghost-like" "$D6/daemon.log" || fail "the system handed over must be logged"
+[[ "$(ls "$T/ghost/games")" == "Test Quest (USA).bin" && "$(cat "$T/ghost/saves/SLUS-12345_1.mcd")" == card ]] || fail "its files must stay"
+grep -q "not offering Ghost-like" "$D6/daemon.log" || fail "a folder holding only RommPS's must not offer its emulator"
+grep -q "detected Ghost-like" "$D6/daemon.log" && fail "a folder holding only RommPS's must not say its emulator is there"
+grep -q "detected Kept-like" "$D6/daemon.log" || fail "a folder with the emulator's own files says it's there, another's folder in it or not"
+# With its app installed it's there, whatever its folder holds.
+mkdir -p "$T/apps/TEST00031"
+sixth
+grep -q "detected Ghost-like (TEST00031)" "$D6/daemon.log" || fail "an emulator whose app is installed must be found"
+rm -r "$T/apps/TEST00031"
 
 echo "30c. Dolphin's saves: an extra keeping them as the main does gets the main's folders mounted on its own"
 GM="$MB/TEST00003"; mkdir -p "$GM/games" "$GM/User/GC" "$GM/User/Wii"
