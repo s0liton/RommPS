@@ -225,6 +225,10 @@ def platform_public(x):
         out["firmware"] = fw
     return out
 
+
+BUSY_LOCK = threading.Lock()
+
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, fmt, *a):
         sys.stderr.write("[mock] " + (fmt % a) + "\n")
@@ -244,6 +248,12 @@ class H(BaseHTTPRequestHandler):
         if rng.startswith("bytes="):
             a, b = rng[6:].split("-")
             start, end = int(a or 0), min(int(b), end) if b else end
+        with BUSY_LOCK:  # after _admin/busy, pieces of a download are turned away
+            busy = rng.startswith("bytes=") and bool(b) and DB.get("busy", 0) > 0
+            if busy:
+                DB["busy"] -= 1
+        if busy:
+            return self.reply(429, {"detail": "Too many requests"})
         body = data[start:end + 1]
         self.send_response(206 if rng else 200)
         self.send_header("Content-Type", ctype)
@@ -383,6 +393,10 @@ class H(BaseHTTPRequestHandler):
             if p == "/_admin/cut" and method == "POST":
                 b = self.json_body()
                 DB["cut_next"], DB["cut_after"] = int(b["bytes"]), int(b.get("after", 0))
+                return self.reply(200, {"ok": True})
+            if p == "/_admin/busy" and method == "POST":
+                # The next n requests for a piece of a file (Range with an end) get a 429.
+                DB["busy"] = int(self.json_body()["n"])
                 return self.reply(200, {"ok": True})
             if p == "/_admin/collections_scope" and method == "POST":
                 # A token from a pairing that didn't ask for collections.read.

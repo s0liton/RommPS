@@ -68,7 +68,7 @@ EOF
 mkdir -p "$T/etaHEN/payloads"; echo "old-payload" > "$T/etaHEN/payloads/romm-sync.elf"
 # Apps in $MB can have mounts, as on the PS5 (the host build lists them in data/mounts.txt).
 MB="$T/mountable"; mkdir -p "$MB"
-ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" \
+ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_AUTOSTART="$T/etaHEN/payloads" ROMM_SYNC_PARALLEL=6 \
   ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" ROMM_SYNC_COVERS_TICK=1 ROMM_SYNC_RA2_EVERY=1 ROMM_SYNC_INSTALLED_SIG_SEC=2 \
   ROMM_SYNC_UPDATE_URL="http://127.0.0.1:$MOCK_PORT/_github/release" ROMM_SYNC_PRESETS_URL="http://127.0.0.1:$MOCK_PORT/_github/assets" \
   "$ROOT/build/host/romm-sync" >"$T/daemon.log" 2>&1 &
@@ -2084,6 +2084,21 @@ $(grep -E 'downloaded' "$T/daemon.log" | tail -3)"
 big=$(find "$T" -name 'Big One (USA).sfc' -not -path '*/data/*' | head -1)
 python3 -c "import hashlib,sys; want=''.join('%015d\n' % i for i in range(5 * 2**20)).encode()
 sys.exit(0 if open(sys.argv[1],'rb').read() == want else 1)" "$big" || fail "the big download must be whole, every piece in its place: $big"
+# A server that turns some of the connections away (a proxy's limit, 429)
+# still gets the whole file over the ones it took, and isn't asked for more.
+sed 's/"id": 954/"id": 955/; s/"id": 9541/"id": 9551/; s/Big One/Big Two/g' "$T/big.json" > "$T/big2.json"
+curl -skf -X POST "$SV/_admin/rom" -d @"$T/big2.json" >/dev/null
+curl -skf -X POST "$SV/_admin/busy" -d '{"n":2}' >/dev/null
+post /api/download '{"rom_id":955,"name":"Big Two"}' >/dev/null
+s=$(waitjob 955 done)
+[[ "$s" == done* ]] || fail "a big download some connections of were refused must carry on over the others: $s
+$(grep -E 'Big Two|refused|downloaded' "$T/daemon.log" | tail -5)"
+grep -q "the server refused 2 of 5 connections: downloads keep to 3 from now on" "$T/daemon.log" \
+  || fail "no log of the refused connections
+$(grep -E 'refused|downloaded' "$T/daemon.log" | tail -3)"
+big=$(find "$T" -name 'Big Two (USA).sfc' -not -path '*/data/*' | head -1)
+python3 -c "import hashlib,sys; want=''.join('%015d\n' % i for i in range(5 * 2**20)).encode()
+sys.exit(0 if open(sys.argv[1],'rb').read() == want else 1)" "$big" || fail "the refused pieces must land whole over the others: $big"
 # A file RomM lists but no longer has on its disk says so, and isn't retried.
 curl -skf -X POST "$SV/_admin/rom" -d '{"id":953,"platform_id":1,"name":"Moved Away","fs_name":"Moved Away","files":[
   {"id":9531,"file_name":"Moved Away (Disc 1).sfc","content":"ROM:one"},

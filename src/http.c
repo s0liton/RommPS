@@ -11,6 +11,8 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -362,13 +364,25 @@ static int curl_trace(CURL *c, curl_infotype type, char *data, size_t size, void
  * itself as far as it's needed and stops once it's set by hand, so there it's
  * left alone. */
 static int g_rcvbuf; /* the size the kernel took, once known */
+static int g_rcvbuf_got; /* and what it made of it: the window a connection gets (512 KB on the PS5) */
 
 static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
     (void)ud;
     if (purpose != CURLSOCKTYPE_IPCXN) return CURL_SOCKOPT_OK;
-    int size = __atomic_load_n(&g_rcvbuf, __ATOMIC_RELAXED);
+    /* Once known, each connection asks for what the kernel gives (512 KB),
+     * not the 4 MB it took that from: with several connections open, the PS5
+     * refuses a 4 MB ask outright ("no buffer space"), and a connection
+     * refused keeps 64 KB, about 1 MB/s from 40 ms away (seen with a download
+     * over 8 connections: 1.0 MB/s each). A refused ask steps down. */
+    int size = __atomic_load_n(&g_rcvbuf_got, __ATOMIC_RELAXED);
     if (size) {
-        setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size);
+        const int want = size;
+        for (; size >= 64 * 1024; size /= 2)
+            if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &size, sizeof size) == 0) break;
+        static int told;
+        if (size < want && !__atomic_exchange_n(&told, 1, __ATOMIC_RELAXED))
+            LOGW("receive window: a connection got %d KB, %d KB refused", size >= 64 * 1024 ? size / 1024 : 64,
+                 want / 1024);
         return CURL_SOCKOPT_OK;
     }
     for (size = strcmp(plat_info()->name, "ps4") ? 8 * 1024 * 1024 : 1024 * 1024; size >= 128 * 1024; size /= 2)
@@ -377,6 +391,7 @@ static int big_rcvbuf(void *ud, curl_socket_t fd, curlsocktype purpose) {
     int got = 0;
     socklen_t gl = sizeof got;
     getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &got, &gl);
+    __atomic_store_n(&g_rcvbuf_got, got, __ATOMIC_RELAXED);
     if (!__atomic_exchange_n(&g_rcvbuf, size, __ATOMIC_RELAXED))
         LOGI("receive window: %d KB (%d KB asked)", got / 1024, size / 1024);
     return CURL_SOCKOPT_OK;
@@ -461,9 +476,29 @@ static CURL *easy_new(const char *url, struct curl_slist **hdrs, const char *aut
 static void cert_note(const char *url, CURLcode rc, const char *errbuf, int may_probe);
 static void cert_forget(const char *url);
 
+/* The round trip to the RomM server, from the TCP handshake of the last
+ * connection opened to it, in microseconds; 0 until one was. A handshake is
+ * answered by the server's kernel at once, so it's the line's round trip
+ * alone, where the kernel's own estimate for a connection also counts the
+ * server's delayed ACKs and the time RomM takes to answer (measured on the
+ * PS5: 15-34 ms on a LAN that pings at 2 ms). */
+static int g_handshake_us;
+
+/* This request's handshake, if it opened its connection; 0 if it reused one. */
+static int handshake_us(CURL *c) {
+    curl_off_t conn = 0, dns = 0;
+    if (curl_easy_getinfo(c, CURLINFO_CONNECT_TIME_T, &conn) != CURLE_OK || conn <= 0) return 0;
+    curl_easy_getinfo(c, CURLINFO_NAMELOOKUP_TIME_T, &dns);
+    return conn > dns ? (int)(conn - dns) : 0;
+}
+
 static int finish(CURL *c, CURLcode rc, membuf *m, http_resp *out, const char *url, const char *errbuf, int probe,
                   int client) {
     memset(out, 0, sizeof *out);
+    if (client) {
+        const int hs = handshake_us(c);
+        if (hs) __atomic_store_n(&g_handshake_us, hs, __ATOMIC_RELAXED);
+    }
     /* Where a refused client certificate shows: in the handshake, or right
      * after it (TLS 1.3), before any answer. */
     const int tls_err = rc == CURLE_SSL_CONNECT_ERROR || rc == CURLE_SEND_ERROR || rc == CURLE_RECV_ERROR;
@@ -671,22 +706,87 @@ static int xfer_cb(void *ud, curl_off_t dltotal, curl_off_t dlnow, curl_off_t ul
  * that stops halfway is cut back to where it's whole and becomes the .part a
  * resume carries on from; one a crash leaves is never taken for <dest>.part,
  * yet ends in .part, so it is skipped and cleared like any other.
- * Small files stay on one connection, with no request more. Not on the PS4,
- * its memory being tight. */
-#define PAR_CONNS 6
+ * Small files stay on one connection, with no request more.
+ *
+ * As many connections as fill a gigabit line from the server's distance, by
+ * the round trip the kernel measured on the first answer's connection: a
+ * server nearby gets one, the download as it always went. Only on the PS5:
+ * the PS4's memory is too tight for more, and Linux grows a connection's
+ * window as far as it's needed. ROMM_SYNC_PARALLEL sets the count, for tests. */
+#define PAR_MAX 8
 #define PAR_PIECE ((int64_t)16 * 1024 * 1024)
+#define PAR_LINE (117.0 * 1000 * 1000) /* bytes a second: gigabit, less TCP's share */
 
-static int par_conns(void) { return strcmp(plat_info()->name, "ps4") ? PAR_CONNS : 1; }
+/* At most this many from then on, once the server refused one more (a proxy's
+ * limit on connections); 0: no limit seen. */
+static int g_par_cap;
+
+static int par_conns(int rtt_us, int window) {
+    const char *env = getenv("ROMM_SYNC_PARALLEL");
+    int n = 1;
+    if (env && *env) {
+        n = atoi(env);
+    } else {
+#if defined(__FreeBSD__)
+        if (strcmp(plat_info()->name, "ps4") && rtt_us > 0 && window > 0) {
+            /* Clamped while still a double: a far server could ask for more than an int holds. */
+            const double want = PAR_LINE * rtt_us / 1e6 / window;
+            n = want >= PAR_MAX ? PAR_MAX : (int)want + (want > (int)want);
+        }
+#else
+        (void)rtt_us, (void)window;
+#endif
+    }
+    const int cap = __atomic_load_n(&g_par_cap, __ATOMIC_RELAXED);
+    if (cap && n > cap) n = cap;
+    return n < 1 ? 1 : n > PAR_MAX ? PAR_MAX : n;
+}
+
+/* Whether a download here could go over more than one connection at all. */
+static int par_allowed(void) { return par_conns(1000 * 1000, 1024) > 1; }
+
+/* The round trip to the server in microseconds, and the receive window of the
+ * connection c is on; 0 for what isn't known. The round trip is this
+ * connection's handshake if it just opened, else the last one opened to the
+ * server's, else, with none yet, the kernel's estimate, which runs high. */
+static void sock_rtt(CURL *c, int *rtt_us, int *window) {
+    *rtt_us = handshake_us(c);
+    if (!*rtt_us) *rtt_us = __atomic_load_n(&g_handshake_us, __ATOMIC_RELAXED);
+    /* The window big_rcvbuf saw the kernel give, as curl won't hand over the
+     * socket mid-transfer here (CURLINFO_ACTIVESOCKET comes back empty on the
+     * PS5); with none set, the kernel's own 64 KB. */
+    *window = 0;
+#if defined(__FreeBSD__)
+    *window = __atomic_load_n(&g_rcvbuf_got, __ATOMIC_RELAXED);
+    if (!*window) *window = 64 * 1024;
+#endif
+    if (*rtt_us && *window) return;
+    curl_socket_t fd = CURL_SOCKET_BAD;
+    if (curl_easy_getinfo(c, CURLINFO_ACTIVESOCKET, &fd) != CURLE_OK || fd == CURL_SOCKET_BAD) return;
+    if (!*rtt_us) {
+        struct tcp_info ti;
+        socklen_t l = sizeof ti;
+        memset(&ti, 0, sizeof ti);
+        if (getsockopt(fd, IPPROTO_TCP, TCP_INFO, &ti, &l) == 0) *rtt_us = (int)ti.tcpi_rtt;
+    }
+    if (!*window) {
+        socklen_t l = sizeof *window;
+        getsockopt(fd, SOL_SOCKET, SO_RCVBUF, window, &l);
+    }
+}
 
 typedef struct {
     const char *url, *auth;
     int verify, client, fd;
     int64_t base, total; /* where the pieces start (what the .part had), the file's size */
     int npieces, next;   /* next: the first piece no connection took yet */
+    int requeued[PAR_MAX], nrequeued; /* pieces given back by a connection the server refused */
     int64_t *written;    /* bytes in place per piece, each filled from its start */
     int64_t got;         /* all of them, for the progress */
     int stop, failed, running; /* stop: the user's, at once; failed: no new piece */
     int cut;                   /* the first failed piece: the ones after it would be cut away */
+    int refused;               /* connections the server refused, the download carrying on without them */
+    int retried;               /* connections dropped after a server error, their pieces taken by the others */
     http_resp err; /* the first failure's */
     pthread_mutex_t lock;
 } par_dl;
@@ -696,11 +796,34 @@ typedef struct {
     CURL *c;
     int piece;
     int64_t at, end; /* the next byte's place in the file, the piece's end */
+    char *buf;       /* PAR_BLOCK of what came, not yet written: it ends at "at" */
+    size_t nbuf;
 } par_conn;
 
 static int64_t piece_len(const par_dl *d, int i) {
     const int64_t left = d->total - d->base - (int64_t)i * PAR_PIECE;
     return left < PAR_PIECE ? left : PAR_PIECE;
+}
+
+/* What a connection got goes to the disk in blocks this big, not as curl hands
+ * it over. On the PS5 each write costs about the same whatever its size, and
+ * the connections' writes to the one file wait on each other: written as it
+ * came, in curl's small chunks, eight connections at 40 ms went no faster
+ * than one (8.5 MB/s), each waiting on the disk instead of reading its socket
+ * until the server was told to stop sending. In 1 MB blocks the same line
+ * gave 15.8 MB/s. */
+#define PAR_BLOCK (1024 * 1024)
+
+/* Writes the block out; only then do its bytes count as in place. */
+static int par_flush(par_conn *w) {
+    if (!w->nbuf) return 0;
+    const off_t at = (off_t)(w->at - (int64_t)w->nbuf);
+    if (pwrite(w->d->fd, w->buf, w->nbuf, at) != (ssize_t)w->nbuf) return -1;
+    pthread_mutex_lock(&w->d->lock);
+    w->d->written[w->piece] += (int64_t)w->nbuf;
+    pthread_mutex_unlock(&w->d->lock);
+    w->nbuf = 0;
+    return 0;
 }
 
 static size_t par_write(char *ptr, size_t size, size_t n, void *ud) {
@@ -711,10 +834,18 @@ static size_t par_write(char *ptr, size_t size, size_t n, void *ud) {
     /* The piece asked for and no more: a whole file sent instead would land
      * on the pieces after it. */
     if (st != 206 || w->at + (int64_t)len > w->end) return 0;
-    if (pwrite(w->d->fd, ptr, len, (off_t)w->at) != (ssize_t)len) return 0;
+    if (w->nbuf + len > PAR_BLOCK && par_flush(w)) return 0;
+    if (len > PAR_BLOCK) { /* bigger than a block: straight out */
+        if (pwrite(w->d->fd, ptr, len, (off_t)w->at) != (ssize_t)len) return 0;
+        pthread_mutex_lock(&w->d->lock);
+        w->d->written[w->piece] += (int64_t)len;
+        pthread_mutex_unlock(&w->d->lock);
+    } else {
+        memcpy(w->buf + w->nbuf, ptr, len);
+        w->nbuf += len;
+    }
     w->at += (int64_t)len;
     pthread_mutex_lock(&w->d->lock);
-    w->d->written[w->piece] += (int64_t)len;
     w->d->got += (int64_t)len;
     pthread_mutex_unlock(&w->d->lock);
     return len;
@@ -731,7 +862,9 @@ static void *par_conn_run(void *arg) {
     par_dl *d = w->d;
     struct curl_slist *hdrs = NULL;
     char errbuf[CURL_ERROR_SIZE];
-    w->c = easy_new(d->url, &hdrs, d->auth, d->verify, d->client, errbuf);
+    w->buf = malloc(PAR_BLOCK);
+    w->nbuf = 0;
+    w->c = w->buf ? easy_new(d->url, &hdrs, d->auth, d->verify, d->client, errbuf) : NULL;
     if (w->c) {
         curl_easy_setopt(w->c, CURLOPT_HTTPHEADER, hdrs);
         curl_easy_setopt(w->c, CURLOPT_WRITEFUNCTION, par_write);
@@ -742,38 +875,78 @@ static void *par_conn_run(void *arg) {
         curl_easy_setopt(w->c, CURLOPT_XFERINFODATA, w);
         curl_easy_setopt(w->c, CURLOPT_NOPROGRESS, 0L);
     }
+    /* A connection counts itself out under the same lock it finds no piece
+     * left, or gives one back, under: one given back always has a connection
+     * still counted to take it. */
+    int counted = 1;
     while (w->c) {
         pthread_mutex_lock(&d->lock);
         /* After a failure, no new piece: the ones under way before it finish,
          * so the file gets further; the ones after it stop (par_xfer), being
-         * cut away anyway. */
-        const int i = __atomic_load_n(&d->stop, __ATOMIC_RELAXED) || d->failed ? d->npieces : d->next++;
+         * cut away anyway. A piece given back goes first, the lowest of them,
+         * so the file fills from its start. */
+        int i = d->npieces;
+        if (!__atomic_load_n(&d->stop, __ATOMIC_RELAXED) && !d->failed) {
+            if (d->nrequeued) {
+                int low = 0;
+                for (int k = 1; k < d->nrequeued; k++)
+                    if (d->requeued[k] < d->requeued[low]) low = k;
+                i = d->requeued[low];
+                d->requeued[low] = d->requeued[--d->nrequeued];
+            } else if (d->next < d->npieces) {
+                i = d->next++;
+            }
+        }
+        if (i >= d->npieces) {
+            d->running--;
+            counted = 0;
+        }
+        const int64_t had = i < d->npieces ? d->written[i] : 0;
         pthread_mutex_unlock(&d->lock);
         if (i >= d->npieces) break;
         w->piece = i;
-        w->at = d->base + (int64_t)i * PAR_PIECE;
-        w->end = w->at + piece_len(d, i);
+        w->at = d->base + (int64_t)i * PAR_PIECE + had; /* a piece given back carries on where it stopped */
+        w->end = d->base + (int64_t)i * PAR_PIECE + piece_len(d, i);
         char range[48];
         snprintf(range, sizeof range, "%lld-%lld", (long long)w->at, (long long)w->end - 1);
         curl_easy_setopt(w->c, CURLOPT_RANGE, range);
         CURLcode rc = curl_easy_perform(w->c);
+        /* What came is kept, whatever stopped the piece: a resume carries on from it. */
+        if (par_flush(w) && rc == CURLE_OK) rc = CURLE_WRITE_ERROR;
         if (rc == CURLE_OK && w->at == w->end) continue;
         if (rc == CURLE_OK) rc = CURLE_PARTIAL_FILE; /* the server stopped short */
-        if (!__atomic_load_n(&d->stop, __ATOMIC_RELAXED)) { /* not the user's stop */
-            pthread_mutex_lock(&d->lock);
-            const int first = !d->failed;
-            d->failed = 1;
-            if (i < d->cut) __atomic_store_n(&d->cut, i, __ATOMIC_RELAXED);
+        if (__atomic_load_n(&d->stop, __ATOMIC_RELAXED)) break; /* the user's stop */
+        long st = 0;
+        curl_easy_getinfo(w->c, CURLINFO_RESPONSE_CODE, &st);
+        pthread_mutex_lock(&d->lock);
+        /* Too many connections for the server (a proxy's limit, or it's busy),
+         * or a server error on this one: the piece goes back to the others,
+         * and this connection goes. Only a refusal (429, 503) keeps later
+         * downloads to fewer connections; a 500 can be a one-off. */
+        if ((st == 429 || st >= 500) && d->running > 1 && !d->failed) {
+            d->requeued[d->nrequeued++] = i;
+            if (st == 429 || st == 503) d->refused++;
+            else d->retried++;
+            d->running--;
+            counted = 0;
             pthread_mutex_unlock(&d->lock);
-            if (first) finish(w->c, rc, NULL, &d->err, d->url, errbuf, 0, d->client);
+            break;
         }
+        const int first = !d->failed;
+        d->failed = 1;
+        if (i < d->cut) __atomic_store_n(&d->cut, i, __ATOMIC_RELAXED);
+        pthread_mutex_unlock(&d->lock);
+        if (first) finish(w->c, rc, NULL, &d->err, d->url, errbuf, 0, d->client);
         break;
     }
     curl_slist_free_all(hdrs);
     if (w->c) handle_give(w->c);
-    pthread_mutex_lock(&d->lock);
-    d->running--;
-    pthread_mutex_unlock(&d->lock);
+    free(w->buf);
+    if (counted) {
+        pthread_mutex_lock(&d->lock);
+        d->running--;
+        pthread_mutex_unlock(&d->lock);
+    }
     return NULL;
 }
 
@@ -782,8 +955,10 @@ static void *par_conn_run(void *arg) {
  * to par_download before a byte is written. */
 typedef struct {
     FILE *f;
+    CURL *c;
     int64_t offset, total; /* total: -1 until a Content-Range says it */
     int par, handed;       /* par: big ones may go over several connections */
+    int conns, rtt_us;     /* how many, and the round trip that says so; conns 0 until weighed */
 } dl_ctx;
 
 static size_t dl_header(char *b, size_t size, size_t n, void *ud) {
@@ -804,15 +979,26 @@ static size_t dl_header(char *b, size_t size, size_t n, void *ud) {
 static size_t dl_write(char *p, size_t size, size_t n, void *ud) {
     dl_ctx *k = ud;
     if (k->par && k->total - k->offset > PAR_PIECE) {
-        k->handed = 1;
-        return 0; /* stops this transfer */
+        if (!k->conns) {
+            int window;
+            sock_rtt(k->c, &k->rtt_us, &window);
+            k->conns = par_conns(k->rtt_us, window);
+            LOGI("%.1f MB to download: %d connection%s (round trip %.1f ms, window %d KB)",
+                 (k->total - k->offset) / 1048576.0, k->conns, k->conns == 1 ? "" : "s", k->rtt_us / 1000.0,
+                 window / 1024);
+        }
+        if (k->conns > 1) {
+            k->handed = 1;
+            return 0; /* stops this transfer */
+        }
     }
     return fwrite(p, size, n, k->f);
 }
 
 /* The rest of a file from offset (what its .part has) on, total bytes in all. */
 static int par_download(const char *url, const char *auth, const char *dest, const char *part, int64_t offset,
-                        int64_t total, int verify, int client, http_progress_fn progress, void *ud, http_resp *out) {
+                        int64_t total, int conns, int rtt_us, int verify, int client, http_progress_fn progress,
+                        void *ud, http_resp *out) {
     char par[PATH_MAX_LEN];
     snprintf(par, sizeof par, "%s.par.part", dest);
     const int fd = rename(part, par) == 0 ? open(par, O_WRONLY) : -1;
@@ -828,8 +1014,8 @@ static int par_download(const char *url, const char *auth, const char *dest, con
         return -1;
     }
     pthread_mutex_init(&d.lock, NULL);
-    par_conn w[PAR_CONNS] = {{0}};
-    pthread_t t[PAR_CONNS];
+    par_conn w[PAR_MAX] = {{0}};
+    pthread_t t[PAR_MAX];
     pthread_attr_t a;
     pthread_attr_init(&a);
     pthread_attr_setstacksize(&a, 1024 * 1024);
@@ -837,7 +1023,7 @@ static int par_download(const char *url, const char *auth, const char *dest, con
     const double started = mono_sec();
     /* Held while they start: one that ends at once can't count down before it's counted. */
     pthread_mutex_lock(&d.lock);
-    for (int i = 0; i < par_conns() && i < d.npieces; i++) {
+    for (int i = 0; i < conns && i < PAR_MAX && i < d.npieces; i++) {
         w[n].d = &d;
         if (pthread_create(&t[n], &a, par_conn_run, &w[n]) == 0) n++;
     }
@@ -866,11 +1052,21 @@ static int par_download(const char *url, const char *auth, const char *dest, con
         if (d.written[i] < piece_len(&d, i)) break;
     }
     free(d.written);
+    if (d.refused) {
+        /* The next downloads ask no more of the server than it took. */
+        const int took = n - d.refused > 1 ? n - d.refused : 1;
+        __atomic_store_n(&g_par_cap, took, __ATOMIC_RELAXED);
+        LOGW("the server refused %d of %d connections: downloads keep to %d from now on", d.refused, n, took);
+    }
+    if (d.retried)
+        LOGW("the server failed %d piece request%s: the other connections took %s", d.retried, d.retried == 1 ? "" : "s",
+             d.retried == 1 ? "it" : "them");
     if (whole == total) {
         close(fd);
         const double secs = mono_sec() - started;
         const double mb = (double)(total - offset) / 1048576.0;
-        LOGI("downloaded %.1f MB in %.1fs (%.2f MB/s) over %d connections", mb, secs, secs > 0 ? mb / secs : 0, n);
+        LOGI("downloaded %.1f MB in %.1fs (%.2f MB/s) over %d connections (round trip %.1f ms)", mb, secs,
+             secs > 0 ? mb / secs : 0, n - d.refused, rtt_us / 1000.0);
         memset(out, 0, sizeof *out);
         out->status = 200;
         if (move_file(par, dest) == 0) return 0;
@@ -878,8 +1074,9 @@ static int par_download(const char *url, const char *auth, const char *dest, con
         return -1;
     }
     /* Kept up to where it's whole, for the next go to carry on from; not
-     * after the server refused it (a 404). */
-    if (d.failed && !aborted && d.err.status >= 400) {
+     * after the server refused the file (a 404). Busy (429) or a server error
+     * (5xx) is for now only. */
+    if (d.failed && !aborted && d.err.status >= 400 && d.err.status != 429 && d.err.status < 500) {
         close(fd);
         unlink(par);
     } else {
@@ -926,7 +1123,7 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
         return -1;
     }
     progress_ctx pc = {progress, ud, offset};
-    dl_ctx k = {f, offset, -1, client && par_conns() > 1, 0};
+    dl_ctx k = {.f = f, .c = c, .offset = offset, .total = -1, .par = client && par_allowed()};
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, hdrs);
     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, dl_header);
     curl_easy_setopt(c, CURLOPT_HEADERDATA, &k);
@@ -946,7 +1143,7 @@ static int download_impl(const char *url, const char *auth, const char *dest, in
         finish(c, CURLE_OK, NULL, out, url, errbuf, probe, client); /* it answered */
         curl_slist_free_all(hdrs);
         handle_give(c);
-        return par_download(url, auth, dest, part, offset, k.total, verify, client, progress, ud, out);
+        return par_download(url, auth, dest, part, offset, k.total, k.conns, k.rtt_us, verify, client, progress, ud, out);
     }
     double secs = mono_sec() - started;
     curl_off_t got = 0;
