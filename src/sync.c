@@ -696,15 +696,67 @@ static int expected_dir(const local_rom *r, int states, char *out, size_t n) {
     return 1;
 }
 
+static void base_dir(const local_rom *r, int states, char *out, size_t n);
+
+/* The path is the folder or in it. */
+static int path_within(const char *path, const char *folder) {
+    size_t l = strlen(folder);
+    while (l > 1 && folder[l - 1] == '/') l--;
+    return l && !strncmp(path, folder, l) && (path[l] == 0 || path[l] == '/');
+}
+
+/* The emulators a folder of saves is in: the ones whose root, save or state
+ * folder is the deepest holding it (several when they share it). A file
+ * there is a stray of theirs or nobody's, never one to move over into
+ * another emulator's folder (a 1.3.0 user lost SwanStationPS5's card to a
+ * PSXS5 that wasn't even installed). */
+typedef struct {
+    char ids[8][32];
+    int n;
+    size_t depth;
+} folder_owners;
+
+static void owner_if_deeper(folder_owners *o, const char *folder, const char *dir, const char *id) {
+    size_t l = strlen(folder);
+    while (l > 1 && folder[l - 1] == '/') l--;
+    if (!path_within(dir, folder) || l < o->depth) return;
+    if (l > o->depth) {
+        o->n = 0;
+        o->depth = l;
+    }
+    for (int i = 0; i < o->n; i++)
+        if (!strcmp(o->ids[i], id)) return;
+    if (o->n < (int)(sizeof o->ids / sizeof o->ids[0])) str_copy(o->ids[o->n++], sizeof o->ids[0], id);
+}
+
+static void folder_owners_of(const scan_ctx *c, const char *dir, folder_owners *o) {
+    memset(o, 0, sizeof *o);
+    char base[PATH_MAX_LEN];
+    for (int i = 0; i < c->nmaps; i++) owner_if_deeper(o, c->maps[i].root, dir, c->maps[i].profile_id);
+    for (int i = 0; i < c->nroms; i++)
+        for (int states = 0; states < 2; states++) {
+            base_dir(&c->roms[i], states, base, sizeof base);
+            owner_if_deeper(o, base, dir, c->roms[i].map->profile_id);
+        }
+}
+
+static int folder_owned_by(const folder_owners *o, const char *id) {
+    for (int i = 0; i < o->n; i++)
+        if (!strcmp(o->ids[i], id)) return 1;
+    return 0;
+}
+
 /* The game a save belongs to, by name: "Game" owns "Game.srm", "Game.1a2b.sav"
- * and "Game.state3". *active is 0 when the file isn't where the emulator reads it. */
+ * and "Game.state3". *active is 0 when the file isn't where the emulator reads it.
+ * With owners, only the games of the emulators whose folder it's in. */
 static const local_rom *match_rom(const scan_ctx *c, const char *file_dir, const char *file_name,
-                                  int states, int *active) {
+                                  int states, int *active, const folder_owners *owners) {
     const local_rom *best = NULL, *best_active = NULL;
     size_t best_len = 0, best_active_len = 0;
     for (int i = 0; i < c->nroms; i++) {
         const local_rom *r = &c->roms[i];
         if (!r->rules.sync_saves || (states && !r->map->sync_states) || (!states && r->map->save_layout[0])) continue;
+        if (owners && !folder_owned_by(owners, r->map->profile_id)) continue;
         if (!ext_in_list(file_name, states ? r->map->state_exts : r->map->save_exts)) continue;
         const char *dir = states ? r->rules.state_dir : r->rules.save_dir;
         if (strstr(dir, "{game_id}") || strstr(dir, "{rom_stem}")) {
@@ -722,7 +774,11 @@ static const local_rom *match_rom(const scan_ctx *c, const char *file_dir, const
             char exp[PATH_MAX_LEN];
             int known = expected_dir(r, states, exp, sizeof exp);
             /* Unknown core folder: accept it anywhere below the base folder. */
-            int here = known ? !strcmp(exp, file_dir) : 1;
+            int here = known && !strcmp(exp, file_dir);
+            if (!known) {
+                base_dir(r, states, exp, sizeof exp);
+                here = path_within(file_dir, exp);
+            }
             if (here && l > best_active_len) {
                 best_active = r;
                 best_active_len = l;
@@ -893,6 +949,8 @@ static void scan_file_dir(scan_ctx *c, const char *dir, int depth, int states) {
     DIR *d = opendir(dir);
     if (!d) return;
     struct dirent *de;
+    folder_owners owners;
+    int owners_known = 0;
     while ((de = readdir(d))) {
         if (de->d_name[0] == '.') continue;
         char path[PATH_MAX_LEN];
@@ -905,11 +963,15 @@ static void scan_file_dir(scan_ctx *c, const char *dir, int depth, int states) {
         if (str_ends_with_ci(de->d_name, ".tmp") || str_ends_with_ci(de->d_name, ".part")) continue;
         if (already_seen(c, path)) continue;
         int active = 0;
-        const local_rom *r = match_rom(c, dir, de->d_name, states, &active);
+        const local_rom *r = match_rom(c, dir, de->d_name, states, &active, NULL);
         if (!r) continue;
         if (!active) {
-            /* Possibly an old copy. Report it and leave it alone. */
-            add_stray(r, path, states);
+            /* Possibly an old copy: reported, as a game's of the emulator
+             * whose folder it's in (never another's), and left alone. */
+            if (!owners_known) folder_owners_of(c, dir, &owners);
+            owners_known = 1;
+            r = match_rom(c, dir, de->d_name, states, &active, &owners);
+            if (r) add_stray(r, path, states);
             continue;
         }
 
