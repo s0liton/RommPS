@@ -25,6 +25,7 @@
 #include "firmware.h"
 #include "state.h"
 #include "statefmt.h"
+#include "switchid.h"
 #include "util.h"
 #include "zip.h"
 
@@ -1591,6 +1592,24 @@ static int switch_title(const char *path, char *out, size_t n) {
     return rc;
 }
 
+/* No id in the name ("New Pokemon Snap (World) (En,Ja,Fr,De,Es,It,Zh,Ko).xci"):
+ * the one inside the file (switchid.h). Most files only say with prod.keys'
+ * header_key, from the emulator's keys folder: where RomM's keys go, and
+ * where the user's own already are, or the emulator wouldn't run a thing. */
+static int switch_title_inside(const local_rom *r, char *out, size_t n) {
+    static int said; /* missing keys are missing for every game: once a run will do */
+    char keys[PATH_MAX_LEN];
+    unsigned char key[32];
+    const int have = firmware_find(r->map, "prod.keys", keys, sizeof keys) == 0 && switchid_header_key(keys, key) == 0;
+    const int rc = switchid_from_file(r->path, have ? key : NULL, out, n);
+    if (rc == -2 && !said) {
+        said = 1;
+        LOGW("%s: no header_key in %s, Switch games without a title id in their name go by RomM's",
+             r->map->profile_name, keys[0] ? keys : "prod.keys");
+    }
+    return rc == 0 ? 0 : -1;
+}
+
 /* RomM no longer has the game this file was matched to (a rescan gives games
  * new ids, a merge folds two into one): the match goes, and the next scan
  * finds it again by name. What was synced with that game goes too: its saves
@@ -1803,7 +1822,7 @@ static int rom_game_id(const local_rom *r, char *out, size_t n) {
     } else if (xbox) {
         ok = gameid_xbox(r->path, out, n) == 0 || (disc[0] && gameid_xbox(disc, out, n) == 0);
     } else if (nx) {
-        ok = switch_title(r->path, out, n) == 0;
+        ok = switch_title(r->path, out, n) == 0 || switch_title_inside(r, out, n) == 0;
     } else if (title) {
         /* The front end's list first (a .wux can't be read without its disc
          * key), then the game file's header. */
