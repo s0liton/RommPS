@@ -61,6 +61,10 @@ mkdir -p "$T/ux0/app/PCSF00007/sce_sys" && python3 "$ROOT/tests/make_disc.py" sf
 mkdir -p "$T/vita-folder/PCSE00004" && python3 -c "
 import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "$(python3 "$ROOT/tests/make_disc.py" vpk "$T/f.vpk" PCSE00004 >/dev/null; echo "$T/f.vpk")" "$T/vita-folder/PCSE00004"
 [[ $(vita "$T/vita-folder") == "PCSE00004 PCSE00004" ]] || fail "game folder: $(vita "$T/vita-folder")"
+# RomM's folder of one package, its name scrambled: the package's header says.
+mkdir -p "$T/pkg-folder" && cp "$T/game.pkg" "$T/pkg-folder/XsGHXcWryxqMAbUdmZwov.pkg"
+[[ $(vita "$T/pkg-folder") == "PCSF00007 PCSF00007 (title id only)" ]] || fail "folder of one pkg: $(vita "$T/pkg-folder")"
+[[ $(vita "$T/pkg-folder" "$T/ux0/app") == "PCSF00007 PCSE00003" ]] || fail "folder of one pkg, installed: $(vita "$T/pkg-folder" "$T/ux0/app")"
 [[ $(vita "$T/ps3.iso") == - ]] || fail "a PS3 disc read as a Vita game"
 python3 "$ROOT/tests/make_disc.py" ps4pkg "$T/game.pkg4" UP9000-CUSA00552_00-THELASTOFUS00000
 [[ $("$CLI" ps4 "$T/game.pkg4") == CUSA00552 ]] || fail "ps4 pkg: $("$CLI" ps4 "$T/game.pkg4")"
