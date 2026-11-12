@@ -21,7 +21,9 @@
  *   }
  *
  * A file already there that RommPS didn't put there is never replaced
- * (keys, an emulator's own eeprom). One it put there is replaced when RomM's
+ * (keys, an emulator's own eeprom), unless it's RomM's to the byte (an
+ * install before this one put it there): that one is taken as one RommPS put
+ * there, without downloading it again. One it put there is replaced when RomM's
  * changes, unless it was changed here since: then it's the user's. Nothing
  * else is removed, but for "pick_one": the first time, of the files there
  * RomM has too (by md5), only the one in use stays. */

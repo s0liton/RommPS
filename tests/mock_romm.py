@@ -463,6 +463,11 @@ class H(BaseHTTPRequestHandler):
                 if b.get("embed"):
                     next(x for x in DB["platforms"] if x["id"] == b["platform_id"])["embed_firmware"] = True
                 return self.reply(200, {})
+            if p == "/_admin/firmware_drop" and method == "POST":
+                # A platform's BIOS files gone, as when a newer set replaces them.
+                pid = self.json_body()["platform_id"]
+                DB["firmware"] = [f for f in DB["firmware"] if f["platform_id"] != pid]
+                return self.reply(200, {})
             if p == "/_admin/save_content":
                 sv = DB["saves"][int(qs("id"))]
                 return self.reply(200, raw=sv["content"], ctype="application/octet-stream")
