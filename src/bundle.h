@@ -31,13 +31,18 @@
  *         vita3k unit
  *   ps4   savedata/<title id>/ (shadPS4), its save folders as "<title id>/<folder>/..."
  *   folder  <id>/ (MAME's nvram/<set>/), as "<id>/...": the game's one folder
+ *         psvita, ps4 and folder take a base with {game_id} in it too: then
+ *         the base, filled in, is the game's folder itself, wherever the id
+ *         sits ("prefixes/{game_id}/drive_c/users/prospero": a Wine prefix
+ *         per game, prospero-win's). The folder the id names is the
+ *         emulator's to make, never ours: without it, bundle.dir is "".
  *   scummvm  <target>.<number> and <target>.s<number> files in ScummVM's
  *         save folder, as themselves at the zip's top ("monkey2.000")
  *   ps2   the game's save folders on the slots' PCSX2 folder cards, or a file
  *         card holding its saves; synced as sigil's one-game card (ps2card.h),
  *         not a zip. Its bases are the slot cards themselves.
- * Ids: the disc's "GALE01", a PS3 title "BLUS30443", a PS2 serial "SLUS-21059", a 3DS or Wii U title "0004000000066C00", or an Xbox or
- * Xbox 360 title "4D530004". A
+ * Ids: the disc's "GALE01", a PS3 title "BLUS30443", a PS2 serial "SLUS-21059", a 3DS or Wii U title "0004000000066C00", an Xbox or
+ * Xbox 360 title "4D530004", or for folder a game's name ("sf2", "Mina the Hollower"). A
  * zip from elsewhere is taken in other forms too (no root folder, Cemu's own
  * export, the whole path from the SD card). */
 #ifndef ROMM_BUNDLE_H
@@ -53,9 +58,13 @@ typedef struct {
     char name[512]; /* entry name in the zip */
 } bundle_file;
 
+/* A game id's room, its 0 included. MAME sets and title ids fit in 24 with
+ * plenty to spare; Windows games, named after their folders, don't. */
+#define GAME_ID_MAX 128
+
 typedef struct {
     char layout[8];
-    char game_id[24];
+    char game_id[GAME_ID_MAX];
     char base[PATH_MAX_LEN]; /* the candidate folder picked */
     char dir[PATH_MAX_LEN];  /* where the files live and the zip is unpacked */
     char account[16];        /* wiiu: this console's account folder, "80000001" */
@@ -79,6 +88,9 @@ int bundle_supported(const char *layout);
 int bundle_open(bundle *b, const char *layout, const char *game_id, const char *also, char bases[][PATH_MAX_LEN],
                 int nbases);
 void bundle_free(bundle *b);
+/* 1 when the game's save folder is the emulator's to make and it hasn't yet
+ * (ryujinx, or a base with {game_id}): RomM's save waits for the game's first run. */
+int bundle_waits(const bundle *b);
 
 /* RomM's hash for the zip this bundle would produce. */
 int bundle_hash(const bundle *b, char out[33]);

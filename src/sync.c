@@ -50,7 +50,7 @@ typedef struct {
     char n64_md5[33];     /* an N64 ROM's MD5 as mupen64plus computes it */
     char crc[9];          /* a PS2 disc's, as PCSX2 names its states: "248E6126" */
     char safe_stem[256];  /* stems[0], non-alphanumerics as "_" */
-    char game_id[24];     /* a disc's, "GAFE01" (DolphinPS4 names states by it), or a title's */
+    char game_id[GAME_ID_MAX]; /* a disc's, "GAFE01" (DolphinPS4 names states by it), or a title's */
     char duck_card[256];  /* DuckStation's card for it, "Title (USA)_1" (src/duckcard.h) */
     char duck_up[260];    /* the name RomM gets it under: the file it boots, "<stem>_1.mcd" */
     int duck_off;      /* its settings give it no card of its own: DUCK_OFF + 1, DUCK_SHARED + 1 */
@@ -71,7 +71,7 @@ typedef struct {
     const profile_map *map;
     const local_rom *rom;
     int is_bundle;          /* several files synced as one zip, see bundle.h */
-    char game_id[24];
+    char game_id[GAME_ID_MAX];
     char upload_name[256];
     /* GameCube saves in a GCI folder keep the form RomM has them in (gc_form):
      * "zip" (the folder's files for the game), "gci" (one of them, gc_file)
@@ -904,7 +904,7 @@ static int expected_dir(const local_rom *r, int states, char *out, size_t n) {
      * name (Seedee5's nvram/<game>/cdimono1). */
     const char *at = strstr(states ? ru->state_dir : ru->save_dir, "{game_id}");
     if (at) {
-        char id[24];
+        char id[GAME_ID_MAX];
         if (rom_game_id(r, id, sizeof id) != 0) return 0;
         const char *dir = states ? ru->state_dir : ru->save_dir;
         snprintf(out, n, "%.*s%s%s", (int)(at - dir), dir, id, at + 9);
@@ -1719,6 +1719,8 @@ static int bundle_bases(const local_rom *r, char bases[][PATH_MAX_LEN], int max)
     if (!expected_dir(r, 0, save_path, sizeof save_path)) str_copy(save_path, sizeof save_path, r->rules.save_dir);
     const char *vars[] = {"save_path", save_path, "save_root", r->rules.save_dir, "bios", r->map->bios_dir, "root", r->map->root,
                           "switch_user", r->map->switch_user, "xuid", r->map->xuid, NULL};
+    /* {game_id} stays as it is: bundle_open fills it in, and the folder it
+     * names may not be there yet (bundle.h). */
     str_template(list, sizeof list, tpl, vars);
     int n = 0;
     for (char *t = strtok_r(list, ",", &save); t && n < max; t = strtok_r(NULL, ",", &save))
@@ -2176,6 +2178,18 @@ static int forget_gone_roms(void) {
     return gone;
 }
 
+/* folder: the game's name, the way its save folder is named. A file's
+ * without its extension (MAME's nvram/<set>), a folder's whole: a Windows
+ * game's Wine prefix is named after its folder, and "Hades II v1.0" has no
+ * ".0" to drop. Returns its length, cut to fit or not. */
+static size_t folder_game_name(const char *path, char *out, size_t n) {
+    char name[PATH_MAX_LEN];
+    if (dir_exists(path)) str_copy(name, sizeof name, path_basename(path));
+    else path_stem(name, sizeof name, path_basename(path));
+    str_copy(out, n, name);
+    return strlen(name);
+}
+
 /* The game's id: from the disc image, RomM (title_id, 5.3+), or its PSP saves. */
 static int rom_game_id(const local_rom *r, char *out, size_t n) {
     out[0] = 0;
@@ -2245,9 +2259,9 @@ static int rom_game_id(const local_rom *r, char *out, size_t n) {
     } else if (!strcmp(layout, "ps2")) {
         ok = disc[0] && gameid_psx(disc, out, n) == 0; /* SYSTEM.CNF's BOOT2: "SLUS-21059" */
     } else if (!strcmp(layout, "folder")) {
-        /* MAME names a game's NVRAM folder after its set: the file's name. */
-        path_stem(out, n, path_basename(r->path));
-        ok = out[0] != 0;
+        /* Cut short, it'd name some other folder, or none: no id, then
+         * (game_file_problem says why). */
+        ok = folder_game_name(r->path, out, n) < n && out[0];
     } else if (!strcmp(layout, "ps4")) {
         ok = gameid_ps4(r->path, out, n) == 0;
     } else if (!strcmp(layout, "scummvm")) {
@@ -2645,7 +2659,7 @@ static void scan_bundles(scan_ctx *c) {
     for (int i = 0; i < c->nroms; i++) {
         const local_rom *r = &c->roms[i];
         if (!r->rules.sync_saves || !bundle_supported(r->map->save_layout)) continue;
-        char id[24];
+        char id[GAME_ID_MAX];
         bundle b;
         if (rom_game_id(r, id, sizeof id) != 0) continue;
         ps2_own_card(r, id);
@@ -2765,7 +2779,7 @@ static int gc_place(const local_rom *r, bundle *b, const char *file) {
     }
     free(data);
     if (rc > 0) {
-        char id[24];
+        char id[GAME_ID_MAX];
         str_copy(id, sizeof id, b->game_id);
         bundle_free(b);
         if (bundle_for_rom(r, id, b) != 0) rc = -1;
@@ -2812,7 +2826,12 @@ static int said_unreadable(const char *path) {
 
 int game_file_problem(const char *path, const char *layout, char *out, size_t n) {
     uint64_t need = 0, have = 0;
+    char name[GAME_ID_MAX];
     out[0] = 0;
+    if (!strcmp(layout, "folder") && folder_game_name(path, name, sizeof name) >= sizeof name) {
+        snprintf(out, n, "its name is over %d characters: rename it on your RomM server", GAME_ID_MAX - 1);
+        return 1;
+    }
     if (strcmp(layout, "xbox") != 0 || dir_exists(path) || gameid_xbox_short(path, &need, &have) != 1) return 0;
     char got[24], all[24];
     size_text(got, sizeof got, have);
@@ -2934,7 +2953,7 @@ static int ps2_place(const local_rom *r, bundle *b, const char *file) {
     int rc = data && pc.dir[0] && ps2card_restore(&pc, r->path, b->game_id, (const unsigned char *)data, len) == 0 ? 1 : -1;
     free(data);
     if (rc > 0) {
-        char id[24];
+        char id[GAME_ID_MAX];
         str_copy(id, sizeof id, b->game_id);
         bundle_free(b);
         if (bundle_for_rom(r, id, b) != 0) rc = -1;
@@ -2984,7 +3003,7 @@ static void synced_as_is(const scan_ctx *c, const local_file *f, int save_id, co
  * 1: never synced here, and it holds the very files here: synced as they are. */
 static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r, const char *slot, int session_id,
                               const char *server_hash, int record) {
-    char id[24], api[256], zip[PATH_MAX_LEN], tmpdir[PATH_MAX_LEN];
+    char id[GAME_ID_MAX], api[256], zip[PATH_MAX_LEN], tmpdir[PATH_MAX_LEN];
     bundle b;
     if (xbox_image(r) && !emulator_closed(r->map)) {
         /* xemu would go on writing to the disk it has open, and lose this one. */
@@ -2995,9 +3014,10 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
         LOGE("no game id for %s, cannot place its save", path_basename(r->path));
         return -1;
     }
-    if (!strcmp(r->map->save_layout, "ryujinx") && !b.dir[0]) {
-        /* Ryujinx gives a game its save folder the first time it runs it:
-         * RomM's save waits for that. Its index isn't ours to write. */
+    if (bundle_waits(&b)) {
+        /* Ryujinx gives a game its save folder the first time it runs it,
+         * prospero-win its Wine prefix: RomM's save waits for that. Neither
+         * Ryujinx's index nor a prefix is ours to make. */
         say_start_once(r);
         bundle_free(&b);
         return -3;
@@ -3756,7 +3776,7 @@ static int restore_missing_bundles(scan_ctx *c, int only_rom) {
     for (int i = 0; i < c->nroms; i++) {
         const local_rom *r = &c->roms[i];
         if (!r->rules.sync_saves || !bundle_supported(r->map->save_layout) || (only_rom && r->rom_id != only_rom)) continue;
-        char id[24], here[33] = "";
+        char id[GAME_ID_MAX], here[33] = "";
         bundle b = {0};
         if (rom_game_id(r, id, sizeof id) != 0 || bundle_for_rom(r, id, &b) != 0) continue;
         const int empty = b.n == 0, device_only = bundle_device_only(&b);
@@ -3812,7 +3832,7 @@ static int share_bundle_saves(scan_ctx *c, int only_rom) {
             continue;
         int first = 1;
         for (int k = 0; k < i && first; k++) first = !same_bundle_group(a, &c->roms[k]);
-        char id[24];
+        char id[GAME_ID_MAX];
         if (!first || rom_game_id(a, id, sizeof id) != 0) continue;
         struct { const local_rom *r; char print[33], dir[PATH_MAX_LEN]; time_t mtime; int synced, device_only; } copies[4];
         int nc = 0, newest = -1;
@@ -4360,7 +4380,7 @@ static int share_bundles(scan_ctx *c) {
             if (c->roms[k].rom_id == a->rom_id && !strcmp(c->roms[k].map->save_layout, "gci") &&
                 !c->roms[k].map->own_slot && c->roms[k].rules.sync_saves)
                 first = 0;
-        char id[24];
+        char id[GAME_ID_MAX];
         if (!first || rom_game_id(a, id, sizeof id) != 0) continue;
         bundle bs[4];
         const local_rom *whose[4];
@@ -4724,7 +4744,7 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                 res->deferred++; /* not onto a disk xemu has open */
                 continue;
             }
-            char gid[24];
+            char gid[GAME_ID_MAX];
             if (r->map->save_layout[0] && rom_game_id(r, gid, sizeof gid) != 0) {
                 say_unreadable(r); /* once; failing again every sync mends nothing */
                 res->skipped++;
@@ -5394,9 +5414,12 @@ cJSON *sync_preview(char *err, int en) {
             }
             char dest[PATH_MAX_LEN];
             if (r->map->save_layout[0]) {
-                char bases[6][PATH_MAX_LEN];
+                char bases[6][PATH_MAX_LEN], id[GAME_ID_MAX] = "";
                 int nb = bundle_bases(r, bases, 6);
-                str_copy(dest, sizeof dest, nb ? bases[0] : r->rules.save_dir);
+                /* "prefixes/{game_id}/drive_c/users/prospero": the game's own. */
+                if (nb && strstr(bases[0], "{game_id}")) rom_game_id(r, id, sizeof id);
+                const char *idv[] = {"game_id", id, NULL};
+                str_template(dest, sizeof dest, nb ? bases[0] : r->rules.save_dir, idv);
             } else {
                 download_target(r, jget_str(op, "file_name", ""), slot, &c, dest, sizeof dest);
             }
