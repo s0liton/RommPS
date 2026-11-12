@@ -1210,8 +1210,12 @@ const Cover &App::cover(const std::string &path)
         return kNone;
     Cover &c = covers_[path];
     c.used = clock_;
-    // Asked for at the next tick, if it's still on screen then.
-    if (!c.requested && wanted_.size() < 64)
+    // Asked for at the next tick if it's still on screen then; one that
+    // failed, again once its retry_at has come. Without the second half a
+    // cover that failed once (the service swapping itself on an update, a
+    // timeout, a 502) stayed blank until the app was restarted.
+    const bool due = c.failed && c.retry_at > 0 && clock_ >= c.retry_at;
+    if ((!c.requested || due) && wanted_.size() < 64)
         wanted_.push_back(path);
     return c;
 }
