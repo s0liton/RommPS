@@ -1849,6 +1849,44 @@ syncnow
   || fail "a folder of RomM's files only must be RomM's set: $(ls "$MX/nand")/$(agrecs "$MX")"
 [[ $(($(aghits) - before)) -eq 1 ]] || fail "only the NCA missing comes down: $(($(aghits) - before)) downloads"
 grep -q "BIOS for NX-mixed: 2 files already here match RomM's" "$T/daemon.log" || fail "taking the set on wasn't logged"
+echo "    a preset moves the folders: the records left behind go, no file with them, and nothing comes down again"
+# NX-again's firmware moves to nand2 (nand stays, empty), NX-mixed moves whole (its old folder gone).
+MX2="$T/nxmixed2"
+mkdir -p "$AG/nand2"; mv "$AG/nand/"* "$AG/nand2/"; mv "$MX" "$MX2"
+fwrecs() { python3 -c "
+import json,sys
+print(' '.join(sorted(p[len(sys.argv[2]) + 1:] for p in json.load(open(sys.argv[1])).get('firmware', {}) if p.startswith(sys.argv[2] + '/'))))" \
+  "$T/data/state.json" "$1"; }
+fwothers() { python3 -c "
+import json,sys
+print(sorted(p for p in json.load(open(sys.argv[1])).get('firmware', {}) if not p.startswith(tuple(d + '/' for d in sys.argv[2:]))))" \
+  "$T/data/state.json" "$AG" "$MX" "$MX2"; }
+others=$(fwothers)
+python3 - "$API" "$MX2" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, mx2 = sys.argv[1:3]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+for p in cfg["profiles"]:
+    if p.get("id") == "nxagain":
+        p["firmware"]["by_ext"][".nca"] = "nand2"
+    if p.get("id") == "nxmixed":
+        p["root"] = mx2
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": cfg["profiles"]}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+before=$(aghits)
+syncnow
+[[ "$(fwrecs "$AG")" == "boot.bin keys/prod.keys keys/title.keys nand2/aaaa.nca nand2/bbbb.cnmt.nca nand2/cccc.nca" ]] \
+  || fail "the records in the folder the firmware moved out of must go, its new place taken on: $(fwrecs "$AG")"
+[[ -z "$(fwrecs "$MX")" && "$(fwrecs "$MX2")" == "nand/aaaa.nca nand/bbbb.cnmt.nca nand/cccc.nca" ]] \
+  || fail "the records of a folder that's gone must go, its files taken on where they are now: $(fwrecs "$MX")/$(fwrecs "$MX2")"
+[[ "$(agrecs "$AG")/$(agrecs "$MX2")" == "boot.bin keys/prod.keys keys/title.keys nand2/aaaa.nca nand2/bbbb.cnmt.nca nand2/cccc.nca /nand/aaaa.nca nand/bbbb.cnmt.nca nand/cccc.nca " ]] \
+  || fail "the records kept must still match their files: $(agrecs "$AG")/$(agrecs "$MX2")"
+grep -q "BIOS: forgot 6 records of files no longer there" "$T/daemon.log" || fail "forgetting them wasn't logged: $(grep 'BIOS: forgot' "$T/daemon.log")"
+[[ $(($(aghits) - before)) -eq 0 ]] || fail "files a preset moved must not come down again: $(($(aghits) - before)) downloads"
+[[ "$(fwothers)" == "$others" ]] || fail "records of other folders must stay as they were: $(fwothers)"
+[[ -d "$AG/nand" && -z "$(ls -A "$AG/nand")" && "$(cat "$AG/user.bin")/$(cat "$AG/keys/title.keys")/$(cat "$MX2/nand/aaaa.nca")" == "mine-user/tkeys-v1/again-fw-a87" ]] \
+  || fail "only records may go, never a file or a folder: $(ls -A "$AG/nand")/$(cat "$AG/user.bin")/$(cat "$MX2/nand/aaaa.nca")"
 python3 - "$API" <<'PY' >/dev/null
 import json, sys, urllib.request
 api = sys.argv[1]
