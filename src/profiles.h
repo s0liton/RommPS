@@ -28,6 +28,8 @@
  *
  * "save_layout" (psp, gci or wii) syncs a game's save folder or files as one zip;
  * "bundle_dirs" lists where to look, with {save_path}, {save_root} and {bios}.
+ * For "xbox" it names a hard disk kept as folders (XPSemu 3's
+ * /data/xpsemu/hdd), used when it's there; else xemu's image, as xemu.toml says.
  * "ps2" syncs each game's saves off PCSX2's memory cards, as one card per game
  * (ps2card.h), where "pcsx2_cards" says the emulator keeps them:
  *   {"dir": "{root}/memcards,{root}"           the card folder: the first that exists
@@ -66,6 +68,17 @@
  * downloaded with the game (library.c); the game's own files go straight
  * into rom_dir, never a folder of their own.
  *
+ * "keep_all_files" says whether a game RomM keeps as a folder comes down
+ * whole: true, or false to leave on RomM what playing a ROM doesn't need
+ * (readmes, artwork and checksums wherever they are, and what RomM files as
+ * manuals, soundtracks and the like). Unset, PC platforms' games ("win",
+ * "dos": library.c's KEEP_ALL_PLATFORMS) come down whole, and the rest
+ * without RomM's extras and the readmes, artwork and checksums loose beside
+ * their files: in a folder of the game's own, they're its data.
+ * "old_rom_dirs" (comma separated) are folders an emulator still plays games
+ * from but no longer gets them in (XPSemu 3 still lists Alpha 2's
+ * /data/xemu/games): their games stay and sync, new ones go to rom_dir.
+ *
  * "firmware" says how RomM's BIOS files for a platform reach the emulator
  * (firmware.h).
  *
@@ -84,6 +97,7 @@ typedef struct {
     char platform_dir[64];  /* {platform} value */
     char romm_slugs[256];   /* comma separated RomM slugs / fs_slugs */
     char rom_dir[PATH_MAX_LEN];
+    char old_rom_dirs[256]; /* still played from, never downloaded into */
     /* Where a Switch game's update and DLC go ("update_dir", "dlc_dir"; the
      * DLC's defaults to the update's, and both to rom_dir). */
     char update_dir[PATH_MAX_LEN];
@@ -153,6 +167,11 @@ typedef struct {
     /* Lists each game as a folder of its own ("game_folders": PS5X360): a
      * download of one file goes in <rom_dir>/<its name>/. */
     int game_folders;
+    /* "keep_all_files": 1 brings every file of a game RomM keeps as a folder,
+     * 0 leaves its readmes, artwork, checksums and manuals on RomM, -1 (not
+     * set) leaves that to library.c's leave_rules (PC games come down whole,
+     * the rest without manuals and loose readmes). */
+    int keep_all_files;
     char save_format[32];
     /* An extra that reads its games through its own app folder ("mount_games":
      * true) or, out of its sandbox, through the real /data ("mount_games":

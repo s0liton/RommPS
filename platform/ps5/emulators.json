@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": "2026.10.29.9",
+  "version": "2026.11.11.1",
   "console": "ps5",
   "emulators": [
   {
@@ -286,12 +286,13 @@
     {
       "id": "xpsemu", "name": "XPSemu",
       "title_ids": ["PPSA97358"],
-      "detect": ["/data/xemu", "/data/homebrew/PPSA97358"],
-      "note": "Saves sync from inside its hard disk image, once it's closed.",
+      "detect": ["/data/xpsemu", "/data/xemu", "/data/homebrew/PPSA97358"],
+      "note": "Saves sync from its hard disk: Alpha 3's folders, or Alpha 2's image once it's closed.",
       "profile": {
-        "root": "/data/xemu", "rom_dir": "{root}/games", "bios_dir": "{root}", "sync_saves": true,
+        "root": "/data/xemu", "user_dir": "/data/xpsemu,{root}", "rom_dir": "{user_dir}/games", "old_rom_dirs": "{root}/games",
+        "bios_dir": "{root}", "sync_saves": true,
         "firmware": {"only_files": ["mcpx_1.0.bin", "Complex_4627.bin"]},
-        "platforms": [{"romm": ["xbox"], "dir": "xbox", "emulator": "xemu", "save_layout": "xbox"}]
+        "platforms": [{"romm": ["xbox"], "dir": "xbox", "emulator": "xemu", "save_layout": "xbox", "bundle_dirs": "/data/xpsemu/hdd"}]
       }
     },
     {

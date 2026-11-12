@@ -128,7 +128,7 @@ class RommPS final : public app::Concept
         update_frame(input, dt, feedback);
         // Interface sounds turned off in Settings: what this frame asked for
         // isn't played. Rumble still is.
-        if (!rommps::ui_sounds())
+        if (rommps::ui_sounds() == rommps::Sounds::off)
             feedback.cues.clear();
     }
 
@@ -1473,6 +1473,8 @@ class RommPS final : public app::Concept
                      28, L.text);
             const rommps::Platform *p = app_.platform_by_id(g.platform_id);
             std::string meta = (p ? p->name + "  \xC2\xB7  " : std::string()) + rommps::human_size(g.size);
+            if (!g.addon.empty()) // an update or DLC whose game isn't here, not a game of its own
+                meta = std::string(g.addon == "dlc" ? "DLC" : "Update") + "  \xC2\xB7  " + meta;
             Color meta_colour = L.muted;
             if (const rommps::Download *d = app_.download_for(g.id); d && d->active())
             {

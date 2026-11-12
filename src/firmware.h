@@ -21,7 +21,9 @@
  *   }
  *
  * A file already there that RommPS didn't put there is never replaced
- * (keys, an emulator's own eeprom). One it put there is replaced when RomM's
+ * (keys, an emulator's own eeprom), unless it's RomM's to the byte (an
+ * install before this one put it there): that one is taken as one RommPS put
+ * there, without downloading it again. One it put there is replaced when RomM's
  * changes, unless it was changed here since: then it's the user's. Nothing
  * else is removed, but for "pick_one": the first time, of the files there
  * RomM has too (by md5), only the one in use stays. */
@@ -35,5 +37,11 @@
  * platform's id, or 0 for all. Returns the files added, -1 if RomM couldn't be
  * asked. *failed (may be NULL) counts the ones that didn't come down. */
 int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int only_platform, int *failed);
+
+/* Where the emulator keeps a BIOS file of this name: where RomM's copy goes
+ * by the rules above, the user's own being there too (prod.keys in Eden's
+ * keys folder). out gets the path even when there's nothing at it; 0 when
+ * there is. */
+int firmware_find(const profile_map *m, const char *name, char *out, size_t n);
 
 #endif

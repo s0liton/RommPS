@@ -36,6 +36,8 @@
 #include "update_keys.h"
 #include "util.h"
 
+/* GitHub's latest release is never a pre-release, so the dev builds
+ * (.github/workflows/dev.yml) don't reach anyone through here. */
 #ifndef RELEASES_URL /* overridable for test builds */
 #define RELEASES_URL "https://api.github.com/repos/s0liton/RommPS/releases/latest"
 #endif
@@ -65,19 +67,11 @@ static const char *release_url(void) {
     return u && *u ? u : RELEASES_URL;
 }
 
-/* "v1.2.3" or "1.2.3-dev" into numbers. Anything after the patch is ignored. */
-static int parse_version(const char *s, int v[3]) {
-    v[0] = v[1] = v[2] = 0;
-    if (*s == 'v') s++;
-    return sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]) >= 2 ? 0 : -1;
-}
-
+/* "1.4.3" is newer than "1.4.3-dev.12", the dev build before it, so a dev
+ * build is offered the release that replaces it. One that isn't a version
+ * never is. */
 static int newer_than(const char *a, const char *b) {
-    int x[3], y[3];
-    if (parse_version(a, x) || parse_version(b, y)) return 0;
-    for (int i = 0; i < 3; i++)
-        if (x[i] != y[i]) return x[i] > y[i];
-    return 0;
+    return version_valid(a) && version_valid(b) && version_cmp(a, b) > 0;
 }
 
 static int busy(ustate s) { return s != U_IDLE && s != U_ERROR && s != U_PENDING; }
@@ -113,15 +107,21 @@ static void *check_thread(void *arg) {
     http_resp r = {0};
     cJSON *j = NULL;
     char err[256] = "";
+    int none = 0; /* a project before its first release: a fact, not a fault */
     if (http_get_verified(release_url(), &r) != 0) snprintf(err, sizeof err, "can't reach GitHub: %s", r.error);
-    else if (r.status == 404) snprintf(err, sizeof err, "no releases published yet");
+    else if (r.status == 404) none = snprintf(err, sizeof err, "no releases published yet") > 0;
     else if (r.status != 200) snprintf(err, sizeof err, "GitHub answered with HTTP %ld", r.status);
     else if (!(j = cJSON_Parse(r.body)) || !jget_str(j, "tag_name", "")[0]) snprintf(err, sizeof err, "unexpected reply from GitHub");
     http_resp_free(&r);
 
     pthread_mutex_lock(&g_lock);
     g_checked_at = time(NULL);
-    if (err[0]) {
+    if (none) {
+        str_copy(g_error, sizeof g_error, err);
+        g_state = U_ERROR;
+        g_message[0] = 0;
+        LOGI("update check: %s", err);
+    } else if (err[0]) {
         set_error("%s", err);
     } else {
         const cJSON *assets = cJSON_GetObjectItemCaseSensitive(j, "assets");

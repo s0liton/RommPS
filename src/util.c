@@ -303,22 +303,6 @@ int copy_file(const char *src, const char *dst) {
     return copy_file_progress(src, dst, NULL, NULL);
 }
 
-static void parse_version(const char *s, int v[3]) {
-    v[0] = v[1] = v[2] = 0;
-    if (!s) return;
-    if (*s == 'v') s++;
-    sscanf(s, "%d.%d.%d", &v[0], &v[1], &v[2]);
-}
-
-int version_cmp(const char *a, const char *b) {
-    int x[3], y[3];
-    parse_version(a, x);
-    parse_version(b, y);
-    for (int i = 0; i < 3; i++)
-        if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
-    return 0;
-}
-
 void payload_version(const void *elf, size_t len, char *out, size_t n) {
     static const char tag[] = "ROMM_SYNC_VERSION=";
     const size_t tl = sizeof tag - 1;

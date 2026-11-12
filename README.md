@@ -79,6 +79,7 @@ RommPS starts with your HEN, and setup turns this on for you. Both HENs start `p
 
 - On the PS5, just update RommPS: from ProsperoStore (or other homebrew storefronts eventually), or by copying the new zip's folder over the old one. The background service comes with it, and RommPS swaps it in the next time you open it, once nothing is syncing or downloading. An older version never replaces a newer one. 
 - On the PS4, the payload updates itself from Settings.
+- Dev builds (the `dev-build` pre-release) are for testing. The next release installs over one like any other update.
 
 ## Setup Wizard
 
@@ -148,7 +149,7 @@ Note: RommPS relies on your emulator **NOT** being sandboxed. Some emulators req
 | PS64 | Commodore 64 | Full Support | Save disks | Games save into their own disk images. No save states |
 | PS5-ECAM | Wii U, 3DS, DS, Switch | Full Support | Wii U, 3DS, DS and Switch saves, 3DS and DS states | 3DS and DS states only load in PS5-ECAM. Switch saves are one player's, the same save as ProsperoEden's on RomM |
 | [Porpoise](https://github.com/elripalda/Porpoise-Dolphin-Emulator-for-PS5) | Wii/GameCube | Full Support | GameCube and Wii saves, and states | - |
-| XPSemu | Xbox | Full Support | Saves | Read from and written into its hard disk image, only while it's closed |
+| XPSemu | Xbox | Full Support | Saves | Alpha 3's hard disk folders (`/data/xpsemu/hdd`), or Alpha 2's disk image only while it's closed. New games go to `/data/xpsemu/games`; ones in `/data/xemu/games` stay |
 | [PS5X360](https://github.com/BrinooTk/PS5X360) | Xbox 360 | Full Support | Saves | The first signed-in player's saves; games go in `/data/xbox360`, a folder each |
 | Seedee5 | Philips CD-i | Full Support | Saves and states | Each game's NVRAM is its save |
 | [ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden) | Switch | Full Support | Saves | One Switch user's saves (the first PS5 user's, unless set otherwise). Steps aside when ProsperoEden's own RomM sync is set up |
@@ -193,6 +194,8 @@ RommPS exposes a separate Web UI at http://your-ps5-ip:8780 where you can access
 ## Emulator Profiles
 
 I've included direct support for most of the emulators that are out right now, except for the ones that won't even launch... you can sync games, states, and saves anywhere you want, but the presets should do it for most people. You can also configure the paths for all platforms manually. The web UI has a JSON editor for your emulator profiles.
+
+A game RomM keeps as a folder comes down without what RomM files as a manual, walkthrough, soundtrack, screenshot or cheat, and without the readmes, artwork and checksums (`.txt`, `.nfo`, `.pdf`, `.jpg`, `.png`, `.sfv` and friends) lying loose next to its files. Anything in a folder of the game's own comes down: that's game data (`PS3_GAME/ICON0.PNG`, a Wii U game's `content`), not box art. PC games (Windows, DOS, Linux, Mac, Steam, ScummVM) get every file, since half their config lives in `.txt` files. To decide for yourself, set `"keep_all_files"` on a platform entry (`{"romm": ["psx"], "dir": "psx", "keep_all_files": true}`) or on the whole profile: `true` brings every file, `false` leaves the extras on RomM wherever they are.
 
 ## Building
 

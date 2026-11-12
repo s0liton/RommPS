@@ -78,12 +78,19 @@ def section(console, path):
                 saves = code(pc.get("dir", "")) if sync else "not synced"
                 files = "its own card, %s, named in %s, synced as one 8 MB card of the game's saves" % (
                     code(pc.get("own_card", "")), code(pc.get("game_ini", "")))
+            if layout == "xbox":  # src/sync.c bundle_bases: the hard disk's folders when there, else xemu's image
+                hdd = "its hard disk's folders, %s, when there; else " % code(c["bundle_dirs"]) if c.get("bundle_dirs") else ""
+                files = "a zip per game (xbox), from %sthe hard disk image `xemu.toml` names" % hdd
+                saves = "E:\\UDATA on its hard disk" if sync else "not synced"
+            games = code(c["rom_dir"])
+            if c.get("old_rom_dirs"):  # src/sync.c scan_rom_dir: played and synced there, never downloaded into
+                games += " (games already in %s stay there)" % ", ".join(code(x) for x in c["old_rom_dirs"].split(","))
             names = c["save_name"].split(",")
             stems = [x for x in c.get("save_stems", "").split(",") if x and x + "{ext}" not in names]
             name = "" if layout or not sync else ", else ".join(code(x) for x in names) + (" (also %s)" % ", ".join(code(x) for x in stems) if stems else "")
             states = code(c["state_dir"]) if sync and c.get("state_exts", ".state*") else "not synced"
             lines.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
-                ", ".join(p["romm"]), code(c["rom_dir"]), saves, files if sync else "", name, states,
+                ", ".join(p["romm"]), games, saves, files if sync else "", name, states,
                 code(c.get("state_exts", ".state*")) if states != "not synced" else "", cards_cell(c)))
         lines.append("")
     return lines

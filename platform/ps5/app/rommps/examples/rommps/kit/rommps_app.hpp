@@ -63,6 +63,7 @@ struct Game
     bool installed = false;
     bool multi = false;
     bool not_game = false; // a file RomM scanned beside the games (metadata.txt...), or a Switch update or DLC: hidden
+    std::string addon;     // "update" or "dlc": a Switch add-on on this console whose game isn't
     bool archived = false; // a .rar (or any archive, for Switch) nothing here plays: not downloaded
     std::string version;   // what sets this version apart, when RomM has others of the game
     int versions = 0;      // how many versions RomM has, this one included; 0 if just one
@@ -165,7 +166,12 @@ struct GameList
     std::string search;
     int total = -1;                   // games to show; unknown until the first page arrives
     std::vector<Game> games;          // RomM's whole list, by RomM's offset; id 0 isn't loaded yet
-    std::vector<unsigned char> pages; // per page: 0 not asked, 1 asked, 2 here
+    // per page: 0 not asked, 1 asked, 2 here, 3 failed (asked again only when
+    // the user says so: App::retry), 4 nobody answered (asked again by itself
+    // once retry_at has come)
+    std::vector<unsigned char> pages;
+    double retry_at = 0; // pages at 4 wait for this; the wait doubles, up to 15 s
+    int unanswered = 0;  // asks in a row the service didn't answer
     std::vector<std::pair<std::string, int>> letters; // first letter -> the index of its first game
     std::vector<std::pair<std::string, int>> raw_letters; // the same, by RomM's offset
     std::vector<int> hidden;          // RomM offsets of the files that aren't games, sorted
@@ -305,7 +311,13 @@ class App
     // (assets/rommps/romm-sync.elf, version kMinPayload): it starts it when
     // none is running, puts it in place of an older one (never of a newer
     // one), and keeps the copies the console starts it from up to date.
-    static constexpr const char *kMinPayload = "1.4.2";
+    // A dev build carries a dev payload, whose version tools/package-app.sh
+    // hands in; the release's stays here.
+#ifdef ROMMPS_PAYLOAD_VERSION
+    static constexpr const char *kMinPayload = ROMMPS_PAYLOAD_VERSION;
+#else
+    static constexpr const char *kMinPayload = "1.4.3";
+#endif
     bool payload_too_old() const;
     void start_payload(); // sends the payload to the HEN's loader
     // Sending it, or RomM Sync is running and not answering yet (starting up,
@@ -345,6 +357,8 @@ class App
     // holding [first, last] loaded. Lists stay for a while, a few at most.
     GameList &games(const Scope &scope, const std::string &search);
     void ensure(GameList &list, int first, int last);
+    // The pages that failed, asked for again; false when none had.
+    bool retry(GameList &list);
 
     // The games on this console, most recently played first.
     const std::vector<Game> &installed() const { return installed_; }

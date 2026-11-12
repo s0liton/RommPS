@@ -105,7 +105,11 @@ DB = {
     "play_sessions": [{"id": 1, "rom_id": 11, "duration_ms": 3600000}, {"id": 2, "rom_id": 11, "duration_ms": 1800000}],
     "cover_ts": {},   # rom id -> its cover's change stamp
     "asset_hits": 0,  # cover requests served
+    "fail_collection": "",  # a collection whose games RomM answers with a 500 (Oct 29, franchises)
+    "collection_fails": 0,  # those asked for
     "device_name": None,  # what the client last renamed its device to
+    "max_upload": 0,  # bytes a save or state upload may be, 0 for no limit (RomM's is 512 MB)
+    "refused_uploads": 0,  # uploads turned away for it
     "next_id": 100,
 }
 TOKEN = "rmm_" + "a" * 64
@@ -115,6 +119,16 @@ DEVICE_ID = "3f0e8c1a-0000-4000-8000-000000000001"
 def next_id():
     DB["next_id"] += 1
     return DB["next_id"]
+
+
+def fault(mode, rom_ids=None):
+    """The fault /_admin/fault set for mode, used up once; None when none is left. One set for
+    some games ("ids") goes wrong only for a request about one of them, among rom_ids."""
+    f = DB.get("faults", {}).get(mode)
+    if not f or f["n"] <= 0 or (f["ids"] is not None and not set(f["ids"]) & set(rom_ids or [])):
+        return None
+    f["n"] -= 1
+    return f
 
 
 def rom_public(r):
@@ -305,6 +319,13 @@ class H(BaseHTTPRequestHandler):
         parts = [unquote(x) for x in p.strip("/").split("/")]
         with LOCK:
             # no auth needed
+            n = int(self.headers.get("Content-Length") or 0)
+            if DB["max_upload"] and p in ("/api/saves", "/api/states") and method == "POST" and n > DB["max_upload"]:
+                # RomM's upload size middleware turns it away by Content-Length. The
+                # body is read first only so the client hears the answer.
+                self.rfile.read(n)
+                DB["refused_uploads"] += 1
+                return self.reply(413, {"detail": f"Request body exceeds the maximum allowed size of {DB['max_upload']} bytes"})
             if p.startswith("/assets/busy/"):  # RomM too busy to answer
                 return self.reply(503, {"detail": "busy"})
             if p.startswith("/assets/"):
@@ -347,7 +368,9 @@ class H(BaseHTTPRequestHandler):
             if p == "/_admin/rom" and method == "POST":  # e.g. a game RomM keeps as a folder holding one file
                 b = self.json_body()
                 for f in b.get("files", []):
-                    f["content"] = f["content"].encode()
+                    import base64
+                    f["content"] = base64.b64decode(f["content_b64"]) if "content_b64" in f else f["content"].encode()
+                    f.pop("content_b64", None)
                 DB["roms"][b["id"]] = b
                 return self.reply(200, rom_public(b))
             if p == "/_admin/virtual" and method == "POST":  # one RomM makes from metadata
@@ -360,6 +383,20 @@ class H(BaseHTTPRequestHandler):
                 rom["id"] = b["to"]
                 DB["roms"][b["to"]] = rom
                 return self.reply(200, rom_public(rom))
+            if p == "/_admin/delete_rom" and method == "POST":  # deleted in RomM: its saves go with it
+                ids = self.json_body()["ids"]
+                for i in ids:
+                    DB["roms"].pop(i, None)
+                DB["saves"] = {k: s for k, s in DB["saves"].items() if s["rom_id"] not in ids}
+                return self.reply(200, {"ok": True})
+            if p == "/_admin/fault" and method == "POST":
+                # What goes wrong, the next "n" times: "list_error" (a 500 for a list of every game's
+                # id), "list_short" (that list cut short of its total), "hidden" (the games "ids" left
+                # out of it, as games the user hid are), "get_error" (a 500 for one of "ids"),
+                # "upload_413" (a proxy turning a save upload away before RomM sees it). "n": 0 clears one.
+                b = self.json_body()
+                DB.setdefault("faults", {})[b["mode"]] = {"n": int(b.get("n", 1)), "ids": b.get("ids")}
+                return self.reply(200, {"ok": True})
             if p == "/_admin/platform" and method == "POST":
                 b = self.json_body()
                 DB["platforms"].append({"id": b["id"], "slug": b["slug"], "fs_slug": b["slug"], "name": b["name"],
@@ -390,6 +427,9 @@ class H(BaseHTTPRequestHandler):
                                             "file_size_bytes": len(buf.getvalue()), "created_at": NOW().isoformat(),
                                             "missing_from_fs": False, "content": buf.getvalue()})
                 return self.reply(200, {"ok": True})
+            if p == "/_admin/max_upload" and method == "POST":
+                DB["max_upload"] = int(self.json_body()["bytes"])
+                return self.reply(200, {"ok": True})
             if p == "/_admin/cut" and method == "POST":
                 b = self.json_body()
                 DB["cut_next"], DB["cut_after"] = int(b["bytes"]), int(b.get("after", 0))
@@ -397,6 +437,10 @@ class H(BaseHTTPRequestHandler):
             if p == "/_admin/busy" and method == "POST":
                 # The next n requests for a piece of a file (Range with an end) get a 429.
                 DB["busy"] = int(self.json_body()["n"])
+                return self.reply(200, {"ok": True})
+            if p == "/_admin/fail_collection" and method == "POST":
+                # Its games' list fails with a 500 until set back to "".
+                DB["fail_collection"], DB["collection_fails"] = self.json_body().get("id", ""), 0
                 return self.reply(200, {"ok": True})
             if p == "/_admin/collections_scope" and method == "POST":
                 # A token from a pairing that didn't ask for collections.read.
@@ -419,6 +463,11 @@ class H(BaseHTTPRequestHandler):
                 if b.get("embed"):
                     next(x for x in DB["platforms"] if x["id"] == b["platform_id"])["embed_firmware"] = True
                 return self.reply(200, {})
+            if p == "/_admin/firmware_drop" and method == "POST":
+                # A platform's BIOS files gone, as when a newer set replaces them.
+                pid = self.json_body()["platform_id"]
+                DB["firmware"] = [f for f in DB["firmware"] if f["platform_id"] != pid]
+                return self.reply(200, {})
             if p == "/_admin/save_content":
                 sv = DB["saves"][int(qs("id"))]
                 return self.reply(200, raw=sv["content"], ctype="application/octet-stream")
@@ -427,6 +476,8 @@ class H(BaseHTTPRequestHandler):
                                         "states": [save_public(s) for s in DB["states"].values()],
                                         "sessions": DB["sessions"],
                                         "asset_hits": DB["asset_hits"], "device_name": DB["device_name"],
+                                        "refused_uploads": DB["refused_uploads"],
+                                        "collection_fails": DB["collection_fails"],
                                         "cards": [{"name": c["name"], "emulator": c["emulator"], "versions": len(c["versions"]),
                                                    "latest": card_latest(c), "latest_md5": card_latest_md5(c)}
                                                   for c in DB["cards"].values()]})
@@ -461,6 +512,9 @@ class H(BaseHTTPRequestHandler):
                 ids = [int(x) for x in q.get("platform_ids", [])]
                 term = (qs("search_term") or "").lower()
                 coll, smart, virtual = qs("collection_id"), qs("smart_collection_id"), qs("virtual_collection_id")
+                if DB["fail_collection"] and DB["fail_collection"] in (coll, smart, virtual):
+                    DB["collection_fails"] += 1
+                    return self.reply(500, {"detail": "Internal Server Error"})
                 in_coll = next((c["rom_ids"] for c in DB["collections"] if str(c["id"]) == coll), []) if coll else None
                 if smart:
                     in_coll = next((c["rom_ids"] for c in DB["smart_collections"] if str(c["id"]) == smart), [])
@@ -479,9 +533,24 @@ class H(BaseHTTPRequestHandler):
                     c = r["name"][:1].lower()
                     char_index.setdefault(c if c.isalpha() else "0", i)
                 off, lim = int(qs("offset", 0)), int(qs("limit", 50))
-                return self.reply(200, {"items": items[off:off + lim], "total": len(items), "limit": lim, "offset": off,
-                                        "char_index": char_index})
+                page = {"items": items[off:off + lim], "total": len(items), "limit": lim, "offset": off,
+                        "char_index": char_index}
+                # RomM sends every matching game's id unless asked not to.
+                if qs("with_rom_id_index") != "false":
+                    if fault("list_error"):
+                        return self.reply(500, {"detail": "Internal Server Error"})
+                    page["rom_id_index"] = [r["id"] for r in items]
+                    if fault("list_short"):
+                        page["rom_id_index"] = page["rom_id_index"][:-1]
+                    hide = fault("hidden", page["rom_id_index"])
+                    for i in hide["ids"] if hide else []:
+                        if i in page["rom_id_index"]:
+                            page["rom_id_index"].remove(i)
+                            page["total"] -= 1
+                return self.reply(200, page)
             if len(parts) == 3 and parts[:2] == ["api", "roms"]:
+                if fault("get_error", [int(parts[2])]):
+                    return self.reply(500, {"detail": "Internal Server Error"})
                 if int(parts[2]) not in DB["roms"]:  # as RomM says it
                     return self.reply(404, {"detail": "Rom with id '%s' not found" % parts[2]})
                 return self.reply(200, rom_public(DB["roms"][int(parts[2])]))
@@ -561,6 +630,8 @@ class H(BaseHTTPRequestHandler):
                 return self.reply(200, {"session": DB["sessions"][parts[3]]})
             if p == "/api/saves" and method == "POST":
                 name, content = self.multipart_file("saveFile")
+                if fault("upload_413"):  # a proxy's limit: RomM never sees the request
+                    return self.reply(413, raw=b"<html>413 Request Entity Too Large</html>", ctype="text/html")
                 rom_id, slot = int(qs("rom_id")), qs("slot")
                 if dev and slot and qs("overwrite", "false") != "true":
                     cur = self.latest(rom_id, slot)
@@ -593,6 +664,10 @@ class H(BaseHTTPRequestHandler):
                     DB["device_syncs"][(dev, s["id"])] = NOW()
                 return self.reply(200, raw=s["content"], ctype="application/octet-stream")
             if len(parts) == 4 and parts[:2] == ["api", "saves"] and parts[3] == "downloaded":
+                # The confirmation optimistic=false waits for: the device has that save now.
+                b = self.json_body()
+                if b.get("device_id") and int(parts[2]) in DB["saves"]:
+                    DB["device_syncs"][(b["device_id"], int(parts[2]))] = NOW()
                 return self.reply(200, {"ok": True})
             if p == "/api/states" and method == "POST":
                 name, content = self.multipart_file("stateFile")

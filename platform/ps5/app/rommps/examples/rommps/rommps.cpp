@@ -17,6 +17,9 @@
 // Covers become textures through the kit's renderer (kit/rommps_app.cpp). C
 // linkage, so it names the same function from inside this file's namespace.
 extern "C" void rommps_set_renderer(void *renderer);
+// The frame's cues in the interface sounds picked in Settings (kit/rommps_look.cpp)
+extern "C" void rommps_play_sounds(hui::ui::Feedback &feedback, hui::audio::Mixer &mixer, hui::audio::SoundBank &menu,
+	hui::audio::SoundBank &kit, hui::audio::SoundSet design);
 
 // RommPS's own interface sounds: assets/rommps/sounds/<cue>_NN.wav in the
 // title (platform/ps5/app/assets/primary-menu-sounds in the repository;
@@ -142,8 +145,10 @@ public:
 		VulkanExampleBase::prepare();
 		// The kit's sounds, without its music behind them
 		prepareKit({ .music = false });
-		// Before the first sound plays: the bank is replaced whole
+		// Before the first sound plays: the bank is replaced whole, and the
+		// kit's sets as recorded are kept beside it for Paper and Glass
 		loadSoundPack(kit);
+		kit.recorded.load(kit.assets + "/audio/sfx");
 		rommps_set_renderer(static_cast<hui::gfx::Renderer *>(&kit.renderer));
 		context = std::make_unique<hui::app::Context>(hui::app::Context{ kit.fonts, kit.catalog, telemetry, choices });
 		screen = makeScreen(*context);
@@ -207,6 +212,9 @@ public:
 			context->settings_changed = false;
 			kit.apply(choices);
 		}
+		// The sounds picked in Settings take the cues; the kit's play is left the
+		// rumble (and has no music to duck under them)
+		rommps_play_sounds(feedback, kit.mixer, kit.sounds, kit.recorded, screen->info().sounds);
 		kit.play(feedback, screen->info().sounds, choices.haptics);
 		feedback.clear();
 		if (choices.light_bar) {

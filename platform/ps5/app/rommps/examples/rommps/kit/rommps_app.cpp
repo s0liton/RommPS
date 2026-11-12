@@ -26,6 +26,11 @@
 #include <cstdio>
 #include <memory>
 
+// The payload's own rules (src/version.c, built in by ps5/CMakeLists.txt), so
+// RommPS and RomM Sync agree on which copy is newer: -1, 0 or 1, and "1.4.3"
+// beats "1.4.3-dev.12". One that isn't a version ("dev", "") counts as 0.0.0.
+extern "C" int version_cmp(const char *a, const char *b);
+
 namespace rommps
 {
 
@@ -43,19 +48,6 @@ constexpr std::size_t kCoverTextures = 360; // covers kept as textures (about 13
 constexpr std::size_t kListsKept = 24; // game lists kept at once: every tile on the platforms page, and more
 
 void *g_renderer = nullptr;
-
-// -1, 0 or 1 as a is older, the same as or newer than b ("1.2.3"); one that
-// isn't a version ("dev", "") counts as 0.0.0.
-int version_cmp(const std::string &a, const std::string &b)
-{
-    int x[3] = {}, y[3] = {};
-    std::sscanf(a.c_str(), "%d.%d.%d", &x[0], &x[1], &x[2]);
-    std::sscanf(b.c_str(), "%d.%d.%d", &y[0], &y[1], &y[2]);
-    for (int i = 0; i < 3; ++i)
-        if (x[i] != y[i])
-            return x[i] < y[i] ? -1 : 1;
-    return 0;
-}
 
 // RomM's platform logos are .ico files holding a PNG (256x256): bytes and len
 // are moved onto the biggest PNG inside, which stb_image reads. Anything else
@@ -678,20 +670,14 @@ void App::install_autostart(Api::Callback done)
     });
 }
 
-// "1.0.2" < "1.1.0", number by number. A build without a version ("dev")
-// counts as new enough.
+// "1.0.2" < "1.1.0" < "1.1.1-dev.4" < "1.1.1". A build without a version
+// ("dev") counts as new enough.
 bool App::payload_too_old() const
 {
     const std::string &v = status_.version;
     if (v.empty() || !std::isdigit(static_cast<unsigned char>(v[0])))
         return false;
-    int have[3] = {}, want[3] = {};
-    std::sscanf(v.c_str(), "%d.%d.%d", &have[0], &have[1], &have[2]);
-    std::sscanf(kMinPayload, "%d.%d.%d", &want[0], &want[1], &want[2]);
-    for (int i = 0; i < 3; ++i)
-        if (have[i] != want[i])
-            return have[i] < want[i];
-    return false;
+    return version_cmp(v.c_str(), kMinPayload) < 0;
 }
 
 // RomM Sync holds a lock on this file for as long as it runs (1.1.1 on); a
@@ -754,7 +740,7 @@ void App::refresh_status()
             say("Updating RommPS's background service to " + std::string(kMinPayload));
             start_payload();
         }
-        else if (!repaired_ && version_cmp(status_.version, kMinPayload) == 0)
+        else if (!repaired_ && version_cmp(status_.version.c_str(), kMinPayload) == 0)
         {
             repaired_ = true;
             repair_autostart();
@@ -974,13 +960,30 @@ void App::ensure(GameList &list, int first, int last)
     {
         if (static_cast<int>(list.pages.size()) <= page)
             list.pages.resize(static_cast<std::size_t>(page) + 1, 0);
-        if (list.pages[static_cast<std::size_t>(page)])
+        unsigned char &state = list.pages[static_cast<std::size_t>(page)];
+        if (state == 4 && clock_ >= list.retry_at)
+            state = 0; // the service didn't answer last time: it may now
+        if (state)
             continue;
         const std::string key = list.scope.key() + "|" + list.search;
         const std::pair<std::string, int> want{key, page};
         if (std::find(wanted_pages_.begin(), wanted_pages_.end(), want) == wanted_pages_.end())
             wanted_pages_.push_back(want);
     }
+}
+
+bool App::retry(GameList &list)
+{
+    bool any = false;
+    for (unsigned char &p : list.pages)
+        if (p == 3 || p == 4)
+        {
+            p = 0;
+            any = true;
+        }
+    if (any)
+        list.error.clear();
+    return any;
 }
 
 void App::send_page(const std::string &key, int page)
@@ -1003,13 +1006,33 @@ void App::send_page(const std::string &key, int page)
             if (it == lists_.end() || !it->second.list)
                 return; // let go of meanwhile
             GameList &l = *it->second.list;
-            if (!r.ok())
+            if (!r.ok() && r.status == 0)
             {
-                l.error = plain(r.message().c_str());
+                // Nobody answered: the service swapping itself for a newer one
+                // (the first open after an update asks for pages in exactly
+                // that second), or not up yet. Asked again by itself, after a
+                // wait that doubles up to 15 s, and only said after a few.
+                const int n = l.unanswered++;
+                l.retry_at = clock_ + std::min(15.0, static_cast<double>(1 << std::min(n, 4)));
+                if (n >= 3)
+                    l.error = plain(r.message().c_str());
                 if (static_cast<int>(l.pages.size()) > page)
-                    l.pages[static_cast<std::size_t>(page)] = 0; // asked again when looked at
+                    l.pages[static_cast<std::size_t>(page)] = 4;
                 return;
             }
+            if (!r.ok())
+            {
+                // An answer, and an error: said once, and asked for again
+                // only when the user says so (App::retry). Asking again
+                // whenever it was looked at meant asking every frame, which
+                // RomM's 500s on franchise collections (Oct 29) did nothing
+                // to discourage.
+                l.error = plain(r.message().c_str());
+                if (static_cast<int>(l.pages.size()) > page)
+                    l.pages[static_cast<std::size_t>(page)] = 3;
+                return;
+            }
+            l.unanswered = 0;
             std::unique_ptr<cJSON, void (*)(cJSON *)> j(r.json(), cJSON_Delete);
             l.error.clear();
             const int total = static_cast<int>(num(j.get(), "total"));
@@ -1145,6 +1168,7 @@ void App::refresh_installed()
             game.fs_name = str(g, "fs_name");
             game.cover = str(g, "cover");
             game.size = num(g, "size");
+            game.addon = str(g, "addon");
             game.installed = true;
             ids.insert(game.id);
             list.push_back(std::move(game));
@@ -1206,8 +1230,12 @@ const Cover &App::cover(const std::string &path)
         return kNone;
     Cover &c = covers_[path];
     c.used = clock_;
-    // Asked for at the next tick, if it's still on screen then.
-    if (!c.requested && wanted_.size() < 64)
+    // Asked for at the next tick if it's still on screen then; one that
+    // failed, again once its retry_at has come. Without the second half a
+    // cover that failed once (the service swapping itself on an update, a
+    // timeout, a 502) stayed blank until the app was restarted.
+    const bool due = c.failed && c.retry_at > 0 && clock_ >= c.retry_at;
+    if ((!c.requested || due) && wanted_.size() < 64)
         wanted_.push_back(path);
     return c;
 }
