@@ -2,7 +2,7 @@
 # Static checks, run in the Deck build image (make lint, or tools/deck-build.sh tools/lint.sh):
 #   formatting   clang-format on the files already in the repository's style (FORMATTED below)
 #   C            cppcheck over src/ and the platform layers (tools/cppcheck-suppressions.txt)
-#   shell        shellcheck on the Deck's scripts
+#   shell        shellcheck on the Deck's scripts, and on the installer's .desktop (desktop-file-validate too)
 #   Python       a syntax check of the Deck's tools
 #   --tidy       also clang-tidy (.clang-tidy) on the Deck app and the C core: slower, and
 #                advisory (it reports, it doesn't fail the run)
@@ -11,7 +11,9 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 FORMATTED=(platform/steamdeck/platform.c platform/steamdeck/app/src/*.cpp platform/steamdeck/app/src/*.hpp
            platform/steamdeck/app/src/*.h)
-SCRIPTS=(platform/steamdeck/*.sh tools/deck-build.sh tools/lint.sh tests/steamdeck.sh tests/steamdeck_duckstation.sh)
+SCRIPTS=(platform/steamdeck/*.sh tools/deck-build.sh tools/lint.sh tests/steamdeck.sh tests/steamdeck_duckstation.sh
+         tests/steamdeck_install.sh)
+DESKTOP=platform/steamdeck/RommDeck-Installer.desktop
 PYTHON=(platform/steamdeck/add-to-steam.py platform/steamdeck/tools/make-steam-art.py platform/steamdeck/tools/stage-notices.py)
 fail=0
 
@@ -26,6 +28,17 @@ cppcheck --quiet --enable=warning,portability --std=c11 -D__linux__ --error-exit
 
 echo "== shellcheck"
 shellcheck -S warning "${SCRIPTS[@]}" || fail=1
+# The installer's .desktop: to the spec, and its Exec is a bash -c script in disguise.
+desktop-file-validate "$DESKTOP" || fail=1
+python3 -c '
+import configparser, shlex, sys
+c = configparser.ConfigParser(interpolation=None)
+c.read(sys.argv[1])
+args = shlex.split(c["Desktop Entry"]["Exec"])
+if args[:2] != ["bash", "-c"] or len(args) != 3:
+    sys.exit(sys.argv[1] + ": Exec is not bash -c SCRIPT")
+print(args[2])
+' "$DESKTOP" | shellcheck -S warning -s bash - || fail=1
 
 echo "== python"
 python3 -m py_compile "${PYTHON[@]}" || fail=1

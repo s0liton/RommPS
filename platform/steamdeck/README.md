@@ -45,13 +45,20 @@ So here's RommPS for the Steam Deck. I guess we'll call it... **RommDeck**. Yeah
 
 Grab the latest release from the [releases page](https://github.com/s0liton/RommDeck/releases), in Desktop Mode. Pick one:
 
+### Installer
+
+1. Download [`RommDeck-Installer.desktop`](https://github.com/s0liton/RommDeck/releases/latest/download/RommDeck-Installer.desktop).
+2. Double-click it, and let KDE run it when it asks.
+
+It installs the latest RommDeck as `~/Applications/RommDeck.AppImage`, checked against the release's `SHA256SUMS`, with its background service, a menu entry and a Steam shortcut with artwork. Steam restarts to pick the shortcut up; it asks first. Run it again to update RommDeck or uninstall it.
+
 ### AppImage
 
 1. Download `RommDeck-<version>-x86_64.AppImage`.
 2. Right-click it, Properties, Permissions, tick **Is executable** (or `chmod +x` it).
 3. Run it. The first launch installs RommDeck's background service and starts it.
 
-To get it into Game Mode, use Steam's **Add a Non-Steam Game** and pick the AppImage.
+To get it into Game Mode, pick **Add RommDeck to Steam** in the setup wizard's last step.
 
 ### Tarball
 
@@ -76,6 +83,7 @@ Settings and pairing live in `~/.local/share/romm-sync`.
 
 ## Updates
 
+- **Installer:** run it again and pick **Update**. Your settings and pairing stay put.
 - **AppImage:** download the new one and run it. It updates the background service on launch.
 - **Tarball:** extract the new one and run `./install.sh` again. Your settings and pairing stay put.
 
@@ -159,10 +167,16 @@ The background service also serves a Web UI at `http://localhost:8780` on the De
 
 ## Uninstall
 
+Run the installer and pick **Uninstall**. It asks before removing your settings and pairing.
+
+By hand:
+
 ```sh
+pkill -x rommdeck                   # close the app first, or it starts the service again
 systemctl --user disable --now romm-sync
 rm -rf ~/.local/share/rommdeck ~/.local/share/applications/rommdeck.desktop \
-       ~/.config/systemd/user/romm-sync.service
+       ~/.config/systemd/user/romm-sync.service ~/Applications/RommDeck.AppImage
+systemctl --user daemon-reload
 rm -rf ~/.local/share/romm-sync     # settings and pairing too, if you're done for good
 ```
 
@@ -177,6 +191,7 @@ tools/deck-build.sh make steamdeck                    # the background service, 
 tools/deck-build.sh bash -c 'cmake -S platform/steamdeck/app -B build/steamdeck/app -G Ninja && cmake --build build/steamdeck/app'
 tools/deck-build.sh platform/steamdeck/package.sh 1.0.0   # the tarball and the AppImage
 tools/deck-build.sh tests/steamdeck.sh                # the service against a RetroDECK layout and a mock RomM
+tools/deck-build.sh tests/steamdeck_install.sh        # the installer, with that AppImage, against a fake release
 make deploy-deck DECK_HOST=<deck-ip>                  # swap the service on a Deck over SSH
 ```
 

@@ -72,6 +72,7 @@ add_executable(rommdeck
 	src/main.cpp
 	src/deck_kit.cpp
 	src/deck_life.cpp
+	src/deck_steam.cpp
 	src/deck_touch.cpp
 	src/stb_image.cpp
 	${kit_sources}

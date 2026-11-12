@@ -4,7 +4,9 @@
 #
 #   tests/steamdeck*.sh  the Deck's sync service on RetroDECK, EmuDeck and standalone layouts, against the mock RomM
 #   package.sh           rommdeck-<version>-x86_64.tar.gz and RommDeck-<version>-x86_64.AppImage,
-#                        plus romm-sync-steamdeck (the service alone, for in-app updates)
+#                        RommDeck-Installer.desktop and rommdeck-installer.sh, plus
+#                        romm-sync-steamdeck (the service alone, for in-app updates)
+#   tests/steamdeck_install.sh  the installer, with that AppImage, against a fake release
 #
 # The packages end up as the artifact "steamdeck"; this workflow never touches
 # a release. ci.yml runs it on pushes and pull requests, rommdeck-release.yml
@@ -70,6 +72,10 @@ jobs:
           tools/deck-build.sh platform/steamdeck/package.sh "${VERSION#v}" build/steamdeck/release
           # The service on its own too, for its in-app updates (src/update.c).
           cp build/steamdeck/romm-sync build/steamdeck/release/romm-sync-steamdeck
+
+      # Install, update and uninstall with the AppImage just packaged, served as a fake release.
+      - name: Test the installer
+        run: tools/deck-build.sh tests/steamdeck_install.sh build/steamdeck/release
 
       - uses: actions/upload-artifact@v4
         with:
