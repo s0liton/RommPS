@@ -1,0 +1,23 @@
+# What CodeQL checks (codeql.yml). The security checks, the extended set,
+# minus two that only describe how this app is built, not bugs in it:
+#
+#   cpp/path-injection  flags every path made from the app's own settings,
+#       state or environment (its data folder comes from one): 129 of them,
+#       all of that kind. It doesn't see RomM's answers as outside input
+#       (curl hands them over through a callback), so it can't catch the one
+#       case that matters either: RomM's file names in download paths
+#       (library.c, name_is_plain).
+#   cpp/world-writable-file-creation  files are made with the default mode
+#       on purpose: the emulators run as other apps and read and write them.
+#
+# third_party/ is left out in codeql.yml, after the analysis.
+name: RommPS
+
+queries:
+  - uses: security-extended
+
+query-filters:
+  - exclude:
+      id: cpp/path-injection
+  - exclude:
+      id: cpp/world-writable-file-creation
