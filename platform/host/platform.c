@@ -92,6 +92,13 @@ int plat_app_alive(const char *title_id) {
 
 const char *plat_data_dir(void) { return g_data; }
 
+int plat_fs_places(char (*places)[PATH_MAX_LEN], int max) {
+    const char *home = getenv("HOME");
+    if (max < 1 || !home || !*home || !dir_exists(home)) return 0;
+    str_copy(places[0], PATH_MAX_LEN, home);
+    return 1;
+}
+
 const char *plat_ca_bundle(void) {
     const char *c = getenv("ROMM_SYNC_CA");
     return c && *c ? c : NULL;

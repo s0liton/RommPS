@@ -332,6 +332,15 @@ const char *plat_ca_bundle(void) {
     return NULL;
 }
 
+int plat_fs_places(char (*places)[PATH_MAX_LEN], int max) {
+    /* Internal storage, then whatever drives are plugged in. */
+    static const char *const dirs[] = {"/data", "/mnt/usb0", "/mnt/usb1", "/mnt/usb2", "/mnt/usb3", "/mnt/ext0", "/mnt/ext1"};
+    int n = 0;
+    for (size_t i = 0; i < sizeof dirs / sizeof dirs[0] && n < max; i++)
+        if (dir_exists(dirs[i])) str_copy(places[n++], PATH_MAX_LEN, dirs[i]);
+    return n;
+}
+
 const char *plat_name(void) { return plat_info()->name; }
 
 /* libSceSystemService, the same on both consoles (OpenOrbis SystemService.h). */
