@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -168,6 +169,23 @@ static void plan_dest(const char *dir, const char *name, char *out, size_t n) {
     else path_join(out, n, dir, name);
 }
 
+/* The name a file of RomM's goes in under, by by_ext: a folder under dir, or
+ * one of its own ("/..."): Eden's keys beside its data, its firmware in its
+ * NAND, wherever that is. Or a path with the file's id in it ("{id}": its
+ * name up to the first dot), as Ryujinx keeps an NCA: registered/<id>.nca/00.
+ * 0 when by_ext has no place for it. */
+static int by_ext_name(const cJSON *by_ext, const char *name, char *out, size_t n) {
+    str_copy(out, n, name);
+    if (!cJSON_IsObject(by_ext)) return 1;
+    const cJSON *sub = NULL, *e;
+    cJSON_ArrayForEach(e, by_ext) if (cJSON_IsString(e) && str_ieq(path_ext(name), e->string)) sub = e;
+    const char *v = sub ? sub->valuestring : "", *idp = strstr(v, "{id}");
+    if (!sub || strstr(v, "..") || (strchr(v, '{') && (!idp || strchr(idp + 1, '{')))) return 0;
+    if (idp) snprintf(out, n, "%.*s%.*s%s", (int)(idp - v), v, (int)strcspn(name, "."), name, idp + 4);
+    else if (v[0]) snprintf(out, n, "%s/%s", v, name);
+    return 1;
+}
+
 /* A Switch firmware set alone is 200-odd .nca files. */
 #define MAX_PLAN 1024
 
@@ -324,12 +342,41 @@ static int md5_once(const char *path, char out[33]) {
     return 0;
 }
 
-/* RomM's files for the plan being made, which users_set needs to tell a set
- * with no records from the user's own. Set by make_plan, under g_lock. */
-static const cJSON *g_plan_files;
+/* RomM's files for the plan being made and where by_ext puts them under dir,
+ * which users_set needs to tell a set with no records from the user's own.
+ * Set by make_plan, under g_lock. */
+static const cJSON *g_plan_files, *g_plan_by_ext;
+static const char *g_plan_dir;
+
+/* RomM's file that goes to path (the first, as make_plan takes them), or with
+ * inside, one that goes into the folder at path. */
+static const cJSON *romms_file_at(const char *path, int inside) {
+    const size_t pl = strlen(path);
+    const cJSON *x;
+    cJSON_ArrayForEach(x, g_plan_files) {
+        char name[512], at[PATH_MAX_LEN];
+        if (!usable(x) || !by_ext_name(g_plan_by_ext, jget_str(x, "file_name", ""), name, sizeof name)) continue;
+        plan_dest(g_plan_dir, name, at, sizeof at);
+        if (inside ? !strncasecmp(at, path, pl) && at[pl] == '/' : str_ieq(at, path)) return x;
+    }
+    return NULL;
+}
+
+/* Whether the file at path is ours by a record, or RomM's by where it is and
+ * its size, and with reading, its md5 too. */
+static int romms_file(const char *path, int reading) {
+    state_lock();
+    const int ours = state_entry("firmware", path) != NULL;
+    state_unlock();
+    if (ours) return 1;
+    const cJSON *f = romms_file_at(path, 0);
+    char md5[33];
+    return f && file_exists(path) && file_size(path) == (int64_t)jget_num(f, "file_size_bytes", -1) &&
+           (!reading || (md5_once(path, md5) == 0 && str_ieq(md5, jget_str(f, "md5_hash", "-"))));
+}
 
 /* Whether the set's files in folder that no record calls ours are all RomM's
- * to the byte, each under its name in RomM: what an install before this one
+ * to the byte, each where the sync puts it: what an install before this one
  * put there, its records gone with it. Then it's RomM's set (place() takes
  * each file on); a single file RomM hasn't got and it's the user's. Names and
  * sizes first, so a foreign set is mostly told without reading a byte. */
@@ -340,16 +387,25 @@ static int romms_set(const char *folder, const char *ext) {
         int foreign = !d;
         while (d && !foreign && (de = readdir(d))) {
             if (de->d_name[0] == '.' || !str_ieq(path_ext(de->d_name), ext)) continue;
-            char path[PATH_MAX_LEN], md5[33];
+            char path[PATH_MAX_LEN];
             path_join(path, sizeof path, folder, de->d_name);
-            state_lock();
-            const int ours = state_entry("firmware", path) != NULL;
-            state_unlock();
-            if (ours) continue;
-            const cJSON *f = NULL, *x;
-            cJSON_ArrayForEach(x, g_plan_files) if (!f && usable(x) && str_ieq(jget_str(x, "file_name", ""), de->d_name)) f = x;
-            foreign = !f || !file_exists(path) || file_size(path) != (int64_t)jget_num(f, "file_size_bytes", -1) ||
-                      (reading && (md5_once(path, md5) != 0 || !str_ieq(md5, jget_str(f, "md5_hash", "-"))));
+            if (!dir_exists(path)) {
+                foreign = !romms_file(path, reading);
+                continue;
+            }
+            /* An NCA that's a folder (Ryujinx's <id>.nca/00): RomM's only where
+             * RomM's goes into one, with nothing in it but RomM's. Empty, or a
+             * download of ours cut off (.part), is a download still to come. */
+            DIR *in = romms_file_at(path, 1) ? opendir(path) : NULL;
+            struct dirent *ie;
+            foreign = !in;
+            while (in && !foreign && (ie = readdir(in))) {
+                if (ie->d_name[0] == '.' || ext_in_list(ie->d_name, ".part")) continue;
+                char file[PATH_MAX_LEN];
+                path_join(file, sizeof file, path, ie->d_name);
+                foreign = !romms_file(file, reading);
+            }
+            if (in) closedir(in);
         }
         if (d) closedir(d);
         if (foreign) return 0;
@@ -457,6 +513,8 @@ static int users_set(const char *folder, const char *ext) {
 static int make_plan(const cJSON *rules, const cJSON *files, const char *dir, plan_t *plan) {
     int n = 0;
     g_plan_files = files;
+    g_plan_by_ext = cJSON_GetObjectItemCaseSensitive(rules, "by_ext");
+    g_plan_dir = dir;
     const cJSON *pick = cJSON_GetObjectItemCaseSensitive(rules, "pick_one");
     if (cJSON_IsArray(pick)) {
         tidy_pick_one(dir, files, pick);
@@ -502,19 +560,7 @@ static int make_plan(const cJSON *rules, const cJSON *files, const char *dir, pl
         const char *name = jget_str(f, "file_name", "");
         if (cJSON_IsArray(only) && !list_has_name(only, name)) continue;
         char full[512];
-        str_copy(full, sizeof full, name);
-        if (cJSON_IsObject(by_ext)) {
-            /* A folder under dir, or one of its own ("/..."): Eden's keys
-             * beside its data, its firmware in its NAND, wherever that is.
-             * Or a path with the file's id in it ("{id}": its name up to the
-             * first dot), as Ryujinx keeps an NCA: registered/<id>.nca/00. */
-            const cJSON *sub = NULL, *e;
-            cJSON_ArrayForEach(e, by_ext) if (cJSON_IsString(e) && str_ieq(path_ext(name), e->string)) sub = e;
-            const char *v = sub ? sub->valuestring : "", *idp = strstr(v, "{id}");
-            if (!sub || strstr(v, "..") || (strchr(v, '{') && (!idp || strchr(idp + 1, '{')))) continue;
-            if (idp) snprintf(full, sizeof full, "%.*s%.*s%s", (int)(idp - v), v, (int)strcspn(name, "."), name, idp + 4);
-            else if (v[0]) snprintf(full, sizeof full, "%s/%s", v, name);
-        }
+        if (!by_ext_name(by_ext, name, full, sizeof full)) continue;
         if (ext_in_list(name, ONE_SET_EXTS)) {
             if (sets_checked == 0) {
                 char at[PATH_MAX_LEN], in[PATH_MAX_LEN];
