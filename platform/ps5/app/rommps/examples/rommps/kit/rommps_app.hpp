@@ -63,6 +63,7 @@ struct Game
     bool installed = false;
     bool multi = false;
     bool not_game = false; // a file RomM scanned beside the games (metadata.txt...), or a Switch update or DLC: hidden
+    std::string addon;     // "update" or "dlc": a Switch add-on on this console whose game isn't
     bool archived = false; // a .rar (or any archive, for Switch) nothing here plays: not downloaded
     std::string version;   // what sets this version apart, when RomM has others of the game
     int versions = 0;      // how many versions RomM has, this one included; 0 if just one

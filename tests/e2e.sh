@@ -2055,6 +2055,10 @@ b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('$IS/SaveData.bin','isle-94
 print(base64.b64encode(b.getvalue()).decode())")\"}" >/dev/null
 syncnow
 [[ ! -e "$NS/$U1/$IS" ]] || fail "an update alone is no game, its entry's save must not come down: $(find "$NS/$U1/$IS")"
+inst=$(curl -sf "$API/api/installed?limit=500" | python3 -c "
+import json,sys
+print([g.get('addon','') for g in json.load(sys.stdin) if g['id'] == 948])")
+[[ "$inst" == "['update']" ]] || fail "an update alone is listed as an update, not a game: $inst"
 post /api/download '{"rom_id":947}' >/dev/null
 [[ "$(nxdone 947)" == done ]] || fail "the game didn't download: $(curl -sf "$API/api/downloads")"
 [[ -f "$NX/roms/Isle [$IS][v0].nsp" && "$(nxrec "$NX/updates/Isle v1.2.0.nsp")" == "(948, '', 947, '0100C0DE0B000800')" ]] \
