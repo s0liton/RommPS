@@ -316,7 +316,7 @@ class App
 #ifdef ROMMPS_PAYLOAD_VERSION
     static constexpr const char *kMinPayload = ROMMPS_PAYLOAD_VERSION;
 #else
-    static constexpr const char *kMinPayload = "1.4.2";
+    static constexpr const char *kMinPayload = "1.4.3";
 #endif
     bool payload_too_old() const;
     void start_payload(); // sends the payload to the HEN's loader

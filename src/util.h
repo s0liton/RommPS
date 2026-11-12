@@ -10,7 +10,7 @@
 
 #define APP_NAME    "romm-sync"
 #ifndef APP_VERSION /* make VERSION=; a dev build's is "1.4.3-dev.12" (src/version.h) */
-#define APP_VERSION "1.4.2"
+#define APP_VERSION "1.4.3"
 #endif
 #ifndef APP_BUILD /* git describe of the build, from the Makefile */
 #define APP_BUILD "unknown"
