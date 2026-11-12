@@ -769,4 +769,56 @@ post /api/sync >/dev/null
 wait_file "$RS/0000000000000013/0/save.bin"
 [[ "$(cat "$RS/0000000000000013/0/save.bin")" == nx2-from-server ]] || fail "the held save didn't come down whole"
 
+echo "21. Ryujinx reinstalled over RomM's firmware (no records, each NCA still <id>.nca/00): one NCA RomM hasn't got and it's the user's set; without it, RomM's, taken on with nothing downloaded; an NCA of RomM's that failed to come down doesn't make it the user's"
+NCA1=0123456789abcdef0123456789abcdef; NCA2=fedcba9876543210fedcba9876543210
+MINE=c0ffee00c0ffee00c0ffee00c0ffee00; NCA3=abcdef0123456789abcdef0123456789
+stop
+python3 - "$T/data/state.json" "$YC" <<'EOF'
+import json, sys
+s = json.load(open(sys.argv[1]))
+s["firmware"] = {p: e for p, e in s.get("firmware", {}).items() if not p.startswith(sys.argv[2] + "/")}
+json.dump(s, open(sys.argv[1], "w"))
+EOF
+mkdir -p "$REG/$MINE.nca"; printf my-fw > "$REG/$MINE.nca/00"
+fwhits() { curl -sf "$MURL/_admin/dump" | python3 -c "import json,sys; print(json.load(sys.stdin)['firmware_hits'])"; }
+# The firmware records under a folder, each with '?' unless it's the file there to the byte.
+fwrecs() { python3 -c "
+import hashlib,json,os,sys
+recs = json.load(open(sys.argv[1])).get('firmware', {})
+for p in sorted(recs):
+    if p.startswith(sys.argv[2] + '/'):
+        b = open(p, 'rb').read() if os.path.isfile(p) else b''
+        ok = recs[p].get('md5') == hashlib.md5(b).hexdigest() and recs[p].get('size') == len(b)
+        print(p[len(sys.argv[2]) + 1:] + ('' if ok else '?'), end=' ')" "$T/data/state.json" "$1"; }
+twosyncs() { for _ in 1 2; do s=$(syncs); post /api/sync >/dev/null; for _ in $(seq 1 40); do [[ $(syncs) -gt $s ]] && break; sleep 0.5; done; done; }
+before=$(fwhits)
+start_on "$Y"
+twosyncs
+[[ "$(fwhits)" == "$before" ]] || fail "the user's set must not bring RomM's down: $(($(fwhits) - before)) downloads"
+[[ "$(ls "$REG" | tr '\n' ' ')/$(fwrecs "$REG")" == "$NCA1.nca $MINE.nca $NCA2.nca /" ]] \
+  || fail "one <id>.nca/00 RomM hasn't got and it's the user's set: nothing added, nothing taken on: $(ls "$REG")/$(fwrecs "$REG")"
+[[ "$(cat "$REG/$NCA1.nca/00")/$(cat "$REG/$NCA2.nca/00")" == nca-1/nca-2 ]] || fail "the user's set must stay as it is"
+[[ "$(fwrecs "$YC/system")" == "prod.keys " ]] || fail "Ryujinx's keys, RomM's to the byte, must be taken on: $(fwrecs "$YC/system")"
+rm -r "$REG/$MINE.nca"
+twosyncs
+[[ "$(fwhits)" == "$before" ]] || fail "RomM's set already there must not download again: $(($(fwhits) - before)) downloads"
+[[ "$(fwrecs "$REG")" == "$NCA1.nca/00 $NCA2.nca/00 " ]] \
+  || fail "RomM's set as <id>.nca/00 must be recorded where a download would be: $(fwrecs "$REG")"
+[[ "$(since | grep -c "BIOS for Ryujinx: 2 files already here match RomM's")" == 1 ]] || fail "taking Ryujinx's set on wasn't logged"
+# A new NCA of RomM's that fails to come down leaves its folder empty: still RomM's set, not the user's.
+curl -sf -X POST "$MURL/_admin/firmware" -d "{\"platform_id\":30,\"file_name\":\"$NCA3.nca\",\"content\":\"nca-3\",\"fail\":true}" >/dev/null
+twosyncs
+[[ -d "$REG/$NCA3.nca" && -z "$(ls -A "$REG/$NCA3.nca")" ]] || fail "a failed download should leave its NCA's folder empty: $(find "$REG")"
+[[ "$(fwrecs "$REG")/$(since | grep -c "removed RomM's Switch firmware")" == "$NCA1.nca/00 $NCA2.nca/00 /0" ]] \
+  || fail "an NCA of RomM's that didn't come down made RomM's set the user's: $(fwrecs "$REG")"
+curl -sf -X POST "$MURL/_admin/firmware_drop" -d '{"platform_id":30}' >/dev/null
+curl -sf -X POST "$MURL/_admin/firmware" -d '{"platform_id":30,"file_name":"prod.keys","content":"header_key = 00"}' >/dev/null
+for f in "$NCA1.nca:nca-1" "$NCA2.cnmt.nca:nca-2" "$NCA3.nca:nca-3"; do
+    curl -sf -X POST "$MURL/_admin/firmware" -d "{\"platform_id\":30,\"file_name\":\"${f%%:*}\",\"content\":\"${f#*:}\"}" >/dev/null
+done
+before=$(fwhits)
+twosyncs
+[[ "$(fwrecs "$REG")" == "$NCA1.nca/00 $NCA3.nca/00 $NCA2.nca/00 " && $(($(fwhits) - before)) -eq 1 ]] \
+  || fail "once it comes down, only the NCA missing: $(fwrecs "$REG"), $(($(fwhits) - before)) downloads"
+
 echo "PASS"
