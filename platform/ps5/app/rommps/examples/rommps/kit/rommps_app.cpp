@@ -960,7 +960,10 @@ void App::ensure(GameList &list, int first, int last)
     {
         if (static_cast<int>(list.pages.size()) <= page)
             list.pages.resize(static_cast<std::size_t>(page) + 1, 0);
-        if (list.pages[static_cast<std::size_t>(page)])
+        unsigned char &state = list.pages[static_cast<std::size_t>(page)];
+        if (state == 4 && clock_ >= list.retry_at)
+            state = 0; // the service didn't answer last time: it may now
+        if (state)
             continue;
         const std::string key = list.scope.key() + "|" + list.search;
         const std::pair<std::string, int> want{key, page};
@@ -973,7 +976,7 @@ bool App::retry(GameList &list)
 {
     bool any = false;
     for (unsigned char &p : list.pages)
-        if (p == 3)
+        if (p == 3 || p == 4)
         {
             p = 0;
             any = true;
@@ -1003,17 +1006,33 @@ void App::send_page(const std::string &key, int page)
             if (it == lists_.end() || !it->second.list)
                 return; // let go of meanwhile
             GameList &l = *it->second.list;
+            if (!r.ok() && r.status == 0)
+            {
+                // Nobody answered: the service swapping itself for a newer one
+                // (the first open after an update asks for pages in exactly
+                // that second), or not up yet. Asked again by itself, after a
+                // wait that doubles up to 15 s, and only said after a few.
+                const int n = l.unanswered++;
+                l.retry_at = clock_ + std::min(15.0, static_cast<double>(1 << std::min(n, 4)));
+                if (n >= 3)
+                    l.error = plain(r.message().c_str());
+                if (static_cast<int>(l.pages.size()) > page)
+                    l.pages[static_cast<std::size_t>(page)] = 4;
+                return;
+            }
             if (!r.ok())
             {
-                // Said once, and asked for again only when the user says so
-                // (App::retry). Asking again whenever it was looked at meant
-                // asking every frame, which RomM's 500s on franchise
-                // collections (Oct 29) did nothing to discourage.
+                // An answer, and an error: said once, and asked for again
+                // only when the user says so (App::retry). Asking again
+                // whenever it was looked at meant asking every frame, which
+                // RomM's 500s on franchise collections (Oct 29) did nothing
+                // to discourage.
                 l.error = plain(r.message().c_str());
                 if (static_cast<int>(l.pages.size()) > page)
                     l.pages[static_cast<std::size_t>(page)] = 3;
                 return;
             }
+            l.unanswered = 0;
             std::unique_ptr<cJSON, void (*)(cJSON *)> j(r.json(), cJSON_Delete);
             l.error.clear();
             const int total = static_cast<int>(num(j.get(), "total"));
