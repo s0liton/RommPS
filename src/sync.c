@@ -2781,10 +2781,46 @@ static int ps2_place(const local_rom *r, bundle *b, const char *file) {
     return rc;
 }
 
+/* A save this device has no record of (a fresh install, or the two meeting
+ * for the first time) that is RomM's copy as it stands. RomM hashes the whole
+ * file it keeps, our hash leaves out what isn't the save (DeSmuME's footer),
+ * and without a record nothing says the two are one save; so it came down
+ * again, backup and all, to change nothing. Taken as the file is on disk, and
+ * as it would go up (hash, when the caller has that already). */
+static int same_as_romm(const char *path, const char *hash, const char *server_hash) {
+    char raw[33] = "", sent[33] = "";
+    if (!server_hash || !server_hash[0] || !file_exists(path)) return 0;
+    state_lock();
+    const int known = state_entry("saves", path) != NULL;
+    state_unlock();
+    if (known || md5_file_hex(path, raw) != 0) return 0;
+    if (!strcmp(raw, server_hash)) return 1;
+    if (!hash) hash = save_md5(path, sent) == 0 ? sent : "";
+    return !strcmp(hash, server_hash);
+}
+
+/* Written down as synced with RomM's save_id, nothing moved; and RomM told
+ * this device has it, as a download's confirmation does, or the first change
+ * made here would meet "a newer save since your last sync". */
+static void synced_as_is(const scan_ctx *c, const local_file *f, int save_id, const char *hash) {
+    char api[64];
+    record_save(f, save_id, hash);
+    cJSON *body = cJSON_CreateObject();
+    cJSON_AddStringToObject(body, "device_id", c->device_id);
+    cJSON_AddStringToObject(body, "content_hash", hash);
+    snprintf(api, sizeof api, "/api/saves/%d/downloaded", save_id);
+    long st = 0;
+    cJSON_Delete(romm_call("POST", api, body, &st));
+    cJSON_Delete(body);
+    if (st != 200) LOGW("RomM didn't take the confirmation for save %d (HTTP %ld)", save_id, st);
+    LOGI("%s is RomM's save %d already: synced, nothing moved", f->path, save_id);
+}
+
 /* Downloads a save zip and unpacks it over the game's current files. With
  * record set, the result counts as synced; a manual restore leaves it to upload.
  * -2: it came down, but none of it is the game's here (state "unplaced");
- * -3: that version did so before, and isn't tried again. A newer one is. */
+ * -3: that version did so before, and isn't tried again. A newer one is.
+ * 1: never synced here, and it holds the very files here: synced as they are. */
 static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r, const char *slot, int session_id,
                               const char *server_hash, int record) {
     char id[24], api[256], zip[PATH_MAX_LEN], tmpdir[PATH_MAX_LEN];
@@ -2835,6 +2871,26 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
         save_ids_learn(id, other);
         bundle_free(&b);
         if (bundle_for_rom(r, id, &b) != 0) goto out;
+    }
+    if (record && b.n > 0 && strcmp(r->map->save_layout, "ps2") != 0) {
+        /* Never synced here, and RomM's zip is these very files: a fresh
+         * install that hadn't learned the other title ids its saves go by
+         * (just above). Nothing to back up, nothing to put in place. */
+        char key[PATH_MAX_LEN + 32], theirs[33];
+        snprintf(key, sizeof key, "%s#%s", b.dir, b.game_id);
+        state_lock();
+        const int known = state_entry("saves", key) != NULL;
+        state_unlock();
+        if (!known && zip_content_hash(zip, theirs) == 0) {
+            local_file f;
+            fill_bundle_file(&f, c, r, &b);
+            if (!strcmp(f.hash, theirs)) {
+                str_copy(f.slot, sizeof f.slot, slot);
+                synced_as_is(c, &f, save_id, f.hash);
+                rc = 1;
+                goto out;
+            }
+        }
     }
     if (b.n > 0) { /* keep a copy of what's there now */
         char cur[PATH_MAX_LEN];
@@ -3115,12 +3171,14 @@ static int do_download(const scan_ctx *c, int save_id, const char *dest, const l
     str_copy(rec.path, sizeof rec.path, dest);
     rec.rom_id = rom_id;
     str_copy(rec.slot, sizeof rec.slot, slot);
-    char hash[33] = "", now[33] = "";
+    char hash[33] = "";
     save_md5(dest, hash);
-    /* Footer put on or taken off: written down as RomM's, so the next sync
-     * sees the two in step (one DeSmuME sent with its footer would otherwise
-     * come down again every time). Once the file changes, its own counts. */
-    if (sent[0] && md5_file_hex(dest, now) == 0 && strcmp(now, sent) != 0) str_copy(hash, sizeof hash, sent);
+    /* Footer put on, taken off, or kept as RomM had it: whenever our hash
+     * isn't RomM's, RomM's is written down, so the next sync sees the two in
+     * step (one DeSmuME sent with its footer would otherwise come down again
+     * every time, DeSmuME's own copy included). Once the file changes, its
+     * own counts. */
+    if (sent[0] && strcmp(hash, sent) != 0) str_copy(hash, sizeof hash, sent);
     str_copy(rec.hash, sizeof rec.hash, hash);
     record_save(&rec, save_id, hash);
 
@@ -4232,6 +4290,13 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
         const local_file *f = find_save(&c, rom_id, slot);
 
         const char *server_hash = jget_str(op, "server_content_hash", "");
+        if (f && !f->is_bundle && save_id > 0 && strcmp(server_hash, f->hash) != 0 &&
+            same_as_romm(f->path, f->hash, server_hash)) {
+            /* Whatever RomM's clock says: the two are one save. */
+            synced_as_is(&c, f, save_id, server_hash);
+            res->noop++;
+            continue;
+        }
         if (!strcmp(action, "no_op") && f && server_hash[0] && strcmp(server_hash, f->hash) != 0) {
             /* RomM thinks in whole seconds, so a change right after a sync can
              * come back as "nothing to do" while the hashes disagree. Trust our
@@ -4356,6 +4421,10 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                     res->skipped++; /* came down before and wasn't the game's (said then) */
                     continue;
                 }
+                if (rc == 1) {
+                    res->noop++; /* it's the files here already */
+                    continue;
+                }
                 if (rc == -2) why = "RomM's save doesn't match this game here";
                 ok = rc == 0;
             } else {
@@ -4363,6 +4432,18 @@ static void run_sync(const char *reason, int only_rom, sync_result *res) {
                     str_copy(dest, sizeof dest, f->path);
                 else
                     download_target(r, jget_str(op, "file_name", ""), slot, &c, dest, sizeof dest);
+                if (!f && same_as_romm(dest, NULL, server_hash)) {
+                    /* A file the scan doesn't take for a save (another slot's,
+                     * "autosave-rtc"), there already as RomM has it. */
+                    local_file here;
+                    memset(&here, 0, sizeof here);
+                    str_copy(here.path, sizeof here.path, dest);
+                    here.rom_id = rom_id;
+                    str_copy(here.slot, sizeof here.slot, slot);
+                    synced_as_is(&c, &here, save_id, server_hash);
+                    res->noop++;
+                    continue;
+                }
                 int rc = do_download(&c, save_id, dest, f, r, rom_id, slot, session_id, jget_str(op, "server_content_hash", ""),
                                      jget_str(op, "server_updated_at", ""), 1);
                 if (rc == -2) {
@@ -4812,6 +4893,7 @@ int sync_resolve_conflict(const char *path, const char *keep, char *err, int en)
         else if (rc) snprintf(err, (size_t)en, "upload failed (HTTP %ld)", st);
     } else if (f->is_bundle) {
         rc = do_download_bundle(&c, (int)jget_num(e, "save_id", 0), f->rom, f->slot, 0, jget_str(e, "server_hash", ""), 1);
+        if (rc == 1) rc = 0; /* RomM's was these files already */
         if (rc) snprintf(err, (size_t)en, "download failed");
     } else {
         rc = do_download(&c, (int)jget_num(e, "save_id", 0), path, f, f->rom, f->rom_id, f->slot, 0, jget_str(e, "server_hash", ""),
@@ -4959,8 +5041,10 @@ cJSON *sync_preview(char *err, int en) {
         const local_file *f = find_save(&c, rom_id, slot);
         char game[256] = "";
         if (f) rom_display_name(f->rom, game, sizeof game);
-        if (!strcmp(action, "no_op")) {
-            same++;
+        const char *server_hash = jget_str(op, "server_content_hash", "");
+        if (!strcmp(action, "no_op") || (f && !f->is_bundle && strcmp(server_hash, f->hash) != 0 &&
+                                         same_as_romm(f->path, f->hash, server_hash))) {
+            same++; /* as the sync takes it */
         } else if (!strcmp(action, "upload") && f) {
             preview_item(up, game, f->path, NULL);
         } else if (!strcmp(action, "conflict") && f) {
@@ -4991,7 +5075,8 @@ cJSON *sync_preview(char *err, int en) {
                 download_target(r, jget_str(op, "file_name", ""), slot, &c, dest, sizeof dest);
             }
             rom_display_name(r, game, sizeof game);
-            preview_item(down, game, dest, NULL);
+            if (!r->map->save_layout[0] && same_as_romm(dest, NULL, jget_str(op, "server_content_hash", ""))) same++;
+            else preview_item(down, game, dest, NULL);
         }
     }
     cJSON_AddNumberToObject(out, "in_sync", same);
