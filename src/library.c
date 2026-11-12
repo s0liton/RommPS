@@ -2534,6 +2534,14 @@ cJSON *library_installed(int limit) {
         cJSON_AddNumberToObject(o, "platform_id", jget_num(e, "platform_id", 0));
         cJSON_AddStringToObject(o, "cover", jget_str(e, "cover", ""));
         cJSON_AddStringToObject(o, "profile", jget_str(e, "profile", ""));
+        /* A Switch update or DLC whose game isn't here: listed, so it can go,
+         * but said for what it is rather than passing for a game. */
+        char tid[17];
+        const char *hex = jget_str(e, "title_id", "");
+        if (!hex[0]) hex = nx_title_hex(path_basename(e->string), tid);
+        const switchid_kind kind = hex[0] ? switchid_kind_of(strtoull(hex, NULL, 16)) : SWITCHID_NONE;
+        if (kind == SWITCHID_UPDATE || kind == SWITCHID_DLC)
+            cJSON_AddStringToObject(o, "addon", kind == SWITCHID_UPDATE ? "update" : "dlc");
         cJSON_AddNumberToObject(o, "played", played);
         cJSON_AddStringToObject(o, "path", e->string); /* sized below, off the lock */
         cJSON_AddItemToArray(out, o);
