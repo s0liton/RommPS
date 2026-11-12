@@ -666,6 +666,10 @@ class H(BaseHTTPRequestHandler):
                     DB["device_syncs"][(dev, s["id"])] = NOW()
                 return self.reply(200, raw=s["content"], ctype="application/octet-stream")
             if len(parts) == 4 and parts[:2] == ["api", "saves"] and parts[3] == "downloaded":
+                # The confirmation optimistic=false waits for: the device has that save now.
+                b = self.json_body()
+                if b.get("device_id") and int(parts[2]) in DB["saves"]:
+                    DB["device_syncs"][(b["device_id"], int(parts[2]))] = NOW()
                 return self.reply(200, {"ok": True})
             if p == "/api/states" and method == "POST":
                 name, content = self.multipart_file("stateFile")

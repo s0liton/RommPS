@@ -1957,6 +1957,44 @@ syncnow
   || fail "a folder of RomM's files only must be RomM's set: $(ls "$MX/nand")/$(agrecs "$MX")"
 [[ $(($(aghits) - before)) -eq 1 ]] || fail "only the NCA missing comes down: $(($(aghits) - before)) downloads"
 grep -q "BIOS for NX-mixed: 2 files already here match RomM's" "$T/daemon.log" || fail "taking the set on wasn't logged"
+echo "    a preset moves the folders: the records left behind go, no file with them, and nothing comes down again"
+# NX-again's firmware moves to nand2 (nand stays, empty), NX-mixed moves whole (its old folder gone).
+MX2="$T/nxmixed2"
+mkdir -p "$AG/nand2"; mv "$AG/nand/"* "$AG/nand2/"; mv "$MX" "$MX2"
+fwrecs() { python3 -c "
+import json,sys
+print(' '.join(sorted(p[len(sys.argv[2]) + 1:] for p in json.load(open(sys.argv[1])).get('firmware', {}) if p.startswith(sys.argv[2] + '/'))))" \
+  "$T/data/state.json" "$1"; }
+fwothers() { python3 -c "
+import json,sys
+print(sorted(p for p in json.load(open(sys.argv[1])).get('firmware', {}) if not p.startswith(tuple(d + '/' for d in sys.argv[2:]))))" \
+  "$T/data/state.json" "$AG" "$MX" "$MX2"; }
+others=$(fwothers)
+python3 - "$API" "$MX2" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, mx2 = sys.argv[1:3]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+for p in cfg["profiles"]:
+    if p.get("id") == "nxagain":
+        p["firmware"]["by_ext"][".nca"] = "nand2"
+    if p.get("id") == "nxmixed":
+        p["root"] = mx2
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": cfg["profiles"]}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+before=$(aghits)
+syncnow
+[[ "$(fwrecs "$AG")" == "boot.bin keys/prod.keys keys/title.keys nand2/aaaa.nca nand2/bbbb.cnmt.nca nand2/cccc.nca" ]] \
+  || fail "the records in the folder the firmware moved out of must go, its new place taken on: $(fwrecs "$AG")"
+[[ -z "$(fwrecs "$MX")" && "$(fwrecs "$MX2")" == "nand/aaaa.nca nand/bbbb.cnmt.nca nand/cccc.nca" ]] \
+  || fail "the records of a folder that's gone must go, its files taken on where they are now: $(fwrecs "$MX")/$(fwrecs "$MX2")"
+[[ "$(agrecs "$AG")/$(agrecs "$MX2")" == "boot.bin keys/prod.keys keys/title.keys nand2/aaaa.nca nand2/bbbb.cnmt.nca nand2/cccc.nca /nand/aaaa.nca nand/bbbb.cnmt.nca nand/cccc.nca " ]] \
+  || fail "the records kept must still match their files: $(agrecs "$AG")/$(agrecs "$MX2")"
+grep -q "BIOS: forgot 6 records of files no longer there" "$T/daemon.log" || fail "forgetting them wasn't logged: $(grep 'BIOS: forgot' "$T/daemon.log")"
+[[ $(($(aghits) - before)) -eq 0 ]] || fail "files a preset moved must not come down again: $(($(aghits) - before)) downloads"
+[[ "$(fwothers)" == "$others" ]] || fail "records of other folders must stay as they were: $(fwothers)"
+[[ -d "$AG/nand" && -z "$(ls -A "$AG/nand")" && "$(cat "$AG/user.bin")/$(cat "$AG/keys/title.keys")/$(cat "$MX2/nand/aaaa.nca")" == "mine-user/tkeys-v1/again-fw-a87" ]] \
+  || fail "only records may go, never a file or a folder: $(ls -A "$AG/nand")/$(cat "$AG/user.bin")/$(cat "$MX2/nand/aaaa.nca")"
 python3 - "$API" <<'PY' >/dev/null
 import json, sys, urllib.request
 api = sys.argv[1]
@@ -2478,6 +2516,88 @@ syncnow
 rm -f "$M6/saves/"*
 syncnow
 [[ "$(parts)" == "$m64.eep:2048:EEP1 $m64.sra:32768:SRA1 " ]] || fail "files gone must come back under the name its database gives: $(parts)"
+
+echo "28c7. A fresh install meets saves RomM has as they are here (DeSmuME's footer on, another slot's file, a PSP save under another title id): nothing moves, all synced; a real difference is still a conflict"
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":84,"slug":"nintendo-dsi","name":"Nintendo DSi"}' >/dev/null
+for g in "975 Footer" "976 Clock" "977 Changed"; do
+    set -- $g
+    curl -skf -X POST "$SV/_admin/rom" -d "{\"id\":$1,\"platform_id\":84,\"name\":\"Fresh $2\",\"fs_name\":\"Fresh $2 (USA).nds\"}" >/dev/null
+done
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":978,"platform_id":3,"name":"Fresh Racer","fs_name":"Fresh Racer (USA).iso"}' >/dev/null
+FR="$T/freshlike"; FS="$FR/pspsaves/PSP/SAVEDATA/ULUS10976DATA00"; mkdir -p "$FR/dsi" "$FR/psp" "$FR/saves" "$FS"
+for g in Footer Clock Changed; do printf 'ROM:%s' "$g" > "$FR/dsi/Fresh $g (USA).nds"; done
+python3 "$ROOT/tests/make_disc.py" psp "$FR/psp/Fresh Racer (USA).iso" ULUS10975
+# Its save goes by the original release's id, as Midnight Club: LA's Complete Edition's does.
+python3 "$ROOT/tests/make_disc.py" sfo "$FS/PARAM.SFO" TITLE="Fresh Racer" SAVEDATA_PARAMS=x
+printf 'psp-fresh' > "$FS/DATA.BIN"
+withfooter() { python3 -c "
+import struct,sys; b=sys.argv[1].encode().ljust(512, b'\xff')
+sys.stdout.buffer.write(b + b'|<--Snip above here to create a raw sav by excluding this DeSmuME savedata footer:' + struct.pack('<6I', 512, 512, 1, 1, 512, 0) + b'|-DESMUME SAVE-|')" "$1"; }
+withfooter fresh-footer > "$FR/saves/Fresh Footer (USA).dsv"
+withfooter changed-here > "$FR/saves/Fresh Changed (USA).dsv"
+printf 'clock-976' > "$FR/saves/Fresh Clock (USA).rtc"
+touch -d '1 hour ago' "$FR/saves/"*
+# RomM has them from before the reinstall, as another device sent them: the footer on, the clock in a slot of its own.
+fresh_save() { # rom_id slot file_name path
+    printf '{"rom_id":%s,"slot":"%s","file_name":"%s","content_b64":"%s"}' "$1" "$2" "$3" "$(base64 -w0 "$4")" > "$T/fresh.json"
+    curl -skf -X POST "$SV/_admin/save" -d @"$T/fresh.json" >/dev/null; }
+fresh_save 975 autosave "Fresh Footer (USA).dsv" "$FR/saves/Fresh Footer (USA).dsv"
+fresh_save 976 autosave-rtc "Fresh Clock (USA).rtc" "$FR/saves/Fresh Clock (USA).rtc"
+withfooter changed-there > "$T/changed.dsv"; fresh_save 977 autosave "Fresh Changed (USA).dsv" "$T/changed.dsv"
+python3 - "$FS" > "$T/fresh.zip" <<'PY'
+import io, sys, zipfile
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    for f in ("DATA.BIN", "PARAM.SFO"):
+        z.writestr("ULUS10976DATA00/" + f, open(sys.argv[1] + "/" + f, "rb").read())
+sys.stdout.buffer.write(buf.getvalue())
+PY
+fresh_save 978 autosave ULUS10975.zip "$T/fresh.zip"
+python3 - "$API" "$FR" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, root = sys.argv[1], sys.argv[2]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+profiles = [p for p in cfg["profiles"] if p.get("id") != "freshlike"] + [
+    {"id": "freshlike", "name": "Fresh-like", "enabled": True, "root": root, "rom_dir": "{root}/{platform}", "save_dir": "{root}/saves",
+     "sync_saves": True, "platforms": [
+        {"romm": ["nintendo-dsi"], "dir": "dsi", "emulator": "desmume", "save_exts": ".dsv", "save_format": "nds-dsv"},
+        {"romm": ["psp"], "dir": "psp", "emulator": "ppsspp", "save_layout": "psp", "save_dir": "{root}/pspsaves"}]}]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+fresh_md5() { md5sum "$FR/saves/"* "$FS/"* | cut -d' ' -f1 | tr '\n' ' '; }
+before=$(fresh_md5)
+pv=$(curl -sf "$API/api/setup/preview" | python3 -c "
+import json,sys; p=json.load(sys.stdin)
+print(sorted(x['game'] for k in ('uploads','downloads','conflicts') for x in p[k] if 'Fresh' in x['game'] and 'Racer' not in x['game']))")
+[[ "$pv" == "['Fresh Changed']" ]] || fail "the preview must count saves RomM has as they are here as in step: $pv"
+syncnow
+[[ "$(last uploaded)/$(last downloaded)/$(last conflicts)" == 0/0/1 ]] \
+  || fail "a fresh install must move nothing RomM has as it is here: $(last uploaded) up, $(last downloaded) down, $(last conflicts) conflicts"
+[[ "$(fresh_md5)" == "$before" ]] || fail "files RomM has as they are here were rewritten"
+[[ -z "$(find "$T/data/backups/975" "$T/data/backups/976" "$T/data/backups/978" -type f 2>/dev/null)" ]] \
+  || fail "nothing replaced, nothing to back up: $(find "$T/data/backups/97"[5-8] -type f 2>/dev/null)"
+fresh_ids() { curl -skf "$SV/_admin/dump" | python3 -c "
+import json,sys; print(sorted((s['rom_id'], s['id']) for s in json.load(sys.stdin)['saves'] if 975 <= s['rom_id'] <= 978))"; }
+ids=$(fresh_ids)
+recs=$(python3 -c "
+import json,sys; st=json.load(open(sys.argv[1])); s, c = st['saves'], st.get('conflicts', {})
+print(sorted((int(s[p]['rom_id']), int(s[p]['save_id'])) for p in sys.argv[2:5] if p in s), sorted(int(v['rom_id']) for k, v in c.items() if 'Fresh' in k))" \
+  "$T/data/state.json" "$FR/saves/Fresh Footer (USA).dsv" "$FR/saves/Fresh Clock (USA).rtc" "$FR/pspsaves/PSP/SAVEDATA#ULUS10975")
+[[ "$recs" == "$(python3 -c "import ast,sys; print(sorted(x for x in ast.literal_eval(sys.argv[1]) if x[0] != 977), [977])" "$ids")" ]] \
+  || fail "saves RomM has as they are here must be synced with RomM's ids, the changed one a conflict: $recs (RomM: $ids)"
+syncnow
+[[ "$(last uploaded)/$(last downloaded)/$(last conflicts)" == 0/0/1 && "$(fresh_ids)" == "$ids" ]] \
+  || fail "synced as they are, they must stay so: $(last uploaded) up, $(last downloaded) down, $(last conflicts) conflicts"
+# The real difference settled as before (RomM's, this one backed up); then a change here goes up as any synced save's does.
+post /api/conflicts/resolve "{\"path\":\"$FR/saves/Fresh Changed (USA).dsv\",\"keep\":\"server\"}" >/dev/null || fail "resolve failed"
+[[ "$(head -c 13 "$FR/saves/Fresh Changed (USA).dsv")" == changed-there ]] || fail "RomM's save, kept, must be here"
+find "$T/data/backups/977" -type f 2>/dev/null | grep -q . || fail "the save replaced in the conflict must be backed up"
+sleep 1.1; python3 -c "
+import sys; p=sys.argv[1]; b=open(p,'rb').read(); open(p,'wb').write(b'played-here'.ljust(512, b'\xff') + b[-122:])" "$FR/saves/Fresh Footer (USA).dsv"
+syncnow
+[[ "$(last uploaded)/$(last downloaded)/$(last conflicts)" == 1/0/0 ]] \
+  || fail "a change to a save synced as it was must go up: $(last uploaded) up, $(last downloaded) down, $(last conflicts) conflicts"
 
 echo "28c3. A system in a folder of its own (PS5-ECAM 5.1): its \"user_dir\", the first that has \"user_dir_has\""
 curl -skf -X POST "$SV/_admin/platform" -d '{"id":94,"slug":"ngp","name":"Neo Geo Pocket"}' >/dev/null

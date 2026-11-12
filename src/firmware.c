@@ -1,6 +1,7 @@
 #include "firmware.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -90,6 +91,77 @@ int firmware_find(const profile_map *m, const char *name, char *out, size_t n) {
     if (!dir[0]) return -1;
     path_join(out, n, dir, name);
     return file_exists(out) ? 0 : -1;
+}
+
+/* The folder a file of RomM's lands in, by its path under dir or one of its
+ * own (by_ext's "/..."). A {variable} in it (Ryujinx's registered/{id}.nca/00)
+ * makes it anything under the part before, kept with its '/' at the end. */
+static void add_spot(cJSON *spots, const char *dir, const char *rel) {
+    char at[PATH_MAX_LEN];
+    if (rel[0] == '/') str_copy(at, sizeof at, rel);
+    else path_join(at, sizeof at, dir, rel);
+    char *brace = strchr(at, '{'), *slash;
+    if (brace) *brace = 0;
+    if (!(slash = strrchr(at, '/'))) return;
+    slash[brace ? 1 : 0] = 0;
+    cJSON_AddItemToArray(spots, cJSON_CreateString(at));
+}
+
+static int at_spot(const cJSON *spots, const char *path) {
+    const char *slash = strrchr(path, '/');
+    const size_t pl = slash ? (size_t)(slash - path) : 0;
+    const cJSON *s;
+    cJSON_ArrayForEach(s, spots) {
+        const char *f = s->valuestring;
+        const size_t fl = strlen(f);
+        const int under = fl && f[fl - 1] == '/';
+        if (under ? !strncmp(path, f, fl) : fl == pl && !strncmp(path, f, pl)) return 1;
+    }
+    return 0;
+}
+
+/* Records of files gone from folders no emulator gets BIOS files in any more
+ * (a preset moved them, a profile went): they'd stay forever, and claim
+ * whatever turns up under that name one day. The record goes, never a file.
+ * One gone from a folder still synced to stays: the sync puts the file back
+ * and records it again, as it always has. */
+static void forget_gone(const profile_map *maps, int n) {
+    cJSON *spots = n > 0 ? cJSON_CreateArray() : NULL; /* no profiles read, nothing to tell by */
+    for (int i = 0; spots && i < n; i++) {
+        cJSON *rules = rules_for(&maps[i]);
+        const cJSON *by_ext = cJSON_GetObjectItemCaseSensitive(rules, "by_ext"), *x;
+        char dir[PATH_MAX_LEN], rel[PATH_MAX_LEN];
+        target_dir(&maps[i], rules, dir, sizeof dir);
+        if (dir[0] && !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(rules, "skip"))) {
+            /* "-" for the file's name: only its folder counts. */
+            if (!cJSON_IsObject(by_ext)) add_spot(spots, dir, "-");
+            cJSON_ArrayForEach(x, by_ext) if (cJSON_IsString(x)) {
+                snprintf(rel, sizeof rel, "%s%s-", x->valuestring, x->valuestring[0] ? "/" : "");
+                add_spot(spots, dir, rel);
+            }
+            cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(rules, "names")) if (cJSON_IsString(x))
+                add_spot(spots, dir, x->valuestring);
+        }
+        cJSON_Delete(rules);
+    }
+    if (!spots) return;
+    int forgot = 0;
+    state_lock();
+    cJSON *recs = state_section("firmware"), *e = recs ? recs->child : NULL;
+    while (e) {
+        cJSON *next = e->next;
+        struct stat st;
+        /* Gone, not just out of reach for a moment (EACCES and friends). */
+        if (!at_spot(spots, e->string) && stat(e->string, &st) != 0 && (errno == ENOENT || errno == ENOTDIR)) {
+            cJSON_Delete(cJSON_DetachItemViaPointer(recs, e));
+            forgot++;
+        }
+        e = next;
+    }
+    if (forgot) state_save();
+    state_unlock();
+    cJSON_Delete(spots);
+    if (forgot) LOGI("BIOS: forgot %d record%s of files no longer there", forgot, forgot == 1 ? "" : "s");
 }
 
 /* A file RomM really has, with a name that can't leave the folder. */
@@ -852,6 +924,8 @@ int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int on
         platforms = own;
     }
     pthread_mutex_lock(&g_lock);
+    /* Whole passes only: one for a single platform (a game just came down) leaves the rest be. */
+    if (!only_platform) forget_gone(maps, n);
     fetched_t *got = calloc(64, sizeof *got);
     int ngot = 0;
     plan_t *plan = calloc(MAX_PLAN, sizeof *plan);
