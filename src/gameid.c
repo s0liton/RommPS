@@ -913,6 +913,22 @@ int gameid_vita(const char *path, const char *apps, char *title_id, size_t tn, c
                 read_sfo = !rc;
                 free(sfo);
             }
+        /* No unpacked game in it: RomM keeps plenty of Vita games as a folder
+         * holding one package, named whatever the dumper's mood was
+         * ("XsGHXcWr...bv.pkg"). The package says which game it is. */
+        DIR *d = rc ? opendir(path) : NULL;
+        struct dirent *de;
+        while (d && rc && (de = readdir(d))) {
+            if (de->d_name[0] == '.' || !ext_in_list(de->d_name, ".pkg,.vpk,.zip,.psvita")) continue;
+            path_join(file, sizeof file, path, de->d_name);
+            if (!file_exists(file)) continue;
+            const int got = gameid_vita(file, NULL, title_id, tn, save, sizeof save);
+            if (got >= 0) {
+                rc = 0;
+                read_sfo = got == 0;
+            }
+        }
+        if (d) closedir(d);
     } else if (str_ends_with_ci(path, ".psvita")) {
         /* ES-DE's: the title id on its first line. */
         char *txt = read_file(path, NULL);
