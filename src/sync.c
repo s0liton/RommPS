@@ -613,7 +613,7 @@ static int fix_bare_rom(const profile_map *m, const char *path, int rom_id) {
     const cJSON *files = cJSON_GetObjectItemCaseSensitive(rom, "files");
     const char *fn = path_basename(jget_str(cJSON_GetArrayItem(files, 0), "file_name", ""));
     int done = 0;
-    if (st == 200 && cJSON_GetArraySize(files) == 1 && path_ext(fn)[0] &&
+    if (st == 200 && cJSON_GetArraySize(files) == 1 && path_ext(fn)[0] && name_is_plain(fn) &&
         !strcmp(jget_str(rom, "fs_name", ""), path_basename(path))) {
         char tmp[PATH_MAX_LEN + 8], inside[PATH_MAX_LEN + 256];
         snprintf(tmp, sizeof tmp, "%s.moving", path);
@@ -3328,9 +3328,12 @@ static void download_target(const local_rom *r, const char *server_name, const c
     char ext[32];
     /* "autosave-rtc" holds a .rtc file */
     size_t sl = strlen(c->slot);
-    if (!strncmp(slot, c->slot, sl) && slot[sl] == '-')
+    if (!strncmp(slot, c->slot, sl) && slot[sl] == '-') {
         snprintf(ext, sizeof ext, ".%s", slot + sl + 1);
-    else {
+        /* The slot is RomM's word: "autosave-x/../../y" stays a name in the folder. */
+        for (char *p = ext; *p; p++)
+            if (*p == '/' || *p == '\\') *p = '_';
+    } else {
         char first[32];
         str_copy(first, sizeof first, r->map->save_exts);
         char *comma = strchr(first, ',');
@@ -4031,9 +4034,10 @@ static int sync_states_up(scan_ctx *c, int only_rom) {
 
 
 /* Local file name for a state from the server. States made elsewhere may use
- * another name, so anything that doesn't start with the game's name gets it. */
+ * another name, so anything that doesn't start with the game's name gets it,
+ * and so does one that isn't a plain file name ("Game.state1/../../x"). */
 static void state_local_name(const local_rom *r, const char *server_name, char *out, size_t n) {
-    for (int i = 0; i < r->nstems; i++) {
+    for (int i = 0; i < r->nstems && name_is_plain(server_name); i++) {
         size_t l = strlen(r->stems[i]);
         if (!strncmp(server_name, r->stems[i], l) && server_name[l] == '.') {
             str_copy(out, n, server_name);

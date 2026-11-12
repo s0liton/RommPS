@@ -3015,6 +3015,40 @@ syncnow
 [[ "$(last conflicts)" == 0 && "$(last uploaded)" == 0 ]] || fail "the conflict came back: $(last conflicts) conflicts, $(last uploaded) up"
 [[ "$(head -c 4 "$B6/saves/Boot Kart (U).srm")$(eep)" == S2BBS2BB ]] || fail "RomM's save must stay: $(head -c 4 "$B6/saves/Boot Kart (U).srm") $(eep)"
 
+echo "32b. names from RomM that would leave their folder: the game doesn't download, a save or state stays in its folder"
+# RomM itself never sends these (it names things after files on its own disk); a hostile server or a
+# plain-http connection someone's in the middle of could.
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":958,"platform_id":1,"name":"Escape One","fs_name":"../Escape One (USA).sfc"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":959,"platform_id":1,"name":"Escape Two","fs_name":"Escape Two (USA)",
+  "files":[{"id":9591,"file_name":"Escape Two (USA).sfc","content":"ROM"},{"id":9592,"file_name":"../../escaped-two.txt","content":"OUT"}]}' >/dev/null
+post /api/download '{"rom_id":958}' >/dev/null; post /api/download '{"rom_id":959}' >/dev/null
+s1=$(waitjob 958 error); s2=$(waitjob 959 error)
+[[ "$s1" == error*"isn't safe to use: ../Escape One (USA).sfc" && "$s2" == error*"isn't safe to use: ../../escaped-two.txt" ]] \
+  || fail "a game with a file name that leaves its folder must not download: $s1 / $s2"
+# A game of its own, so nothing earlier decides which emulator takes its save and state.
+NM="$T/names"; mkdir -p "$NM/nes"; printf 'ROM:names' > "$NM/nes/Name Test (USA).nes"
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":86,"slug":"nes","name":"NES"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":957,"platform_id":86,"name":"Name Test","fs_name":"Name Test (USA).nes"}' >/dev/null
+python3 - "$API" "$NM" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, root = sys.argv[1:3]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+p = {"id": "names", "name": "Names", "enabled": True, "root": root, "rom_dir": "{root}/{platform}", "save_dir": "{root}/saves",
+     "state_dir": "{root}/states", "save_exts": ".sav", "sync_saves": True,
+     "platforms": [{"romm": ["nes"], "dir": "nes", "emulator": "nestopia", "state_cores": "nestopia"}]}
+profiles = [x for x in cfg["profiles"] if x.get("id") != "names"] + [p]
+urllib.request.urlopen(urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"}))
+PY
+curl -skf -X POST "$SV/_admin/state" -d '{"rom_id":957,"emulator":"nestopia","file_name":"Name Test (USA).state7/../../../escaped-state.state7","content":"state-out"}' >/dev/null
+curl -skf -X POST "$SV/_admin/save" -d '{"rom_id":957,"slot":"autosave-x/../../../escaped-save","emulator":"nestopia","file_name":"Name Test (USA).sav","content":"save-out"}' >/dev/null
+syncnow
+out=$(find "$T" \( -name 'escaped*' -o -name 'Escape*' \) -not -path "$T/data/*")
+[[ -z "$out" ]] || fail "a name from RomM put something outside its folder: $out"
+[[ "$(cat "$NM/states/Name Test (USA).state7" 2>&1)" == state-out ]] \
+  || fail "the state must still come down, into the states folder, under the game's name: $(find "$NM" -type f)"
+[[ "$(cat "$NM/saves/Name Test (USA).x_.._.._.._escaped-save" 2>&1)" == save-out ]] \
+  || fail "a save in a slot named past its folder must land in the save folder: $(find "$NM" -type f)"
+
 echo "33. a PC game comes down whole; elsewhere loose readmes and RomM's manuals stay on RomM, a folder's files don't; keep_all_files decides either way"
 PC="$T/pcgames"; PG="$PC/win/Mina the Hollower"; SG="$PC/saturn/Disc Quest (USA)"; P3="$PC/ps3/Sky Quest [BLUS00001]"
 curl -skf -X POST "$SV/_admin/platform" -d '{"id":99,"slug":"win","name":"Windows"}' >/dev/null
