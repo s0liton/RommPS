@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Installs RommDeck on a Steam Deck (or any Linux with RetroDECK), for the
+# Installs RommDeck on a Steam Deck (or any Linux with RetroDECK, EmuDeck or
+# standalone emulators), for the
 # user running it: the app in ~/.local/share/rommdeck, RomM Sync (its
 # background service) as a systemd user unit that starts with the session, in
 # Game Mode and Desktop Mode alike, and an entry in the desktop's menu. Run it
