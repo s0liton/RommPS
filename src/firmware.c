@@ -289,6 +289,74 @@ static void tidy_pick_one(const char *dir, const cJSON *files, const cJSON *pick
 
 static int still_ours(const char *path, const char *rec_md5, int64_t rec_size);
 
+/* Files found where RomM's go with no record of ours, read once: by path,
+ * with size and mtime to tell it's still the same file. A reinstall finds
+ * 200-odd firmware files at once, and a dump of the user's that happens to
+ * be RomM's size would be read again every sync for nothing. Under g_lock. */
+#define MAX_READ 1024
+static struct {
+    char *path;
+    int64_t size, mtime_ns;
+    char md5[33];
+} g_read[MAX_READ];
+static int g_nread, g_read_next;
+
+static int md5_once(const char *path, char out[33]) {
+    const int64_t size = file_size(path), mtime = file_mtime_ns(path);
+    int i = 0;
+    while (i < g_nread && strcmp(g_read[i].path, path) != 0) i++;
+    if (i < g_nread && g_read[i].size == size && g_read[i].mtime_ns == mtime) {
+        memcpy(out, g_read[i].md5, 33);
+        return 0;
+    }
+    if (!file_exists(path) || md5_file_hex(path, out) != 0) return -1;
+    if (i == g_nread) {
+        char *p = strdup(path);
+        if (!p) return 0;
+        if (g_nread < MAX_READ) i = g_nread++;
+        else i = g_read_next++ % MAX_READ; /* full: the oldest goes */
+        free(g_read[i].path);
+        g_read[i].path = p;
+    }
+    g_read[i].size = size;
+    g_read[i].mtime_ns = mtime;
+    memcpy(g_read[i].md5, out, 33);
+    return 0;
+}
+
+/* RomM's files for the plan being made, which users_set needs to tell a set
+ * with no records from the user's own. Set by make_plan, under g_lock. */
+static const cJSON *g_plan_files;
+
+/* Whether the set's files in folder that no record calls ours are all RomM's
+ * to the byte, each under its name in RomM: what an install before this one
+ * put there, its records gone with it. Then it's RomM's set (place() takes
+ * each file on); a single file RomM hasn't got and it's the user's. Names and
+ * sizes first, so a foreign set is mostly told without reading a byte. */
+static int romms_set(const char *folder, const char *ext) {
+    for (int reading = 0; reading < 2; reading++) {
+        DIR *d = opendir(folder);
+        struct dirent *de;
+        int foreign = !d;
+        while (d && !foreign && (de = readdir(d))) {
+            if (de->d_name[0] == '.' || !str_ieq(path_ext(de->d_name), ext)) continue;
+            char path[PATH_MAX_LEN], md5[33];
+            path_join(path, sizeof path, folder, de->d_name);
+            state_lock();
+            const int ours = state_entry("firmware", path) != NULL;
+            state_unlock();
+            if (ours) continue;
+            const cJSON *f = NULL, *x;
+            cJSON_ArrayForEach(x, g_plan_files) if (!f && usable(x) && str_ieq(jget_str(x, "file_name", ""), de->d_name)) f = x;
+            foreign = !f || !file_exists(path) || file_size(path) != (int64_t)jget_num(f, "file_size_bytes", -1) ||
+                      (reading && (md5_once(path, md5) != 0 || !str_ieq(md5, jget_str(f, "md5_hash", "-"))));
+        }
+        if (d) closedir(d);
+        if (foreign) return 0;
+    }
+    return 1;
+}
+
 /* A Switch firmware folder is one set, matched to the keys beside it: files of
  * two versions together fail ProsperoEden's check ("NCA validation failed",
  * code 21) for every game. RomM's set goes only into a folder with none of the
@@ -351,7 +419,7 @@ static int users_set(const char *folder, const char *ext) {
         if (!ours) users = 1;
     }
     if (d) closedir(d);
-    if (!users) return 0;
+    if (!users || romms_set(folder, ext)) return 0;
     /* In batches: the folder changes as files go. */
     do {
         nours = 0;
@@ -388,6 +456,7 @@ static int users_set(const char *folder, const char *ext) {
 /* Which of the platform's files go to this emulator, under which names. */
 static int make_plan(const cJSON *rules, const cJSON *files, const char *dir, plan_t *plan) {
     int n = 0;
+    g_plan_files = files;
     const cJSON *pick = cJSON_GetObjectItemCaseSensitive(rules, "pick_one");
     if (cJSON_IsArray(pick)) {
         tidy_pick_one(dir, files, pick);
@@ -482,8 +551,27 @@ static int still_ours(const char *path, const char *rec_md5, int64_t rec_size) {
     return rec_md5[0] && md5_file_hex(path, have) == 0 && str_ieq(have, rec_md5);
 }
 
-/* Puts one file in place. 1 when it was added, 0 when nothing was needed, -1
- * when it failed. Downloads each file once a run; other emulators get a copy. */
+/* A file where RomM's goes that no record calls ours, the same size and md5
+ * as RomM's: RomM's, from an install before this one (or copied in by hand),
+ * recorded as if it had just come down so it follows RomM from now on.
+ * Saved by the caller, once for the lot. */
+static int adopt(const cJSON *f, const char *dest) {
+    const char *md5 = jget_str(f, "md5_hash", "");
+    const int64_t size = (int64_t)jget_num(f, "file_size_bytes", -1);
+    char have[33];
+    if (!md5[0] || file_size(dest) != size || md5_once(dest, have) != 0 || !str_ieq(have, md5)) return 0;
+    state_lock();
+    cJSON *e = state_entry_ensure("firmware", dest);
+    jset_str(e, "md5", md5);
+    jset_num(e, "size", (double)size);
+    jset_num(e, "platform_id", jget_num(f, "platform_id", 0));
+    state_unlock();
+    return 1;
+}
+
+/* Puts one file in place. 1 when it was added, 2 when RomM's was there already
+ * and is ours from now on, 0 when nothing was needed, -1 when it failed.
+ * Downloads each file once a run; other emulators get a copy. */
 static int place(const profile_map *m, const cJSON *f, const char *dest, fetched_t *got, int *ngot, int maxgot) {
     const char *md5 = jget_str(f, "md5_hash", "");
     const int64_t size = (int64_t)jget_num(f, "file_size_bytes", -1);
@@ -495,7 +583,7 @@ static int place(const profile_map *m, const cJSON *f, const char *dest, fetched
         str_copy(rec_md5, sizeof rec_md5, jget_str(rec, "md5", ""));
         const int64_t rec_size = rec ? (int64_t)jget_num(rec, "size", -1) : -1;
         state_unlock();
-        if (!ours) return 0; /* the user's (or the emulator's) own */
+        if (!ours) return adopt(f, dest) ? 2 : 0; /* or the user's (or the emulator's) own */
         if (str_ieq(rec_md5, md5) && file_size(dest) == size) return 0; /* up to date */
         if (!still_ours(dest, rec_md5, rec_size)) {
             /* Changed since we put it there: the user's now, never touched again. */
@@ -705,7 +793,7 @@ static void say_install(const profile_map *m, const cJSON *rules, const char *di
 }
 
 int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int only_platform, int *failed) {
-    int added = 0, fails = 0;
+    int added = 0, fails = 0, adopted = 0;
     cJSON *own = NULL;
     if (!platforms) {
         long st = 0;
@@ -756,10 +844,19 @@ int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int on
                 char dest[PATH_MAX_LEN];
                 plan_dest(dir, plan[k].name, dest, sizeof dest);
                 const int r = place(m, plan[k].f, dest, got, &ngot, 64);
-                if (r > 0) added++;
+                if (r == 1) added++;
+                else if (r == 2) adopted++;
                 else if (r < 0) fails++;
                 if (ext_in_list(jget_str(plan[k].f, "file_name", ""), ONE_SET_EXTS) && (r < 0 || (!file_exists(dest) && !dir_exists(dest))))
                     whole = 0;
+            }
+            if (adopted) {
+                state_lock();
+                state_save();
+                state_unlock();
+                LOGI("BIOS for %s: %d file%s already here match%s RomM's, kept up to date from now on", m->profile_name, adopted,
+                     adopted == 1 ? "" : "s", adopted == 1 ? "es" : "");
+                adopted = 0;
             }
             drop_named_twins(dir, plan, np);
             drop_old_set(dir, plan, np, mine, whole);

@@ -1893,6 +1893,78 @@ syncnow
 grep -q "NOTIFY\] RommPS: removed RomM's Switch firmware" "$T/daemon.log" || fail "no notice of RomM's firmware removed"
 syncnow
 [[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "mine.nca " ]] || fail "RomM's firmware must not come back beside the user's: $(ls "$NX/firmware")"
+echo "    BIOS, keys and a firmware set already there, RomM's to the byte, with no records (a reinstall): RomM's, not downloaded again, and kept up to date"
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":86,"slug":"nx-again","name":"NX Again"}' >/dev/null
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":87,"slug":"nx-mixed","name":"NX Mixed"}' >/dev/null
+agfw() { curl -skf -X POST "$SV/_admin/firmware" -d "{\"platform_id\":$1,\"file_name\":\"$2\",\"content\":\"$3\"}" >/dev/null; }
+agset() { # platform, then the first NCA's content; the rest stays
+  agfw "$1" aaaa.nca "$2"; agfw "$1" bbbb.cnmt.nca "again-fw-b$1"; agfw "$1" cccc.nca "again-fw-c$1"; }
+agromm() { # RomM's files for NX-again: prod.keys' content, then the first NCA's
+  agfw 86 prod.keys "$1"; agfw 86 title.keys tkeys-v1; agfw 86 boot.bin boot-v1; agfw 86 user.bin romm-user; agset 86 "$2"; }
+agromm keys-v1 again-fw-a86; agset 87 again-fw-a87
+AG="$T/nxagain" MX="$T/nxmixed"
+mkdir -p "$AG/keys" "$AG/nand" "$MX/nand"
+printf keys-v1 > "$AG/keys/prod.keys"; printf tkeys-v1 > "$AG/keys/title.keys"; printf boot-v1 > "$AG/boot.bin"
+printf mine-user > "$AG/user.bin"   # the user's own: RomM's name and size, not RomM's
+printf again-fw-a86 > "$AG/nand/aaaa.nca"; printf again-fw-b86 > "$AG/nand/bbbb.cnmt.nca"; printf again-fw-c86 > "$AG/nand/cccc.nca"
+printf again-fw-a87 > "$MX/nand/aaaa.nca"; printf again-fw-b87 > "$MX/nand/bbbb.cnmt.nca"
+printf 'my-fw' > "$MX/nand/mine.nca"   # one NCA RomM hasn't got: the user's set, RomM's files in it or not
+aghits() { curl -skf "$SV/_admin/dump" | python3 -c "import json,sys; print(json.load(sys.stdin)['firmware_hits'])"; }
+agrecs() { python3 -c "
+import hashlib,json,sys
+recs = json.load(open(sys.argv[1])).get('firmware', {})
+for p in sorted(recs):
+    if p.startswith(sys.argv[2] + '/'):
+        ok = recs[p].get('md5') == hashlib.md5(open(p, 'rb').read()).hexdigest() and recs[p].get('size') == len(open(p, 'rb').read())
+        print(p[len(sys.argv[2]) + 1:] + ('' if ok else '?'), end=' ')" "$T/data/state.json" "$1"; }
+before=$(aghits)
+python3 - "$API" "$AG" "$MX" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, ag, mx = sys.argv[1:4]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+def nx(pid, name, root, by_ext, slug):
+    return {"id": pid, "name": name, "enabled": True, "root": root, "rom_dir": "{root}/roms", "bios_dir": "{root}", "sync_saves": False,
+            "firmware": {"by_ext": by_ext}, "platforms": [{"romm": [slug], "dir": slug}]}
+profiles = [p for p in cfg["profiles"] if p.get("id") not in ("nxagain", "nxmixed")] + [
+    nx("nxagain", "NX-again", ag, {".keys": "keys", ".nca": "nand", ".bin": ""}, "nx-again"),
+    nx("nxmixed", "NX-mixed", mx, {".nca": "nand"}, "nx-mixed")]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+syncnow
+[[ "$(aghits)" == "$before" ]] || fail "files already there and RomM's must not download again: $(($(aghits) - before)) downloads"
+[[ "$(agrecs "$AG")" == "boot.bin keys/prod.keys keys/title.keys nand/aaaa.nca nand/bbbb.cnmt.nca nand/cccc.nca " ]] \
+  || fail "RomM's files already there must be recorded as ours, the user's own not: $(agrecs "$AG")"
+grep -q "BIOS for NX-again: 6 files already here match RomM's, kept up to date from now on" "$T/daemon.log" || fail "taking them on wasn't logged"
+[[ "$(cat "$AG/user.bin")" == "mine-user" ]] || fail "the user's own file under RomM's name must stay"
+[[ "$(ls "$MX/nand" | tr '\n' ' ')/$(agrecs "$MX")" == "aaaa.nca bbbb.cnmt.nca mine.nca /" ]] \
+  || fail "a folder with one NCA RomM hasn't got is the user's set: nothing added, nothing taken on: $(ls "$MX/nand")/$(agrecs "$MX")"
+echo "    RomM's keys and firmware change: the copies taken on are replaced, the user's own stay"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":86}' >/dev/null
+agromm keys-v2 again-fw-a86-v2
+before=$(aghits)
+syncnow
+[[ "$(cat "$AG/keys/prod.keys")/$(cat "$AG/nand/aaaa.nca")" == "keys-v2/again-fw-a86-v2" ]] \
+  || fail "newer keys and firmware in RomM must replace the copies taken on: $(cat "$AG/keys/prod.keys")/$(cat "$AG/nand/aaaa.nca")"
+[[ $(($(aghits) - before)) -eq 2 && "$(cat "$AG/keys/title.keys")/$(cat "$AG/user.bin")" == "tkeys-v1/mine-user" ]] \
+  || fail "only what RomM changed comes down, the user's own stays: $(($(aghits) - before)) downloads, $(cat "$AG/user.bin")"
+[[ "$(ls "$MX/nand" | tr '\n' ' ')" == "aaaa.nca bbbb.cnmt.nca mine.nca " ]] || fail "the user's set must stay as it is: $(ls "$MX/nand")"
+echo "    the user's own NCA gone: what's left is RomM's set, taken on and completed"
+rm "$MX/nand/mine.nca"
+before=$(aghits)
+syncnow
+[[ "$(ls "$MX/nand" | tr '\n' ' ')/$(agrecs "$MX")" == "aaaa.nca bbbb.cnmt.nca cccc.nca /nand/aaaa.nca nand/bbbb.cnmt.nca nand/cccc.nca " ]] \
+  || fail "a folder of RomM's files only must be RomM's set: $(ls "$MX/nand")/$(agrecs "$MX")"
+[[ $(($(aghits) - before)) -eq 1 ]] || fail "only the NCA missing comes down: $(($(aghits) - before)) downloads"
+grep -q "BIOS for NX-mixed: 2 files already here match RomM's" "$T/daemon.log" || fail "taking the set on wasn't logged"
+python3 - "$API" <<'PY' >/dev/null
+import json, sys, urllib.request
+api = sys.argv[1]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+profiles = [p for p in cfg["profiles"] if p.get("id") not in ("nxagain", "nxmixed")]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
 
 echo "    two Switch emulators, the second an extra: one save on RomM, in both, whichever was saved in"
 NX2="$T/nxemu2"; NS2="$NX2/user/save"
@@ -1961,16 +2033,17 @@ fault hidden 0
 nxrom '{"id":936,"platform_id":90,"name":"Merge","fs_name":"Merge","files":[
   {"id":9361,"file_name":"Merge [0100DDDD00000000][v0].nsp","content":"ROM:Merge [0100DDDD00000000][v0].nsp"},
   {"id":9362,"file_name":"Merge [0100DDDD00000800][v65536].nsp","content":"ROM:Merge [0100DDDD00000800][v65536].nsp"}]}'
-# The list fails before the entries go, or a sync the watcher starts in between
-# sees the whole list and does its job early.
+# The list fails and the proxy turns uploads away before the entries go, or a
+# sync the watcher starts in between sees the whole list, or reaches RomM with
+# an upload, and does its job early.
 fault list_error 100
+fault upload_413
 curl -skf -X POST "$SV/_admin/delete_rom" -d '{"ids":[934,935]}' >/dev/null
 sleep 1.1
 curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":936,\"slot\":\"autosave\",\"file_name\":\"0100DDDD00000000.zip\",\"content_b64\":\"$(python3 -c "
 import base64,io,zipfile
 b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('0100DDDD00000000/SaveData.bin','merge-from-pc'); z.close()
 print(base64.b64encode(b.getvalue()).decode())")\"}" >/dev/null
-fault upload_413
 # RomM's list failing, cut short, or RomM failing to answer for the games: nothing is let go. The
 # next fault is on before the last is cleared, so no sync ever runs without one.
 was=""
