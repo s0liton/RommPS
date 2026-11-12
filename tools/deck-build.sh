@@ -6,7 +6,7 @@
 #   tools/deck-build.sh <command...>     e.g. tools/deck-build.sh make steamdeck-app
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-IMAGE="${DECK_IMAGE:-romm-sync-deck:5}"
+IMAGE="${DECK_IMAGE:-romm-sync-deck:6}"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || docker build -t "$IMAGE" "$ROOT/platform/steamdeck/app/docker"
 TTY=()
 [[ -t 0 && -t 1 ]] && TTY=(-it)

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  RommDeck's AppStream metainfo, for software centres and AppImageHub.
+  package.sh puts it in the AppImage's usr/share/metainfo/, and the .desktop
+  in usr/share/applications/, both named after the id.
+
+  .appdata.xml rather than .metainfo.xml: appimagetool and AppImageHub only
+  look for that one. Each release wants its <release> line here before it's
+  tagged; rommdeck-release.yml checks.
+-->
+<component type="desktop-application">
+  <id>io.github.s0liton.RommDeck</id>
+  <name>RommDeck</name>
+  <summary>RomM client for the Steam Deck</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.s0liton">
+    <name>s0liton</name>
+  </developer>
+
+  <description>
+    <p>
+      RommDeck connects your Steam Deck to your RomM server. It downloads games and BIOS files into
+      the folders your emulators actually read, and keeps their saves and save states in sync with
+      RomM, in the background, whether the app is open or not.
+    </p>
+    <p>
+      It works with RetroDECK, EmuDeck and whatever emulators you installed yourself, not just
+      RetroArch. Its 40-odd built-in profiles, from PS1 to Switch, sync each save in the format the
+      emulator reads: PS2 memory cards, GameCube GCI folders, Wii NAND saves, Switch user saves.
+    </p>
+    <ul>
+      <li>Browse your RomM library and download games straight to the Deck, SD card included</li>
+      <li>Saves in the same shape Argosy and RommPS use, so they carry over between devices</li>
+      <li>Conflicts settled and older versions restored from the app or its web UI</li>
+      <li>Controller first, with touch and mouse, in Game Mode and Desktop Mode</li>
+      <li>Signed releases: the background service checks the signature before it updates itself</li>
+    </ul>
+    <p>
+      The first launch installs RomM Sync, its background service, as a systemd user service, so
+      syncing carries on after the window closes. It needs a RomM server of your own, 5.2.0 or newer.
+      Games not included.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.s0liton.RommDeck.desktop</launchable>
+  <provides>
+    <binary>rommdeck</binary>
+  </provides>
+
+  <categories>
+    <category>Game</category>
+  </categories>
+  <keywords>
+    <keyword>RomM</keyword>
+    <keyword>ROM</keyword>
+    <keyword>emulation</keyword>
+    <keyword>save sync</keyword>
+    <keyword>RetroDECK</keyword>
+    <keyword>EmuDeck</keyword>
+    <keyword>Steam Deck</keyword>
+  </keywords>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The library on the Steam Deck</caption>
+      <image>https://raw.githubusercontent.com/s0liton/RommDeck/main/assets/steamdeck-library.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/s0liton/RommDeck</url>
+  <url type="bugtracker">https://github.com/s0liton/RommDeck/issues</url>
+  <url type="vcs-browser">https://github.com/s0liton/RommPS</url>
+
+  <recommends>
+    <control>gamepad</control>
+  </recommends>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <!-- mild: it asks GitHub for updates and presets. The rest is between it and your own server. -->
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="1.0.0" date="2026-11-12" type="stable">
+      <url type="details">https://github.com/s0liton/RommDeck/releases/tag/v1.0.0</url>
+      <description>
+        <p>The first release: the RomM library, save and state sync, BIOS and firmware, for RetroDECK, EmuDeck and standalone emulators.</p>
+      </description>
+    </release>
+  </releases>
+</component>

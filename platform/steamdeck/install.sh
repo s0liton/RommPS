@@ -45,10 +45,11 @@ cat > "$APPS/rommdeck.desktop" <<EOF
 [Desktop Entry]
 Type=Application
 Name=RommDeck
-Comment=Your RomM library and save sync, for RetroDECK
+Comment=Your RomM library and save sync, for RetroDECK, EmuDeck and standalone emulators
 Exec=$DEST/rommdeck
 Path=$DEST
 Icon=$DEST/steam-art/icon.png
+StartupWMClass=io.github.s0liton.RommDeck
 Categories=Game;
 Terminal=false
 EOF

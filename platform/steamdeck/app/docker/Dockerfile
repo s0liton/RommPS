@@ -6,7 +6,7 @@ FROM debian:bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake ninja-build git pkg-config python3 python3-numpy python3-pil ca-certificates curl \
-        clang-format-16 clang-tidy-16 cppcheck shellcheck file desktop-file-utils \
+        clang-format-16 clang-tidy-16 cppcheck shellcheck file desktop-file-utils appstream \
         libcurl4-openssl-dev libssl-dev zlib1g-dev \
         mesa-common-dev libgl-dev libegl-dev libopengl-dev libgles-dev \
         libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
@@ -26,7 +26,8 @@ RUN git clone --depth 1 --branch "$SDL_TAG" https://github.com/libsdl-org/SDL.gi
 ENV CMAKE_PREFIX_PATH=/opt/sdl3
 
 # appimagetool and the AppImage runtime, pinned and unpacked, so packaging
-# runs without FUSE and downloads nothing.
+# runs without FUSE and downloads nothing. appimagetool brings its own
+# zsyncmake for the .zsync, and checks the metainfo with appstreamcli (above).
 ARG APPIMAGETOOL_URL=https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
 ARG RUNTIME_URL=https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
 RUN curl -fsSL -o /tmp/appimagetool "$APPIMAGETOOL_URL" \

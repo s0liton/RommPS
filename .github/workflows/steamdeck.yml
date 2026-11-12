@@ -3,7 +3,8 @@
 # packages them (linting is lint.yml's job):
 #
 #   tests/steamdeck*.sh  the Deck's sync service on RetroDECK, EmuDeck and standalone layouts, against the mock RomM
-#   package.sh           rommdeck-<version>-x86_64.tar.gz and RommDeck-<version>-x86_64.AppImage,
+#   package.sh           rommdeck-<version>-x86_64.tar.gz and RommDeck-<version>-x86_64.AppImage
+#                        (with its .zsync, for AppImageUpdate and Gear Lever),
 #                        RommDeck-Installer.desktop and rommdeck-installer.sh, plus
 #                        romm-sync-steamdeck (the service alone, for in-app updates)
 #   tests/steamdeck_install.sh  the installer, with that AppImage, against a fake release
@@ -35,7 +36,7 @@ jobs:
     env:
       VERSION: ${{ inputs.version }}
       # The tag tools/deck-build.sh runs; keep the two in step.
-      DECK_IMAGE: romm-sync-deck:5
+      DECK_IMAGE: romm-sync-deck:6
     steps:
       - uses: actions/checkout@v4
         with:

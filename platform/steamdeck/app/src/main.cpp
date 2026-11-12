@@ -419,7 +419,9 @@ int main(int argc, char **argv)
         else if (!std::strcmp(argv[i], "--windowed"))
             fullscreen = false;
     }
-    SDL_SetAppMetadata("RommDeck", nullptr, "rommdeck");
+    // The window's class (and Wayland app_id): the AppStream id, which every
+    // menu entry names in StartupWMClass so the window gets its icon.
+    SDL_SetAppMetadata("RommDeck", nullptr, "io.github.s0liton.RommDeck");
     SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
     {

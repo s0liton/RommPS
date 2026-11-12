@@ -31,7 +31,7 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: platform/steamdeck/app/docker
-          tags: romm-sync-deck:5
+          tags: romm-sync-deck:6
           load: true
           cache-from: type=gha,scope=steamdeck
           cache-to: type=gha,mode=max,scope=steamdeck,ignore-error=true
