@@ -1757,6 +1757,77 @@ grep -q "Nameless.nsp: RomM no longer has game 909, looked for again" "$T/daemon
 syncnow
 [[ "$(nxid)" == 919 ]] || fail "the game wasn't matched again under its new id: $(nxid)"
 rm "$NX/roms/Nameless.nsp"
+echo "28b1. Switch device saves travel as device/<title id>/; a device save alone never goes up over RomM's user's save"
+ND="$NS/00000000000000000000000000000000"
+# RomM's saves of a game, oldest first: the zip's files, and what each one holds.
+nxunits() { curl -skf "$SV/_admin/dump" | python3 -c "
+import io,json,sys,zipfile
+for s in sorted((s for s in json.load(sys.stdin)['saves'] if s['rom_id'] == $1), key=lambda s: s['updated_at']):
+    z = zipfile.ZipFile(io.BytesIO(s['content'].encode('latin1')))
+    print(s['slot'], ' '.join('%s=%s' % (n, z.read(n).decode()) for n in sorted(z.namelist())))"; }
+nxconflicts() { python3 -c "import json,sys; print(len(json.load(open(sys.argv[1])).get('conflicts', {})))" "$T/data/state.json"; }
+nxzip() { python3 -c "
+import base64,io,sys,zipfile
+b=io.BytesIO(); z=zipfile.ZipFile(b,'w')
+for a in sys.argv[1:]: n,_,v=a.partition('='); z.writestr(n,v)
+z.close(); print(base64.b64encode(b.getvalue()).decode())" "$@"; }
+for g in "913 Devone 0100DDDD00000000" "914 Devtwo 0100EEEE00000000" "915 Devthree 0100FFFF00000000"; do
+    read -r id name tid <<<"$g"
+    nxrom "{\"id\":$id,\"platform_id\":90,\"name\":\"$name\",\"fs_name\":\"$name [$tid][v0].nsp\"}"
+    printf 'ROM:%s' "$name" > "$NX/roms/$name [$tid][v0].nsp"
+done
+# Synced as 1.4.2 did, the user's save alone; the device save there all along, written long before.
+mkdir -p "$NS/$U1/0100DDDD00000000" "$NS/$U1/0100EEEE00000000"
+printf 'one-user' > "$NS/$U1/0100DDDD00000000/save.bin"; printf 'two-user' > "$NS/$U1/0100EEEE00000000/save.bin"
+syncnow
+watch_from=$(date +%s)
+[[ "$(nxunits 913)" == "autosave 0100DDDD00000000/save.bin=one-user" ]] || fail "a Switch save without a device save goes up as before: $(nxunits 913)"
+mkdir -p "$ND/0100DDDD00000000" "$ND/0100EEEE00000000"
+printf 'one-device' > "$ND/0100DDDD00000000/dev.bin"; printf 'two-device' > "$ND/0100EEEE00000000/dev.bin"
+touch -d "2 days ago" "$ND/0100DDDD00000000/dev.bin" "$ND/0100EEEE00000000/dev.bin"
+echo "    upgraded: the device save goes up with the user's once, with no conflict"
+# Meanwhile another device saved the second game: only its device save is new here, so RomM's comes down.
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":914,\"slot\":\"autosave\",\"file_name\":\"0100EEEE00000000.zip\",\"content_b64\":\"$(
+    nxzip 0100EEEE00000000/save.bin=two-elsewhere device/0100EEEE00000000/dev.bin=two-device-elsewhere)\"}" >/dev/null
+syncnow
+want=$'autosave 0100DDDD00000000/save.bin=one-user\nautosave 0100DDDD00000000/save.bin=one-user device/0100DDDD00000000/dev.bin=one-device'
+[[ "$(nxunits 913)" == "$want" ]] || fail "the device save must go up with the user's save: $(nxunits 913)"
+[[ "$(cat "$NS/$U1/0100EEEE00000000/save.bin")/$(cat "$ND/0100EEEE00000000/dev.bin")" == "two-elsewhere/two-device-elsewhere" ]] \
+  || fail "RomM's newer save must come down over one changed here only by its device save: $(cat "$NS/$U1/0100EEEE00000000/save.bin")"
+[[ "$(nxconflicts)" == 0 ]] || fail "the device save new to the sync must not be a conflict: $(nxconflicts)"
+syncnow
+[[ "$(nxunits 913)" == "$want" && "$(nxconflicts)" == 0 ]] || fail "the device save must go up once: $(nxunits 913)"
+[[ "$(nxunits 914 | tail -1)" == "autosave 0100EEEE00000000/save.bin=two-elsewhere device/0100EEEE00000000/dev.bin=two-device-elsewhere" ]] \
+  || fail "nothing goes up over the save that came down: $(nxunits 914)"
+echo "    the user's save gone here, the device save left: RomM's comes back, nothing goes up"
+rm -r "$NS/$U1/0100DDDD00000000"
+syncnow
+[[ "$(cat "$NS/$U1/0100DDDD00000000/save.bin" 2>&1)/$(cat "$ND/0100DDDD00000000/dev.bin")" == "one-user/one-device" ]] \
+  || fail "RomM's save must come back when only the device save is here: $(find "$NS" -path '*DDDD*' -type f)"
+[[ "$(nxunits 913)" == "$want" ]] || fail "a device save alone must never go up over RomM's: $(nxunits 913)"
+echo "    a game just started on a new console (its device save alone, newer) against RomM's: RomM's comes down"
+curl -skf -X POST "$SV/_admin/save" -d "{\"rom_id\":915,\"slot\":\"autosave\",\"file_name\":\"0100FFFF00000000.zip\",\"content_b64\":\"$(
+    nxzip 0100FFFF00000000/save.bin=three-user device/0100FFFF00000000/dev.bin=three-device)\"}" >/dev/null
+sleep 1.1; mkdir -p "$ND/0100FFFF00000000"; printf 'three-fresh' > "$ND/0100FFFF00000000/dev.bin"
+syncnow
+[[ "$(nxunits 915)" == "autosave 0100FFFF00000000/save.bin=three-user device/0100FFFF00000000/dev.bin=three-device" ]] \
+  || fail "a device save alone must not go up over RomM's save with the user's: $(nxunits 915)"
+[[ "$(cat "$NS/$U1/0100FFFF00000000/save.bin" 2>&1)/$(cat "$ND/0100FFFF00000000/dev.bin")" == "three-user/three-device" ]] \
+  || fail "RomM's save must come down over a device save alone: $(find "$NS" -path '*FFFF*' -type f)"
+[[ "$(nxconflicts)" == 0 ]] || fail "a device save alone against RomM's whole save is no conflict: $(nxconflicts)"
+echo "    a change to the device save alone is seen as the user's save's are"
+# The watcher takes up the folders a sync found once a minute.
+while (( $(date +%s) < watch_from + 62 )); do sleep 1; done
+printf 'one-device-2' > "$ND/0100DDDD00000000/dev.bin"
+for _ in $(seq 1 40); do [[ "$(nxunits 913 | tail -1)" == *"dev.bin=one-device-2"* ]] && break; sleep 0.5; done
+grep -q "save changed on disk: dev.bin" "$T/daemon.log" || fail "a change to the device save alone wasn't seen"
+[[ "$(nxunits 913 | tail -1)" == *"0100DDDD00000000/save.bin=one-user device/0100DDDD00000000/dev.bin=one-device-2" ]] \
+  || fail "the device save's change must go up with the user's save: $(nxunits 913)"
+for g in "Devone [0100DDDD00000000]" "Devtwo [0100EEEE00000000]" "Devthree [0100FFFF00000000]"; do rm "$NX/roms/$g[v0].nsp"; done
+# Their saves go too, once no sync that still saw the games is running. Merge, further down, is
+# 0100DDDD00000000 as well: it would inherit Devone's save (by title id, as it should) as one more upload.
+syncnow
+rm -r "$ND" "$NS/$U1/0100DDDD00000000" "$NS/$U1/0100EEEE00000000" "$NS/$U1/0100FFFF00000000"
 echo "    no title id in the name (No-Intro's) nor in RomM: read from the file, with the emulator's prod.keys"
 SNAP="New Pokemon Snap (World) (En,Ja,Fr,De,Es,It,Zh,Ko).xci"
 python3 "$ROOT/tests/make_switch.py" xci "$NX/roms/$SNAP" 0100F4300BF2C000 "$T/made-up.keys"
@@ -1779,6 +1850,43 @@ curl -skf -X POST "$SV/_admin/firmware" -d '{"platform_id":90,"file_name":"bbbb.
 rm -rf "$NX/firmware"
 syncnow
 [[ "$(ls "$NX/firmware" 2>/dev/null | tr '\n' ' ')" == "aaaa.nca bbbb.cnmt.nca " ]] || fail "RomM's firmware must fill an empty folder: $(ls "$NX/firmware" 2>&1)"
+echo "    new keys and a new firmware set in RomM replace the old ones, never mixed"
+nxfw() { curl -skf -X POST "$SV/_admin/firmware" -d "{\"platform_id\":90,\"file_name\":\"$1\",\"content\":\"$2\"}" >/dev/null; }
+nxfw prod.keys keys-v1
+syncnow
+[[ "$(cat "$NX/keys/prod.keys" 2>&1)" == "keys-v1" ]] || fail "RomM's keys must come down: $(cat "$NX/keys/prod.keys" 2>&1)"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":90}' >/dev/null
+nxfw prod.keys keys-v2; nxfw cccc.nca romm-fw-c; nxfw dddd.cnmt.nca romm-fw-d
+syncnow
+[[ "$(cat "$NX/keys/prod.keys")" == "keys-v2" ]] || fail "newer keys in RomM must replace the old ones: $(cat "$NX/keys/prod.keys")"
+[[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "cccc.nca dddd.cnmt.nca " ]] || fail "a new firmware set must replace the old one: $(ls "$NX/firmware")"
+grep -q "RomM's firmware set changed, removed 2 files of the old one" "$T/daemon.log" || fail "the old set's removal wasn't logged"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":90}' >/dev/null
+nxfw aaaa.nca romm-fw-a; nxfw bbbb.cnmt.nca romm-fw-b
+syncnow
+[[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "aaaa.nca bbbb.cnmt.nca " ]] || fail "back to the first set: $(ls "$NX/firmware")"
+echo "    the old set goes only once the new one is all here: not for a download that failed, nor a list cut short"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":90}' >/dev/null
+nxfw cccc.nca romm-fw-c
+curl -skf -X POST "$SV/_admin/firmware" -d '{"platform_id":90,"file_name":"dddd.cnmt.nca","content":"romm-fw-d","fail":true}' >/dev/null
+syncnow
+[[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "aaaa.nca bbbb.cnmt.nca cccc.nca " ]] \
+  || fail "a new set that didn't all come down must leave the old one: $(ls "$NX/firmware")"
+grep -q "RomM's firmware set in $NX/firmware isn't all here (2 files of it, 2 of the old one)" "$T/daemon.log" || fail "keeping the old set wasn't logged"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":90}' >/dev/null
+nxfw cccc.nca romm-fw-c; nxfw dddd.cnmt.nca romm-fw-d; nxfw eeee.nca romm-fw-e; nxfw ffff.nca romm-fw-f
+syncnow
+[[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "cccc.nca dddd.cnmt.nca eeee.nca ffff.nca " ]] \
+  || fail "the new set all here, the old one goes: $(ls "$NX/firmware")"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":90}' >/dev/null
+nxfw cccc.nca romm-fw-c
+syncnow
+[[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "cccc.nca dddd.cnmt.nca eeee.nca ffff.nca " ]] \
+  || fail "a list of one file of a set of four is cut short, not a new set: $(ls "$NX/firmware")"
+curl -skf -X POST "$SV/_admin/firmware_drop" -d '{"platform_id":90}' >/dev/null
+nxfw aaaa.nca romm-fw-a; nxfw bbbb.cnmt.nca romm-fw-b
+syncnow
+[[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "aaaa.nca bbbb.cnmt.nca " ]] || fail "back to the first set again: $(ls "$NX/firmware")"
 printf 'my-fw' > "$NX/firmware/mine.nca"   # the user puts their own set in
 syncnow
 [[ "$(ls "$NX/firmware" | tr '\n' ' ')" == "mine.nca " ]] || fail "RomM's firmware beside the user's set must come out: $(ls "$NX/firmware")"
@@ -2300,6 +2408,59 @@ import json,sys; print([s['content'] for s in sorted((s for s in json.load(sys.s
 syncnow
 [[ "$(last uploaded)" == 0 && "$(last downloaded)" == 0 ]] || fail "DeSmuME's save and the others in step kept moving: $(last uploaded) up, $(last downloaded) down"
 
+echo "28c4b. RetroArch's MAME core: each set's NVRAM folder as <set>.zip in a slot of its own; the arcade entry's .srm syncs as before, whichever core it is"
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":93,"slug":"arcade","name":"Arcade"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":993,"platform_id":93,"name":"Street Fighter II","fs_name":"sf2.zip"}' >/dev/null
+AR="$T/raarcade"; mkdir -p "$AR/games" "$AR/saves/mame/nvram/sf2"
+printf 'ROM:sf2' > "$AR/games/sf2.zip"
+printf 'fbneo-sram' > "$AR/saves/sf2.srm"; printf 'mame-eeprom' > "$AR/saves/mame/nvram/sf2/eeprom"
+arcade() { python3 - "$API" "$AR" "$@" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, root, emu, core, other_emu, other_core = sys.argv[1:7]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+profiles = [p for p in cfg["profiles"] if p.get("id") != "raarcade"] + [
+    {"id": "raarcade", "name": "RA-arcade", "enabled": True, "root": root, "rom_dir": "{root}/games", "save_dir": "{root}/saves",
+     "sync_saves": True, "platforms": [{"romm": ["arcade"], "dir": "arcade", "emulator": emu, "core_name": core,
+                                        "cores": [{"core_name": other_core, "emulator": other_emu}]}]}]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+}
+# RomM's newest save of the game in each slot: by whom, its name, and what it holds.
+arc() { curl -skf "$SV/_admin/dump" | python3 -c "
+import io,json,re,sys,zipfile
+newest = {}
+for s in sorted((s for s in json.load(sys.stdin)['saves'] if s['rom_id'] == 993), key=lambda s: s['updated_at']): newest[s['slot']] = s
+for slot, s in sorted(newest.items()):
+    c = s['content'].encode('latin1')
+    z = zipfile.ZipFile(io.BytesIO(c)) if c[:2] == b'PK' else None
+    body = ' '.join('%s=%s' % (n, z.read(n).decode()) for n in sorted(z.namelist())) if z else c.decode()
+    print(slot, s['emulator'], re.sub(r' \[[^]]*\]', '', s['file_name']), body)"; }
+arcade fbneo "FinalBurn Neo" mame MAME
+syncnow
+want=$'autosave fbneo sf2.srm fbneo-sram\nautosave-mame mame sf2.zip sf2/eeprom=mame-eeprom'
+[[ "$(arc)" == "$want" ]] || fail "FBNeo's .srm and MAME's NVRAM must both go up, each in a slot of its own: $(arc)"
+syncnow
+[[ "$(arc)" == "$want" && "$(curl -skf "$SV/_admin/dump" | python3 -c "import json,sys; print(sum(s['rom_id'] == 993 for s in json.load(sys.stdin)['saves']))")" == 2 ]] \
+  || fail "the two in step must stay put: $(arc)"
+rm -r "$AR/saves/sf2.srm" "$AR/saves/mame/nvram/sf2"
+syncnow
+[[ "$(cat "$AR/saves/sf2.srm" 2>&1)/$(cat "$AR/saves/mame/nvram/sf2/eeprom" 2>&1)" == "fbneo-sram/mame-eeprom" ]] \
+  || fail "each must come back from its own slot: $(find "$AR/saves" -type f)"
+echo "    MAME owning the arcade entry: the entry's .srm syncs as before, the NVRAM beside it"
+arcade mame MAME fbneo "FinalBurn Neo"
+sleep 1.1; printf 'srm-2' > "$AR/saves/sf2.srm"; printf 'mame-eeprom-2' > "$AR/saves/mame/nvram/sf2/eeprom"
+syncnow
+[[ "$(arc)" == $'autosave mame sf2.srm srm-2\nautosave-mame mame sf2.zip sf2/eeprom=mame-eeprom-2' ]] \
+  || fail "with MAME the entry's own core, its .srm and its NVRAM must both sync: $(arc)"
+rm "$AR/games/sf2.zip"
+python3 - "$API" <<'PY' >/dev/null
+import json, sys, urllib.request
+api = sys.argv[1]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+profiles = [p for p in cfg["profiles"] if p.get("id") != "raarcade"]
+urllib.request.urlopen(urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"}))
+PY
 echo "28c5. Mupen64Plus standalone: its .eep/.sra/.fla/.mpk, named from its database, go to RomM as one .srm and come back"
 curl -skf -X POST "$SV/_admin/rom" -d '{"id":962,"platform_id":6,"name":"Pocket Kart","fs_name":"Pocket Kart (U).v64"}' >/dev/null
 M6="$T/m64like"; mkdir -p "$M6/roms" "$M6/saves" "$M6/data"
@@ -2701,6 +2862,26 @@ keys=$(python3 -c "import json,sys; print(list(json.load(open(sys.argv[1]))['sav
 [[ "$(cd "$T/moved/gbc" && find . -type f)" == "./bios/mine.bin" && -f "$T/movedgbc/bios/boot.bin" ]] \
   || fail "only the copies may go from a system's old folder, never the folder in use: $(find "$T/moved/gbc" "$T/movedgbc")"
 
+echo "30b3. a saved profile's BIOS rules follow its newer preset (nothing lets the user set them)"
+D5="$T/data5"; mkdir -p "$D5"
+python3 - "$T/catalog.json" "$D5/config.json" "$T" <<'PY'
+import json, sys
+cat, t = json.load(open(sys.argv[1])), sys.argv[3]
+cat.append({"id": "fwlike", "name": "FW-like", "detect": [t + "/fwlike"], "profile": {"root": t + "/fwlike",
+    "firmware": {"dir": "{bios}/ps3", "by_ext": {".pup": ""}}, "platforms": [{"romm": ["ps3"], "dir": "ps3"}]}})
+json.dump(cat, open(sys.argv[1], "w"))
+json.dump({"web_port": 8788, "sync_interval_min": 0, "profiles_custom": True, "profiles": [
+    {"id": "fwlike", "name": "FW-like", "enabled": True, "root": t + "/fwlike", "firmware": {"skip": True},
+     "platforms": [{"romm": ["ps3"], "dir": "ps3"}]}]}, open(sys.argv[2], "w"))
+PY
+ROMM_SYNC_HOMEBREW="$T/homebrew" ROMM_SYNC_MOUNTS="$MB" ROMM_SYNC_DATA="$D5" ROMM_SYNC_AUTOSTART="$T/etaHEN5" \
+  ROMM_SYNC_CATALOG="$T/catalog.json" ROMM_SYNC_APP_DIRS="$T/apps" ROMM_SYNC_FS_ROOTS="$T" \
+  "$ROOT/build/host/romm-sync" >>"$D5/daemon.log" 2>&1 &
+pid=$!; sleep 3; kill $pid; wait $pid 2>/dev/null || true
+fw=$(python3 -c "
+import json,sys
+print([json.dumps(p.get('firmware'), sort_keys=True) for p in json.load(open(sys.argv[1]))['profiles'] if p['id'] == 'fwlike'])" "$D5/config.json")
+[[ "$fw" == *'"by_ext": {".pup": ""}'*'"dir": "{bios}/ps3"'* ]] || fail "the saved BIOS rules must follow the preset: $fw"
 echo "30b4. folders RommPS made for another emulator don't make one installed; a profile set up from them goes, its files stay"
 # PSXS5 and SwanStationPS5: SwanStationPS5 plays the games in PSXS5's folder,
 # so a download for it made /data/PSXS5, which 1.3.0 took for PSXS5 (here

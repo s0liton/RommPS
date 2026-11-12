@@ -459,7 +459,7 @@ class H(BaseHTTPRequestHandler):
                 raw += b"\0" * max(0, b.get("pad", 0) - len(raw))  # a real BIOS's size, zeros after the content
                 DB["firmware"].append({"id": next_id(), "platform_id": b["platform_id"], "file_name": b["file_name"],
                                        "content": raw, "is_verified": b.get("is_verified", False),
-                                       "missing": b.get("missing", False)})
+                                       "missing": b.get("missing", False), "fail": b.get("fail", False)})
                 if b.get("embed"):
                     next(x for x in DB["platforms"] if x["id"] == b["platform_id"])["embed_firmware"] = True
                 return self.reply(200, {})
@@ -585,6 +585,8 @@ class H(BaseHTTPRequestHandler):
                 DB["firmware_hits"] = DB.get("firmware_hits", 0) + 1
                 if f.get("missing"):
                     return self.reply(404, {"detail": "file not found"})
+                if f.get("fail"):  # listed as fine, but its download breaks off
+                    return self.reply(500, {"detail": "storage error"})
                 return self.reply(200, raw=f["content"], ctype="application/octet-stream")
             if p == "/api/memory-cards" and method == "GET":
                 emu = qs("emulator")

@@ -7,6 +7,7 @@
 #include "core/input.hpp"
 #include "gfx/renderer.hpp"
 #include "rommps_look.hpp"
+#include "rommps_words.hpp"
 #include "ui/feedback.hpp"
 #include "ui/fonts.hpp"
 
@@ -17,7 +18,7 @@
 namespace rommps
 {
 
-inline constexpr const char *kSourceUrl = "https://github.com/s0liton/RommPS";
+inline constexpr const char *kSourceUrl = ROMM_SOURCE_URL;
 
 // A QR code's modules, true for dark. Empty if the text didn't fit.
 struct QrCode

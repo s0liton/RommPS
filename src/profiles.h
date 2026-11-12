@@ -159,6 +159,10 @@ typedef struct {
      * ("cores"): only its saves, in that core's folder and format. Never a
      * target for games, mounts or copies. */
     int twin;
+    /* A twin whose saves are a kind of their own ("apart" in its core's rule:
+     * MAME's NVRAM folders): they sync in a slot of their own,
+     * "<slot>-<emulator>", never meeting the entry's .srm in one. */
+    int apart;
     /* Mupen64Plus standalone's own N64 save files ("n64_split_dir"), and its
      * game database ("n64_ini"), for the names it gives them: the save the
      * sync sees is the .srm RommPS keeps for it in save_dir (n64.h). */
@@ -223,7 +227,8 @@ typedef struct {
     char save_layout[8];    /* "" for one file per game, or psp, gci, wii, ps2 (see bundle.h) */
     char bundle_dirs[512];  /* candidate folders for bundled saves, comma separated */
     /* switch: the Switch user whose saves sync ({switch_user} in bundle_dirs):
-     * the profile's "switch_user", else the emulator's first user. */
+     * the profile's "switch_user", else the emulator's first user (a yuzu
+     * fork's profiles.dat: the one its config has open). */
     char switch_user[40];
     /* x360: the player (XUID) whose saves sync ({xuid} in bundle_dirs): the
      * profile's "x360_user", else the emulator's player 1 ("x360_users", its
@@ -268,6 +273,9 @@ int profile_ra_dir(const profile_map *m, const char *key, char *out, size_t n);
 
 /* Built-in default profiles (caller owns the returned array). */
 cJSON *profiles_default(void);
+/* Takes out built-in profiles this machine has no use for (Mednafen and PS2
+ * ISOs on the Deck), from settings an older version saved. How many went. */
+int profiles_drop_unsupported(cJSON *profiles);
 
 /* The system a platform entry plays (its first RomM slug), and whether a
  * profile hands that system to another emulator ("exclude"). */

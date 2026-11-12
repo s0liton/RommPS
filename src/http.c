@@ -1264,7 +1264,7 @@ static void cert_note(const char *url, CURLcode rc, const char *errbuf, int may_
     str_copy(g_cc_refused_origin, sizeof g_cc_refused_origin, alert ? o : "");
     if (!alert) g_cc_refused[0] = 0;
     else if (g_cc_cert)
-        snprintf(g_cc_refused, sizeof g_cc_refused, "%s didn't accept this console's client certificate (%s)", o, alert);
+        snprintf(g_cc_refused, sizeof g_cc_refused, "%s didn't accept the client certificate (%s)", o, alert);
     else
         snprintf(g_cc_refused, sizeof g_cc_refused,
                  "%s asks for a client certificate (mTLS): add one under Client certificate in the web UI", o);

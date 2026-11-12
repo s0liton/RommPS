@@ -5,6 +5,7 @@
 
 #include "cJSON.h"
 #include "core/tween.hpp"
+#include "touch.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -67,7 +68,7 @@ std::vector<Row> SettingsPage::rows(const App &app, std::vector<int> *ids) const
     r[kOnChange] = {RowKind::toggle, "Upload saves as they change", "", "While you play", c.sync_on_change};
     r[kStates] = {RowKind::choice, "Save states", label_of(rommps::kStates, c.states), ""};
     r[kPolicy] = {RowKind::choice, "Resolving save conflicts", label_of(kPolicies, c.conflict_policy),
-                  "What RommPS will do by default whenever a save conflict exists between this PS5 and your RomM Server"};
+                  "What " ROMM_APP " will do by default whenever a save conflict exists between this " ROMM_MODEL " and your RomM Server"};
     r[kConcurrency] = {RowKind::choice, "Concurrent Game Downloads", std::to_string(c.download_concurrency), ""};
     r[kNotify] = {RowKind::toggle, "Notifications", "", "", c.notify};
     r[kUpdateCheck] = {RowKind::toggle, "Check for updates daily", "", "", c.update_check};
@@ -85,24 +86,24 @@ std::vector<Row> SettingsPage::rows(const App &app, std::vector<int> *ids) const
         else if (s.covers_total > 0 && s.covers_done < s.covers_total)
             std::snprintf(detail, sizeof detail, "Saving covers: %d of %d", s.covers_done, s.covers_total);
         else if (s.covers_total > 0)
-            std::snprintf(detail, sizeof detail, "All %d covers are on the console", s.covers_total);
+            std::snprintf(detail, sizeof detail, "All %d covers are on the " ROMM_HERE, s.covers_total);
         else
             std::snprintf(detail, sizeof detail, "%s", "");
-        r[kCovers] = {RowKind::toggle, "Keep all covers on the console", "", detail, c.cover_cache};
+        r[kCovers] = {RowKind::toggle, "Keep all covers on the " ROMM_HERE, "", detail, c.cover_cache};
     }
 
     Row &update = r[kUpdate];
     update.kind = RowKind::action;
-    update.label = "RommPS " + (u.current.empty() ? app.status().version : u.current);
+    update.label = ROMM_APP " " + (u.current.empty() ? app.status().version : u.current);
     if (!u.self_update)
     {
         // The app brings its background service with it: the store updates both.
-        update.label = std::string("RommPS ") + App::kMinPayload;
+        update.label = std::string(ROMM_APP " ") + App::kMinPayload;
         update.value = u.state == "checking" ? "Checking" : "Check for updates";
         update.enabled = u.state != "checking";
-        update.detail = u.available           ? "RommPS " + u.latest + " is out: update it in ProsperoStore"
+        update.detail = u.available           ? ROMM_APP " " + u.latest + " is out: update it " ROMM_UPDATE_IN
                         : u.state == "error"  ? (u.error.empty() ? u.message : u.error)
-                        : u.latest.empty()    ? "Updates come from ProsperoStore"
+                        : u.latest.empty()    ? "Updates come from " ROMM_STORE
                                               : "Up to date";
     }
     else if (u.busy())
@@ -119,20 +120,20 @@ std::vector<Row> SettingsPage::rows(const App &app, std::vector<int> *ids) const
     else if (u.available)
     {
         update.value = "Install " + u.latest;
-        update.detail = "RommPS restarts with the new version";
+        update.detail = ROMM_APP " restarts with the new version";
     }
     else
     {
         update.value = "Check for updates";
         update.detail = u.state == "error" ? (u.error.empty() ? u.message : u.error)
-                        : u.state == "pending" ? "Restart the console to finish installing"
+                        : u.state == "pending" ? "Restart the " ROMM_HERE " to finish installing"
                         : u.latest.empty()   ? ""
                                                : "Up to date";
     }
 
     r[kEmulators] = {RowKind::action, "Configure Emulators", "", ""};
     r[kSetup] = {RowKind::action, "Re-run setup wizard", "", ""};
-    r[kForget] = {RowKind::action, "Unpair from RomM", "", "Files on this console are kept"};
+    r[kForget] = {RowKind::action, "Unpair from RomM", "", "Files on this " ROMM_HERE " are kept"};
     r[kForget].danger = true;
     r[kDiagnostics] = {RowKind::action, "Diagnostic bundle", diag_ == 1 ? "Making" : "",
                        diag_ == 2 ? "Saved to " + diag_where_
@@ -199,13 +200,22 @@ const char *SettingsPage::cross_hint(const App &app) const
     }
 }
 
-void SettingsPage::update(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void SettingsPage::update(App &app, const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     avatar_texture(static_cast<hui::gfx::Renderer *>(rommps_renderer()));
     std::vector<int> ids;
     const std::vector<Row> r = rows(app, &ids);
     const int count = static_cast<int>(r.size());
     armed_age_ += dt;
+    // The portrait touched: its call. A row touched instead: back to the rows.
+    if (const touch::Touch t = touch::take(&on_credits_); t.pressed)
+    {
+        on_credits_ = true;
+        input = touch::with(input, t);
+    }
+    else if (on_credits_ && touch::pending(&list_))
+        on_credits_ = false;
     // Below the last row: the author's portrait, and the call behind it.
     if (on_credits_)
     {
@@ -233,6 +243,7 @@ void SettingsPage::update(App &app, const hui::InputFrame &input, float dt, hui:
     const int focused_id = ids[static_cast<std::size_t>(std::clamp(list_.focus(), 0, count - 1))];
     if (armed_ >= 0 && (armed_age_ > kArmedFor || focused_id != armed_))
         armed_ = -1;
+    input = list_.touch(input, r);
     const RowEvent e = list_.handle(r, input, feedback);
     list_.update(dt, count, kRows.h);
     if (e.row < 0)
@@ -372,9 +383,10 @@ void SettingsPage::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, c
     std::snprintf(web, sizeof web, "http://%s:%d", s.ip.c_str(), s.port);
     item("ALSO ON YOUR PHONE OR COMPUTER", s.ip.empty() ? "" : web);
     const Update &u = app.update();
-    item("STARTS WITH THE CONSOLE", !u.known ? "" : u.autostart ? "Yes" : "No: reopen RommPS to set it up");
+    item("STARTS WITH THE " ROMM_HERE_UPPER, !u.known ? "" : u.autostart ? "Yes" : "No: reopen " ROMM_APP " to set it up");
     list.line(panel.x + 36, panel.y + panel.h - 196, panel.x + panel.w - 36, panel.y + panel.h - 196, 1.5f, look.outline);
     draw_credits(list, fonts, look, {x, panel.y + panel.h - 168, panel.w - 72, 136}, on_credits_, clock);
+    touch::zone(list, {x - 12, panel.y + panel.h - 180, 380, 160}, &on_credits_, 0, touch::kButton); // the portrait
     list.pop_opacity();
     list.pop_opacity();
 }

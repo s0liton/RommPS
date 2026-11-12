@@ -50,8 +50,8 @@ static int check_server(const char *base, char *err, int en) {
         int verify = g_cfg.tls_verify;
         config_unlock();
         if (verify && !strncmp(base, "https://", 8) && http_tls_untrusted(base)) {
-            snprintf(err, (size_t)en, "%s has a certificate this console doesn't trust (self-signed or from a private CA). "
-                     "Tick \"Skip certificate checks\" to connect anyway.", base);
+            snprintf(err, (size_t)en, "%s has a certificate this %s doesn't trust (self-signed or from a private CA). "
+                     "Tick \"Skip certificate checks\" to connect anyway.", base, plat_here());
             return -2;
         }
         snprintf(err, (size_t)en, "no RomM server answered at %s", base);
@@ -60,7 +60,7 @@ static int check_server(const char *base, char *err, int en) {
     int major = 0, minor = 0;
     sscanf(version, "%d.%d", &major, &minor);
     if (major < 5 || (major == 5 && minor < 2)) {
-        snprintf(err, (size_t)en, "RomM %s found; RomM Sync needs 5.2.0 or newer", version);
+        snprintf(err, (size_t)en, "RomM %s found; %s needs 5.2.0 or newer", version, plat_service_name());
         return -1;
     }
     LOGI("RomM %s at %s", version, base);
@@ -88,7 +88,7 @@ static void finish_pairing(const char *base, const char *token, const char *devi
     snprintf(msg, sizeof msg, "Paired as %s", g_cfg.username[0] ? g_cfg.username : "(unknown user)");
     set_status("ok", msg);
     LOGI("paired with %s, device %s", base, device_id);
-    if (!plat_app_installed()) plat_notify("RommPS: paired with RomM\n%s", base);
+    if (!plat_app_installed()) plat_notify("%s: paired with RomM\n%s", plat_product(), base);
     sync_new_pairing();
     sync_request("paired");
 }

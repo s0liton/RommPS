@@ -12,6 +12,7 @@
  * where the profile uses the system keys of DB_MAP below for its platforms. */
 #include "detect.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -163,34 +164,55 @@ static int name_in(const cJSON *list, const char *name, int contains) {
  * sync follows the core, as an emulator's follows its preset (profiles.c). */
 static const char *const RULE_ONLY[] = {"memcards", "cards", "save_layout", "pcsx2_cards"};
 
-/* Adds the matching rule's keys to e: all of them, or (missing_only) those e
- * doesn't have, for a profile saved before the rule had them, and RULE_ONLY's
- * where they differ. How many. */
-int detect_apply_core_rules(cJSON *e, const char *system, const char *corename, int missing_only) {
-    int added = 0;
+/* The first rule matching a core on a system, or NULL. */
+static const cJSON *core_rule(const char *system, const char *corename) {
     static cJSON *rules;
     static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
     pthread_mutex_lock(&lock);
-    if (!rules) rules = cJSON_Parse(RETROARCH_CORES_JSON);
+    if (!rules) rules = cJSON_Parse(RETROARCH_CORES_JSON); /* read once, never changed after */
+    pthread_mutex_unlock(&lock);
     const cJSON *r;
     cJSON_ArrayForEach(r, cJSON_GetObjectItemCaseSensitive(rules, "rules")) {
         const cJSON *names = cJSON_GetObjectItemCaseSensitive(r, "names"), *has = cJSON_GetObjectItemCaseSensitive(r, "contains"),
                     *systems = cJSON_GetObjectItemCaseSensitive(r, "systems");
         if ((names || has) && !name_in(names, corename, 0) && !name_in(has, corename, 1)) continue;
         if (systems && !name_in(systems, system, 0)) continue;
-        const cJSON *k;
+        return r;
+    }
+    return NULL;
+}
+
+int detect_core_apart(const char *system, const char *corename) {
+    return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(core_rule(system, corename), "apart"));
+}
+
+/* Adds the matching rule's keys to e: all of them, or (missing_only) those e
+ * doesn't have, for a profile saved before the rule had them, and RULE_ONLY's
+ * where they differ. How many. An "apart" rule's keys only go on the core's
+ * twin (profiles.c): the system's entry stays as it is, whichever core plays
+ * it, and loses them where an earlier build saved them in it. */
+int detect_apply_core_rules(cJSON *e, const char *system, const char *corename, int missing_only) {
+    int added = 0;
+    const cJSON *r = core_rule(system, corename), *k;
+    const int apart = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(r, "apart"));
+    if (apart && !cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(e, "twin"))) {
         cJSON_ArrayForEach(k, cJSON_GetObjectItemCaseSensitive(r, "entry")) {
             const cJSON *have = cJSON_GetObjectItemCaseSensitive(e, k->string);
-            int rule_only = 0;
-            for (size_t i = 0; i < sizeof RULE_ONLY / sizeof RULE_ONLY[0]; i++) rule_only |= !strcmp(k->string, RULE_ONLY[i]);
-            if (missing_only && have && (!rule_only || cJSON_Compare(have, k, 1))) continue;
+            if (!missing_only || !have || !cJSON_Compare(have, k, 1)) continue;
             cJSON_DeleteItemFromObjectCaseSensitive(e, k->string);
-            cJSON_AddItemToObject(e, k->string, cJSON_Duplicate(k, 1));
             added++;
         }
-        break;
+        return added;
     }
-    pthread_mutex_unlock(&lock);
+    cJSON_ArrayForEach(k, cJSON_GetObjectItemCaseSensitive(r, "entry")) {
+        const cJSON *have = cJSON_GetObjectItemCaseSensitive(e, k->string);
+        int rule_only = 0;
+        for (size_t i = 0; i < sizeof RULE_ONLY / sizeof RULE_ONLY[0]; i++) rule_only |= !strcmp(k->string, RULE_ONLY[i]);
+        if (missing_only && have && (!rule_only || cJSON_Compare(have, k, 1))) continue;
+        cJSON_DeleteItemFromObjectCaseSensitive(e, k->string);
+        cJSON_AddItemToObject(e, k->string, cJSON_Duplicate(k, 1));
+        added++;
+    }
     return added;
 }
 
@@ -264,6 +286,7 @@ static void app_title(const char *root, char *name, size_t n, char *title_id, si
 static void cfg_dir(const char *cfg, const char *key, const char *root, char *out, size_t n) {
     char v[PATH_MAX_LEN];
     if (!cfg || !info_get(cfg, key, v, sizeof v) || !v[0] || !strcmp(v, "default")) return;
+    if (plat_info()->real_path && plat_info()->real_path(root, v, out, n)) return;
     if (v[0] == ':' || v[0] == '~') snprintf(out, n, "%s%s", root, v + 1);
     else if (!strncmp(v, "/app0", 5) && (v[5] == '/' || !v[5])) snprintf(out, n, "%s%s", root, v + 5);
     else str_copy(out, n, v);
@@ -285,10 +308,14 @@ static cJSON *retroarch_candidate(const char *root) {
     free(cfg);
     if (!has_cfg && !dir_exists(cores_dir)) return NULL;
 
-    char name[128] = "RetroArch", title_id[16] = "";
+    char name[128] = "RetroArch", title_id[16] = "", label[32] = "";
     app_title(root, name, sizeof name, title_id, sizeof title_id);
-    /* No app folder to name it (the PS4's builds): told apart by their folder. */
-    if (!title_id[0] && strcmp(path_basename(root), "retroarch") != 0)
+    /* No app folder to name it (the PS4's builds): told apart by their folder,
+     * or by what the platform knows it as (the Deck's two Flatpaks). */
+    if (!title_id[0] && plat_info()->retroarch_label &&
+        !plat_info()->retroarch_label(root, label, sizeof label, name, sizeof name))
+        label[0] = 0;
+    if (!title_id[0] && !label[0] && strcmp(path_basename(root), "retroarch") != 0)
         snprintf(name, sizeof name, "RetroArch (%s)", path_basename(root));
     if (!strstr(name, "RetroArch") && !strstr(name, "retroarch") && !has_cfg) return NULL;
 
@@ -352,7 +379,7 @@ static cJSON *retroarch_candidate(const char *root) {
     cJSON_Delete(defs);
     jset_str(profile, "root", root);
     char id[48];
-    snprintf(id, sizeof id, "retroarch-%s", title_id[0] ? title_id : path_basename(root));
+    snprintf(id, sizeof id, "retroarch-%s", title_id[0] ? title_id : label[0] ? label : path_basename(root));
     jset_str(profile, "id", id);
     jset_str(profile, "name", name);
     jset_num(profile, "generated", PROFILE_GENERATION);
@@ -362,6 +389,17 @@ static cJSON *retroarch_candidate(const char *root) {
         cJSON_Delete(plats); /* no .info files, keep the default platforms */
     }
     ra2_update_profile(profile, NULL);
+    /* A frontend's games folder (RetroDECK's roms/psx), not RetroArch's own. */
+    const char *rom_tpl = plat_info()->retroarch_rom_dir ? plat_info()->retroarch_rom_dir(root) : NULL;
+    cJSON *ra_plats = rom_tpl ? cJSON_GetObjectItemCaseSensitive(profile, "platforms") : NULL, *e;
+    cJSON_ArrayForEach(e, ra_plats) {
+        const char *esde = detect_esde_name(e);
+        if (!esde) continue;
+        const char *vars[] = {"esde", esde, NULL};
+        char dir[PATH_MAX_LEN];
+        str_template(dir, sizeof dir, rom_tpl, vars);
+        jset_str(e, "rom_dir", dir);
+    }
 
     cJSON *c = cJSON_CreateObject();
     cJSON_AddStringToObject(c, "kind", "retroarch");
@@ -495,6 +533,8 @@ static int detect_dir_shows(const char *dir, const char *id, const cJSON *ours) 
 /* A catalog emulator here: 1 when its app is installed (title_id gets its
  * id) or a "detect" folder says so; -1 when its folders hold only what
  * RommPS made (detect_dir_shows); 0 when there's nothing at all. */
+static int detect_path_exists(const char *path);
+
 static int standalone_found(const cJSON *e, const cJSON *ours, char *title_id, size_t n) {
     const cJSON *x;
     int ours_only = 0;
@@ -505,8 +545,9 @@ static int standalone_found(const cJSON *e, const cJSON *ours, char *title_id, s
             return 1;
         }
     cJSON_ArrayForEach(x, cJSON_GetObjectItemCaseSensitive(e, "detect")) {
-        if (!cJSON_IsString(x) || !dir_exists(x->valuestring)) continue;
-        if (detect_dir_shows(x->valuestring, jget_str(e, "id", ""), ours) > 0) return 1;
+        if (!cJSON_IsString(x) || !detect_path_exists(x->valuestring)) continue;
+        /* A config file, an AppImage or a glob that matched: the emulator's own. */
+        if (!dir_exists(x->valuestring) || detect_dir_shows(x->valuestring, jget_str(e, "id", ""), ours) > 0) return 1;
         ours_only = 1;
     }
     return ours_only ? -1 : 0;
@@ -527,6 +568,7 @@ static cJSON *emulator_catalog(void) {
         char *txt = read_file(env, NULL);
         cJSON *j = txt ? cJSON_Parse(txt) : NULL;
         free(txt);
+        presets_resolve(j);
         return catalog_from(j);
     }
     return cJSON_Duplicate(presets_catalog(), 1);
@@ -546,6 +588,34 @@ const cJSON *detect_catalog_entry(const char *id) {
     cJSON_ArrayForEach(e, catalog)
         if (!strcmp(jget_str(e, "id", ""), id)) return e;
     return NULL;
+}
+
+/* "*" matching any run of characters, letters in any case (AppImage names:
+ * "pcsx2-v2.2.0-linux-appimage-x64-Qt.AppImage" for "pcsx2*.AppImage"). */
+static int wild_match(const char *pat, const char *s) {
+    if (*pat == '*') {
+        for (;; s++) {
+            if (wild_match(pat + 1, s)) return 1;
+            if (!*s) return 0;
+        }
+    }
+    if (!*pat) return !*s;
+    return *s && tolower((unsigned char)*pat) == tolower((unsigned char)*s) && wild_match(pat + 1, s + 1);
+}
+
+/* A catalog "detect" path that's there: a folder, a file (a config, an
+ * AppImage), or, with "*" in its last part, any file or folder matching. */
+static int detect_path_exists(const char *path) {
+    const char *slash = strrchr(path, '/');
+    if (!slash || !strchr(slash, '*')) return dir_exists(path) || file_exists(path);
+    char dir[PATH_MAX_LEN];
+    snprintf(dir, sizeof dir, "%.*s", (int)(slash - path), path);
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    int found = 0;
+    while (d && !found && (de = readdir(d))) found = de->d_name[0] != '.' && wild_match(slash + 1, de->d_name);
+    if (d) closedir(d);
+    return found;
 }
 
 static void add_standalone(cJSON *out) {
@@ -595,6 +665,10 @@ static void try_root(cJSON *out, const char *root) {
 }
 
 cJSON *detect_emulators(void) {
+    /* Folders that weren't there at start-up (an SD card, a frontend set up since). */
+    /* Or an emulator's config the catalog's vars read, saved since. */
+    const int moved = plat_info()->refresh && plat_info()->refresh();
+    if (moved || presets_vars_changed()) presets_refresh();
     cJSON *out = cJSON_CreateArray();
     const plat_info_t *pi = plat_info();
     const char *env = getenv("ROMM_SYNC_HOMEBREW"); /* for tests */
@@ -659,7 +733,10 @@ cJSON *detect_emulators(void) {
  * to Porpoise's, say) are added to it. Nothing already there changes, so
  * folders the user picked stay; but for the keys nobody can set but the
  * preset, which follow it (PSXS5's cores, as its versions change them). */
-static const char *const PRESET_ONLY[] = {"state_core_setting"};
+/* Keys only the preset sets (nothing lets the user change them): a saved
+ * copy follows it. firmware: its BIOS rules, RPCS3's PUP coming down since
+ * 2026.11.06.2. */
+static const char *const PRESET_ONLY[] = {"state_core_setting", "firmware"};
 
 /* Folders and names a preset used to have and has changed since: a saved
  * copy of one is the old preset's, not the user's pick, so it follows the
@@ -700,14 +777,39 @@ static const struct {
     {"ps5cemu", "user_dir", "/data/melonds,{root}/melonds"},
     {"ps5cemu", "user_dir", "/data/eden,{root}/eden"},
     {"ps5cemu", "user_dir_has", "mlc01"},
+    /* Eden's Flatpak sees no folder of the machine's: its games go in its own,
+     * unless a flatpak override lets it see the games folder. As this machine
+     * fills them in ({rdroms}: RetroDECK's, where the first preset put them). */
+    {"eden", "rom_dir", "{rdroms}/switch"},
+    {"eden", "rom_dir", "{roms}/switch"},
+    {"eden", "rom_dir", "{data_dir}/games"},
 };
 
 static int shipped_value(const char *profile, const char *key, const cJSON *have) {
-    for (size_t i = 0; i < sizeof SHIPPED_VALUES / sizeof SHIPPED_VALUES[0]; i++)
-        if (!strcmp(SHIPPED_VALUES[i].profile, profile) && !strcmp(SHIPPED_VALUES[i].key, key) &&
-            cJSON_IsString(have) && !strcmp(have->valuestring, SHIPPED_VALUES[i].value))
-            return 1;
+    for (size_t i = 0; i < sizeof SHIPPED_VALUES / sizeof SHIPPED_VALUES[0]; i++) {
+        if (strcmp(SHIPPED_VALUES[i].profile, profile) != 0 || strcmp(SHIPPED_VALUES[i].key, key) != 0 || !cJSON_IsString(have))
+            continue;
+        const char *v = SHIPPED_VALUES[i].value;
+        char filled[PATH_MAX_LEN];
+        if (!strcmp(have->valuestring, v)) return 1;
+        /* Saved as the catalog filled it in on this machine. */
+        if (strchr(v, '{') && presets_fill(profile, v, filled, sizeof filled) && !strcmp(have->valuestring, filled)) return 1;
+    }
     return 0;
+}
+
+/* A games folder of a saved profile that follows its preset somewhere else:
+ * where it was ("moved_from"), so the games downloaded there follow it
+ * (profiles_follow_moves). The first one stays, if it moves twice before. */
+static void note_move(cJSON *o, const char *key, const cJSON *was) {
+    if (!cJSON_IsString(was) || (strcmp(key, "rom_dir") != 0 && strcmp(key, "update_dir") != 0 && strcmp(key, "dlc_dir") != 0))
+        return;
+    cJSON *mf = cJSON_GetObjectItemCaseSensitive(o, "moved_from");
+    if (!cJSON_IsObject(mf)) {
+        cJSON_DeleteItemFromObjectCaseSensitive(o, "moved_from");
+        mf = cJSON_AddObjectToObject(o, "moved_from");
+    }
+    if (mf && !cJSON_GetObjectItemCaseSensitive(mf, key)) cJSON_AddStringToObject(mf, key, was->valuestring);
 }
 
 /* "sync_saves" says whether an emulator's saves can sync, and only the preset
@@ -723,6 +825,7 @@ static const struct {
     {"resonance", "*"}, {"seedee5", "*"},      {"xpsemu", "*"},
     /* new in 1.4.0 with games only, then saves too */
     {"beetlepce", "*"}, {"genplusgx", "*"}, {"snes9xps5", "*"}, {"fbneops5", "*"}, {"psp5", "*"}, {"mupen64ps5", "*"},
+    {"eden", "*"}, {"ryujinx", "*"}, /* the Deck's Eden and Ryujinx, games, keys and firmware first */
 };
 
 static int shipped_no_sync(const char *profile, const char *system) {
@@ -788,6 +891,7 @@ static int fill_from_catalog(cJSON *p) {
             cJSON_AddItemToObject(p, k->string, cJSON_Duplicate(k, 1));
             added++;
         } else if ((preset_only || shipped_value(jget_str(p, "id", ""), k->string, have)) && !cJSON_Compare(have, k, 1)) {
+            note_move(p, k->string, have);
             cJSON_ReplaceItemInObjectCaseSensitive(p, k->string, cJSON_Duplicate(k, 1));
             added++;
         }
@@ -814,6 +918,7 @@ static int fill_from_catalog(cJSON *p) {
                     cJSON_AddItemToObject(pe, k->string, cJSON_Duplicate(k, 1));
                     added++;
                 } else if (shipped_value(jget_str(p, "id", ""), k->string, have) && !cJSON_Compare(have, k, 1)) {
+                    note_move(pe, k->string, have);
                     cJSON_ReplaceItemInObjectCaseSensitive(pe, k->string, cJSON_Duplicate(k, 1));
                     added++;
                 }

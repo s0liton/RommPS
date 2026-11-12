@@ -1,0 +1,155 @@
+# Builds RommDeck and publishes it as a release of s0liton/RommDeck, which holds
+# the README, the releases and the issues; the code stays here, next to the core
+# and the RommPS screens it's compiled from. RommDeck has its own version
+# numbers, starting at v1.0.0: RommDeck v1.2.0 has nothing to do with RommPS v1.2.0.
+#
+# Triggered either by:
+#
+#   - merging a PR into main from a branch named rommdeck/vX.Y.Z (the tag
+#     rommdeck-vX.Y.Z is created here on the merge commit)
+#   - pushing that tag by hand: git tag rommdeck-v1.0.0 && git push origin rommdeck-v1.0.0
+#
+# Release notes go in docs/releases/rommdeck/vX.Y.Z.md, written by hand, and
+# the version gets a <release> line in the AppStream metainfo
+# (platform/steamdeck/io.github.s0liton.RommDeck.appdata.xml).
+#
+# Needs two secrets:
+#   ROMMDECK_TOKEN       fine-grained token, s0liton/RommDeck only, Contents: read and write
+#   RELEASE_SIGNING_KEY  the same key the PS5 releases use; the service checks it
+name: RommDeck release
+
+on:
+  push:
+    tags: ["rommdeck-v*.*.*"]
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  DECK_REPO: s0liton/RommDeck
+
+jobs:
+  version:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.merged &&
+       startsWith(github.event.pull_request.head.ref, 'rommdeck/v'))
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: Resolve version
+        id: version
+        env:
+          GH_TOKEN: ${{ secrets.ROMMDECK_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::ROMMDECK_TOKEN secret is not set; can't publish to $DECK_REPO."
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            tag="${GITHUB_REF_NAME#rommdeck-}"
+            sha="$GITHUB_SHA"
+          else
+            tag=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "$HEAD_REF" | head -n1 || true)
+            sha="$MERGE_SHA"
+          fi
+          if [ -z "$tag" ]; then
+            echo "Branch '$HEAD_REF' has no vX.Y.Z version; skipping release."
+            exit 0
+          fi
+          if gh release view "$tag" --repo "$DECK_REPO" >/dev/null 2>&1; then
+            echo "RommDeck $tag is already out; skipping."
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.version.outputs.tag
+        with:
+          ref: ${{ steps.version.outputs.sha }}
+
+      # Fail in seconds, not after the build.
+      - name: Check release notes
+        if: steps.version.outputs.tag
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          if [ ! -s "docs/releases/rommdeck/$TAG.md" ]; then
+            echo "::error::docs/releases/rommdeck/$TAG.md is missing; write the release notes first"
+            exit 1
+          fi
+          metainfo=platform/steamdeck/io.github.s0liton.RommDeck.appdata.xml
+          if ! grep -qF "<release version=\"${TAG#v}\"" "$metainfo"; then
+            echo "::error::$metainfo has no <release version=\"${TAG#v}\">; add it, with the release's date"
+            exit 1
+          fi
+
+  build:
+    needs: version
+    if: needs.version.outputs.tag
+    uses: ./.github/workflows/steamdeck.yml
+    with:
+      sha: ${{ needs.version.outputs.sha }}
+      version: ${{ needs.version.outputs.tag }}
+
+  publish:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
+      SHA: ${{ needs.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: steamdeck
+          path: dist
+
+      # The service's manifest and signature, as the PS5 payload has
+      # (src/update.c); the service won't install an update without them.
+      - name: Sign
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "::error::RELEASE_SIGNING_KEY secret is not set; in-app updates need a signed release."
+            exit 1
+          fi
+          make tools
+          build/host/release-sign manifest "$TAG" dist/romm-sync-steamdeck > dist/manifest-steamdeck.json
+          build/host/release-sign sign dist/manifest-steamdeck.json > dist/manifest-steamdeck.sig
+          build/host/release-sign check dist/manifest-steamdeck.json dist/manifest-steamdeck.sig
+
+      # Every file is uploaded before the release goes public, so nobody sees
+      # half of one. The tag on this repo marks the commit it was built from.
+      - name: Publish to RommDeck
+        env:
+          GH_TOKEN: ${{ secrets.ROMMDECK_TOKEN }}
+        run: |
+          V="${TAG#v}"
+          for file in "rommdeck-$V-x86_64.tar.gz" "RommDeck-$V-x86_64.AppImage" "RommDeck-$V-x86_64.AppImage.zsync" \
+                      RommDeck-Installer.desktop rommdeck-installer.sh \
+                      romm-sync-steamdeck manifest-steamdeck.json manifest-steamdeck.sig; do
+            [ -s "dist/$file" ] || { echo "::error::dist/$file is missing"; exit 1; }
+          done
+          (cd dist && sha256sum * > SHA256SUMS)
+          gh release create "$TAG" dist/* --repo "$DECK_REPO" \
+            --title "RommDeck $V" --notes-file "docs/releases/rommdeck/$TAG.md"
+
+      # A merged branch has no tag here yet; a pushed one already does.
+      - name: Tag the source
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/rommdeck-$TAG" -f sha="$SHA"

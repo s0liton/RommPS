@@ -213,7 +213,7 @@ void SyncView::load(App &app)
         break;
     case kGame:
         title_ = plain_text(name_.c_str());
-        subtitle_ = "Cross twice restores a version from RomM";
+        subtitle_ = ROMM_BTN_CONFIRM " twice restores a version from RomM";
         break;
     }
     add({RowKind::info, "Loading", "", ""});
@@ -258,7 +258,7 @@ void SyncView::load(App &app)
                 cJSON_ArrayForEach(e, j.get()) add(event_row(e, true));
             if (items_.empty())
                 add({RowKind::info, ok ? "Nothing yet" : "Couldn't load the log", "",
-                     ok ? "" : r.ok() ? "RommPS's background service is out of date" : r.message()});
+                     ok ? "" : r.ok() ? ROMM_APP "'s background service is out of date" : r.message()});
         });
     }
     else if (kind_ == kTracked)
@@ -291,7 +291,7 @@ void SyncView::load(App &app)
             }
             if (items_.empty())
                 add({RowKind::info, ok ? "Nothing tracked yet" : "Couldn't load them", "",
-                     ok ? "" : r.ok() ? "RommPS's background service is out of date" : r.message()});
+                     ok ? "" : r.ok() ? ROMM_APP "'s background service is out of date" : r.message()});
             char sub[96];
             std::snprintf(sub, sizeof sub, "%d saves, %d states", static_cast<int>(num(j.get(), "saves")),
                           static_cast<int>(num(j.get(), "states")));
@@ -316,7 +316,7 @@ void SyncView::load(App &app)
             items_.clear();
             Json here(cJSON_Parse(game_here_.c_str()), cJSON_Delete), history(cJSON_Parse(game_history_.c_str()), cJSON_Delete),
                 log(cJSON_Parse(game_log_.c_str()), cJSON_Delete);
-            add({RowKind::header, "On this console"});
+            add({RowKind::header, "On this " ROMM_HERE});
             const std::size_t before = items_.size();
             const cJSON *p, *g, *f;
             cJSON_ArrayForEach(p, cJSON_GetObjectItemCaseSensitive(here.get(), "platforms"))
@@ -369,7 +369,7 @@ void SyncView::show_conflicts()
     for (std::size_t i = 0; i < conflicts_.size(); ++i)
     {
         const Conflict &c = conflicts_[i];
-        add({RowKind::action, c.game, "Choose", "This console: " + c.local + "  \xC2\xB7  RomM: " + c.server}, kPickConflict,
+        add({RowKind::action, c.game, "Choose", "This " ROMM_HERE ": " + c.local + "  \xC2\xB7  RomM: " + c.server}, kPickConflict,
             static_cast<int>(i));
     }
     if (items_.empty())
@@ -389,8 +389,9 @@ std::vector<Row> SyncView::rows() const
     return out;
 }
 
-void SyncView::update(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void SyncView::update(App &app, const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     age_ += dt;
     armed_age_ += dt;
     if (input.is_pressed(Action::back))
@@ -405,6 +406,7 @@ void SyncView::update(App &app, const hui::InputFrame &input, float dt, hui::ui:
     const std::vector<Row> r = rows();
     if (armed_ >= 0 && (armed_age_ > kArmedFor || list_.focus() != armed_))
         armed_ = -1;
+    input = list_.touch(input, r);
     const RowEvent e = list_.handle(r, input, feedback);
     list_.update(dt, static_cast<int>(r.size()), kRows.h);
     if (e.row < 0 || !e.activated || busy_)
@@ -418,8 +420,8 @@ void SyncView::update(App &app, const hui::InputFrame &input, float dt, hui::ui:
         items_.clear();
         choosing_ = it.arg;
         add({RowKind::info, c.game, "", "Which copy should stay?"});
-        add({RowKind::action, "Keep this console's", "", "Changed here " + c.local + ". RomM's copy is replaced."}, kKeepLocal);
-        add({RowKind::action, "Keep RomM's", "", "Changed on RomM " + c.server + ". This console's copy is backed up."},
+        add({RowKind::action, "Keep this " ROMM_HERE "'s", "", "Changed here " + c.local + ". RomM's copy is replaced."}, kKeepLocal);
+        add({RowKind::action, "Keep RomM's", "", "Changed on RomM " + c.server + ". This " ROMM_HERE "'s copy is backed up."},
             kKeepServer);
         add({RowKind::action, "Not now"}, kCancel);
         list_.set_focus(1);
@@ -437,7 +439,7 @@ void SyncView::update(App &app, const hui::InputFrame &input, float dt, hui::ui:
                  "{\"path\":" + json_str(c.path) + ",\"keep\":\"" + (local ? "local" : "server") + "\"}",
                  [this, &app, local](const Response &r) {
                      busy_ = false;
-                     app.say(r.ok() ? (local ? "Kept this console's save" : "Kept RomM's save") : "Couldn't settle it: " + r.message());
+                     app.say(r.ok() ? (local ? "Kept this " ROMM_HERE "'s save" : "Kept RomM's save") : "Couldn't settle it: " + r.message());
                      app.refresh_now();
                      load(app);
                  });

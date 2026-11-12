@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "library_page.hpp"
 
+#include "touch.hpp"
 #include "ui/components/component.hpp"
 
 #include <algorithm>
@@ -33,6 +34,13 @@ constexpr float kPlatformTop = 196.0f;
 // Platform tiles
 constexpr int kTileCols = 4;
 constexpr float kTileW = 408.0f, kTileH = 220.0f, kTileGap = 32.0f, kTilePitch = kTileH + kTileGap;
+// The covers fanned on a platform's tile, and the room its name has beside
+// them. The Deck's screen is small: the fan is tighter and the name wider.
+#if defined(ROMMPS_DECK)
+constexpr float kFanStep = 28.0f, kFanScale = 0.86f, kTileNameW = 190.0f;
+#else
+constexpr float kFanStep = 40.0f, kFanScale = 1.0f, kTileNameW = 165.0f;
+#endif
 constexpr float kHeadH = 64.0f; // a section's heading, above its first row
 constexpr float kInstallArmed = 4.0f; // seconds the second Square of "Install all" has
 // A grid of games: its columns and cards follow the shape of its covers
@@ -423,17 +431,17 @@ bool LibraryPage::update(App &app, const hui::InputFrame &input, float dt, hui::
         update_grid(app, input, feedback, details);
         break;
     case kSearch:
-        update_search(app, input, dt, feedback);
+        update_search(app, input, dt, feedback, details);
         break;
     }
     // Scrolling: the focused tile's row in view, with its section's heading
     // when the row is the section's first.
-    if (mode_ == kPlatforms)
+    if (mode_ == kPlatforms && !tiles_free_)
     {
         const Placement at = place(tiles(app));
         if (tile_ >= 0 && tile_ < static_cast<int>(at.row.size()))
         {
-            const float view = std::max(1.0f, std::floor((1000.0f - kPlatformTop - 24.0f) / kTilePitch)) * kTilePitch;
+            const float view = std::max(1.0f, std::floor((kScreenH - 80.0f - kPlatformTop - 24.0f) / kTilePitch)) * kTilePitch;
             const int r = at.row[static_cast<std::size_t>(tile_)];
             float top = at.top(r);
             const float bottom = top + kTileH;
@@ -449,7 +457,7 @@ bool LibraryPage::update(App &app, const hui::InputFrame &input, float dt, hui::
         }
     }
     tiles_scroll_.update(dt, 14.0f);
-    if (mode_ == kGrid)
+    if (mode_ == kGrid && !grid_free_)
         grid_scroll_.target = static_cast<float>(std::max(0, index_ / grid_layout(grid(app)).cols - 1));
     grid_scroll_.update(dt, 14.0f);
     const Game *g = focused(app);
@@ -464,8 +472,9 @@ bool LibraryPage::update(App &app, const hui::InputFrame &input, float dt, hui::
 
 // ------------------------------------------------------------------ platforms
 
-void LibraryPage::update_platforms(App &app, const hui::InputFrame &input, hui::ui::Feedback &feedback)
+void LibraryPage::update_platforms(App &app, const hui::InputFrame &pad, hui::ui::Feedback &feedback)
 {
+    hui::InputFrame input = pad;
     if (browse_ == kByCollection)
         app.want_collections(); // the first time they're looked at, or after pairing again
     const std::vector<Tile> all = tiles(app);
@@ -481,6 +490,35 @@ void LibraryPage::update_platforms(App &app, const hui::InputFrame &input, hui::
             app.ensure(app.games(all[static_cast<std::size_t>(i)].scope, ""), 0, 0);
     }
 
+    // Touch: a tile tapped opens; a drag scrolls the tiles, and the pad then
+    // picks up from the first row in view.
+    {
+        const float view =
+            std::max(1.0f, std::floor((kScreenH - 80.0f - kPlatformTop - 24.0f) / kTilePitch)) * kTilePitch;
+        const float most = ntiles ? at.top(at.row.back()) + kTileH - view : 0.0f;
+        const touch::Touch t = touch::take(&tiles_scroll_);
+        if (touch::scroll(tiles_scroll_, t, 1.0f, most))
+            tiles_free_ = true;
+        if (t.index >= 0 && t.index < ntiles)
+        {
+            tile_ = t.index;
+            tiles_free_ = false;
+            input = touch::with(input, t);
+        }
+        if (tiles_free_ && input.nav != Direction::none && ntiles > 0)
+        {
+            tiles_free_ = false;
+            const int col = at.col[static_cast<std::size_t>(tile_)];
+            for (int r = 0; r <= at.row.back(); ++r)
+                if (at.top(r) >= tiles_scroll_.value - 1.0f && at.first_of(r) >= 0)
+                {
+                    tile_ = std::min(at.first_of(r) + col, at.last_of(r));
+                    break;
+                }
+            feedback.play(Cue::focus);
+            input.nav = Direction::none;
+        }
+    }
     const bool repeat = input.nav_repeat;
     const int row = ntiles ? at.row[static_cast<std::size_t>(tile_)] : 0;
     const int col = ntiles ? at.col[static_cast<std::size_t>(tile_)] : 0;
@@ -549,6 +587,7 @@ void LibraryPage::update_platforms(App &app, const hui::InputFrame &input, hui::
     {
         browse_ = browse_ == kByPlatform ? kByCollection : kByPlatform;
         tile_ = 0;
+        tiles_free_ = false;
         tiles_scroll_.snap(0.0f);
         tiles_scroll_.target = 0.0f;
         mode_age_ = 0.0f;
@@ -565,6 +604,112 @@ void LibraryPage::update_platforms(App &app, const hui::InputFrame &input, hui::
         open_search(Scope{});
     }
 }
+
+#if defined(ROMMPS_DECK)
+// RommDeck's tiles: the Deck's screen is small, so a platform's name is split
+// into its maker and its model, and the focused one scrolls when it's long.
+namespace
+{
+
+// The maker that leads a platform's name ("Sony PlayStation 2"): shown on a
+// line of its own, so the model, which tells similar ones apart, gets the room.
+constexpr const char *kMakers[] = {"Nintendo", "Sega", "Sony", "SNK", "Atari", "NEC", "Commodore", "Bandai",
+                                   "Microsoft", "Sinclair", "Philips", "Panasonic", "Fairchild", "Coleco",
+                                   "Mattel", "Magnavox", "Amstrad", "Apple", "Acorn", "Casio", "Epoch", "Tiger"};
+
+// Names whose maker isn't their first word, or that are long for a tile.
+constexpr const char *kAliases[][3] = {
+    {"Super Nintendo Entertainment System", "Nintendo", "Super Nintendo"},
+};
+
+void split_maker(const std::string &name, std::string *maker, std::string *model)
+{
+    maker->clear();
+    *model = name;
+    for (const auto &a : kAliases)
+        if (name == a[0])
+        {
+            *maker = a[1];
+            *model = a[2];
+            return;
+        }
+    const std::size_t space = name.find(' ');
+    if (space == std::string::npos || space + 1 >= name.size())
+        return;
+    const std::string rest = name.substr(space + 1);
+    // "Nintendo 64", "Nintendo DS": the model alone says too little.
+    if (rest.size() <= 3 || std::isdigit(static_cast<unsigned char>(rest[0])))
+        return;
+    for (const char *m : kMakers)
+        if (name.compare(0, space, m) == 0)
+        {
+            *maker = m;
+            *model = rest;
+            return;
+        }
+}
+
+} // namespace
+
+// A tile's name: the maker small and upper case, the model under it in up to
+// two lines, a little smaller when its longest word wouldn't fit. On the
+// focused tile, a model that still doesn't fit scrolls: it rests, slides to
+// its end, rests, and slides back.
+void LibraryPage::draw_tile_name(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, App &app,
+                                 const std::string &name, float x, float top, int focused) const
+{
+    std::string maker, model;
+    split_maker(name, &maker, &model);
+    const float width = kTileNameW;
+    float y = top + 56;
+    if (!maker.empty())
+    {
+        ui::text(list, fonts.semibold, ui::upper(maker), x, top + 44, 17, look.panel_muted, Align::left, 1.5f);
+        y = top + 82;
+    }
+    // The longest word sets the size: 28, down to 24.
+    float size = 28.0f;
+    for (std::size_t start = 0; start < model.size();)
+    {
+        std::size_t end = model.find(' ', start);
+        if (end == std::string::npos)
+            end = model.size();
+        while (size > 24.0f && fonts.semibold.font->measure(model.substr(start, end - start), size) > width)
+            size -= 1.0f;
+        start = end + 1;
+    }
+    const std::vector<std::string> lines = fonts.semibold.font->wrap(model, size, width);
+    const bool fits = lines.size() <= 2 && fonts.semibold.font->measure(lines.empty() ? "" : lines[0], size) <= width;
+    if (fits || focused < 0)
+    {
+        // At most two lines, each cut short with an ellipsis rather than
+        // running past the tile (a word wider than the room isn't broken).
+        const float line_h = maker.empty() ? 34.0f : 31.0f;
+        for (std::size_t i = 0; i < lines.size() && i < 2; ++i)
+        {
+            const bool more = i == 1 && lines.size() > 2;
+            ui::text(list, fonts.semibold, fonts.semibold.font->fit(more ? lines[i] + " \xE2\x80\xA6" : lines[i], size, width),
+                     x, y + static_cast<float>(i) * line_h, size, look.panel_text);
+        }
+        return;
+    }
+    if (marquee_tile_ != focused)
+    {
+        marquee_tile_ = focused;
+        marquee_since_ = app.clock();
+    }
+    const float overflow = fonts.semibold.font->measure(model, size) - width;
+    const float rest = 1.2f, speed = 60.0f, slide = overflow / speed;
+    const float t = std::fmod(static_cast<float>(app.clock() - marquee_since_), 2.0f * (rest + slide));
+    const float shift = t < rest ? 0.0f
+                        : t < rest + slide ? (t - rest) * speed
+                        : t < 2.0f * rest + slide ? overflow
+                                                  : overflow - (t - 2.0f * rest - slide) * speed;
+    list.push_clip({x, y - size - 6, width, size + 16});
+    ui::text(list, fonts.semibold, model, x - shift, y, size, look.panel_text);
+    list.pop_clip();
+}
+#endif
 
 void LibraryPage::draw_platforms(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, App &app,
                                  Color accent, float clock, float age) const
@@ -593,11 +738,12 @@ void LibraryPage::draw_platforms(hui::gfx::DrawList &list, const hui::ui::Fonts 
     }
     const float grid_top = top + 24;
     const Placement at = place(all);
-    list.push_clip({0, grid_top - 20, 1920, 1080 - grid_top + 20});
+    list.push_clip({0, grid_top - 20, kScreenW, kScreenH - grid_top + 20});
+    touch::zone(list, {0, grid_top - 20, kScreenW, kScreenH - grid_top + 20}, &tiles_scroll_, -1);
     for (const auto &[row, heading] : at.heads)
     {
         const float y = grid_top + at.top(row) - kHeadH - tiles_scroll_.value;
-        if (y > 1080 || y + kHeadH < grid_top - 20)
+        if (y > kScreenH || y + kHeadH < grid_top - 20)
             continue;
         ui::text(list, fonts.semibold, heading, kMargin, y + 40, 22, look.muted);
     }
@@ -606,10 +752,11 @@ void LibraryPage::draw_platforms(hui::gfx::DrawList &list, const hui::ui::Fonts 
         const Tile &p = all[static_cast<std::size_t>(i)];
         const int row = at.row[static_cast<std::size_t>(i)], col = at.col[static_cast<std::size_t>(i)];
         const float y = grid_top + at.top(row) - tiles_scroll_.value;
-        if (y > 1080 || y + kTileH < grid_top - 20)
+        if (y > kScreenH || y + kTileH < grid_top - 20)
             continue;
         const bool on = i == tile_;
         Rect r{kMargin + static_cast<float>(col) * (kTileW + kTileGap) + (on ? shake : 0.0f), y, kTileW, kTileH};
+        touch::zone(list, r, &tiles_scroll_, i);
         if (on)
             list.glow(r, 26, 26, accent.with_alpha(0.4f));
         draw_panel(list, look, r, 26);
@@ -622,7 +769,7 @@ void LibraryPage::draw_platforms(hui::gfx::DrawList &list, const hui::ui::Fonts 
                 continue;
             // Each its own shape, as tall as fits 120 wide, standing on the same line.
             const float shape = cover_shape(app, g);
-            float h = std::min(133.0f, 120.0f / shape), w = h * shape;
+            float h = std::min(133.0f, 120.0f / shape) * kFanScale, w = h * shape;
             // Just loaded, it pops in: from a little smaller, past its size and back.
             double since = 0;
             if (!g->cover.empty() && app.cover_aspect(g->cover, &since) > 0)
@@ -631,7 +778,7 @@ void LibraryPage::draw_platforms(hui::gfx::DrawList &list, const hui::ui::Fonts 
                 w *= pop;
                 h *= pop;
             }
-            const float right = r.x + r.w - 28 - static_cast<float>(k) * 40 - std::min(133.0f, 120.0f / shape) * shape * 0.5f;
+            const float right = r.x + r.w - 28 - static_cast<float>(k) * kFanStep - std::min(133.0f, 120.0f / shape) * shape * 0.5f;
             const Rect c{right - w * 0.5f, r.y + 161 + static_cast<float>(k) * 10 - h, w, h};
             list.shadow({c.x, c.y + 8, c.w, c.h}, 10, 16, Color::rgb(0x000000, 0.35f));
             draw_cover(list, fonts, look, app, g, c, 1.0f - 0.15f * static_cast<float>(k), 10, false);
@@ -639,7 +786,11 @@ void LibraryPage::draw_platforms(hui::gfx::DrawList &list, const hui::ui::Fonts 
         // The system's logo, small, in the corner under the covers.
         if (!p.slug.empty())
             draw_logo(list, app, p.slug, {r.x + r.w - 28 - 30, r.y + 172, 30, 30}, 0.9f);
+#if defined(ROMMPS_DECK)
+        draw_tile_name(list, fonts, look, app, p.name, r.x + 28, r.y, on ? i : -1);
+#else
         ui::paragraph(list, fonts.semibold, p.name, r.x + 28, r.y + 56, 28, 165, 34, look.panel_text, 2);
+#endif
         char count[48];
         std::snprintf(count, sizeof count, p.count == 1 ? "%d game" : "%d games", p.count);
         ui::text(list, fonts.regular, count, r.x + 28, r.y + 150, 22, look.panel_muted);
@@ -663,6 +814,7 @@ void LibraryPage::open_grid(App &app, const Scope &scope, const std::string &sea
     mode_age_ = 0.0f;
     index_ = 0;
     on_letters_ = false;
+    grid_free_ = false;
     grid_scroll_.snap(0.0f);
     app.retry(grid(app)); // opened again: what failed last time is asked for again
     app.ensure(grid(app), 0, kMaxCols * 4);
@@ -735,13 +887,47 @@ void LibraryPage::settle_shape(App &app, GameList &l) const
     l.shape_settled = known >= wanted || (known >= 4 && (index_ > 0 || mode_age_ > 1.5f)) || mode_age_ > 4.0f;
 }
 
-void LibraryPage::move_in_grid(App &app, const hui::InputFrame &input, hui::ui::Feedback &feedback, bool &details)
+void LibraryPage::move_in_grid(App &app, const hui::InputFrame &pad, hui::ui::Feedback &feedback, bool &details)
 {
+    hui::InputFrame input = pad;
     GameList &l = grid(app);
     const int cols = grid_layout(l).cols;
+    // Touch: a cover tapped opens its details; a drag scrolls the grid; the
+    // A to Z bar jumps to the letter under the finger as it slides.
+    {
+        const int last_row = l.total > 0 ? (l.total - 1) / cols : 0;
+        const touch::Touch t = touch::take(&grid_scroll_);
+        if (touch::scroll(grid_scroll_, t, grid_layout(l).row_pitch, static_cast<float>(last_row - 1)))
+            grid_free_ = true;
+        if (t.index >= 0 && t.index < l.total)
+        {
+            index_ = t.index;
+            on_letters_ = false;
+            grid_free_ = false;
+            input = touch::with(input, t);
+        }
+        if (const touch::Touch bar = touch::take(&letter_);
+            bar.index >= 0 && bar.index < kSlots && slots_of(l)[static_cast<std::size_t>(bar.index)] >= 0)
+        {
+            on_letters_ = false;
+            grid_free_ = false;
+            letter_ = bar.index;
+            jump_letter(l, bar.index, feedback);
+        }
+        // The pad after a touch scroll: from the first row in view.
+        if (grid_free_ && !on_letters_ && input.nav != Direction::none && l.total > 0)
+        {
+            grid_free_ = false;
+            const int top_row = std::clamp(static_cast<int>(std::lround(grid_scroll_.value)) + 1, 0, last_row);
+            index_ = std::min(l.total - 1, top_row * cols + index_ % cols);
+            feedback.play(Cue::focus);
+            input.nav = Direction::none;
+        }
+    }
     // The games around where the grid is going, not the rows it scrolls past
     // on the way (a jump to a letter animates through everything between).
-    const int target_row = std::max(0, index_ / cols - 2);
+    const int target_row = grid_free_ ? std::max(0, static_cast<int>(grid_scroll_.target) - 1)
+                                      : std::max(0, index_ / cols - 2);
     app.ensure(l, target_row * cols, (target_row + 7) * cols);
     const int total = std::max(0, l.total);
     const Slots slots = slots_of(l);
@@ -989,8 +1175,9 @@ void LibraryPage::draw_grid(hui::gfx::DrawList &list, const hui::ui::Fonts &font
     const GridLayout layout = grid_layout(l);
     const int cols = layout.cols;
     const int first_row = std::max(0, static_cast<int>(grid_scroll_.value) - 1);
-    const int rows = static_cast<int>((1080.0f - kGridTop) / layout.row_pitch) + 3;
-    list.push_clip({0, kGridTop - 30, kBarX - 10, 1080 - kGridTop + 30});
+    const int rows = static_cast<int>((kScreenH - kGridTop) / layout.row_pitch) + 3;
+    list.push_clip({0, kGridTop - 30, kBarX - 10, kScreenH - kGridTop + 30});
+    touch::zone(list, {0, kGridTop - 30, kBarX - 10, kScreenH - kGridTop + 30}, &grid_scroll_, -1);
     Rect focus_rect{};
     for (int row = first_row; row < first_row + rows; ++row)
         for (int col = 0; col < cols; ++col)
@@ -999,11 +1186,12 @@ void LibraryPage::draw_grid(hui::gfx::DrawList &list, const hui::ui::Fonts &font
             if (i >= total)
                 break;
             const float y = kGridTop + (static_cast<float>(row) - grid_scroll_.value) * layout.row_pitch + 24 * (1.0f - appear);
-            if (y > 1080 || y + layout.card_h < kGridTop - 40)
+            if (y > kScreenH || y + layout.card_h < kGridTop - 40)
                 continue;
             const Game *game = l.at(i);
             const Rect card{kMargin + static_cast<float>(col) * layout.col_pitch, y, layout.card_w, layout.card_h};
             const Rect r = game ? in_card(cover_shape(app, game, layout.shape), card) : card;
+            touch::zone(list, r, &grid_scroll_, i);
             if (i == index_)
             {
                 focus_rect = r;
@@ -1043,7 +1231,7 @@ void LibraryPage::draw_grid(hui::gfx::DrawList &list, const hui::ui::Fonts &font
         if (const Game *game = l.at(i))
             app.cover(game->cover);
     // The row below fades out under the button hints.
-    list.gradient_rect({0, 930, kBarX - 10, 150}, 0, look.page.with_alpha(0.0f), look.page.with_alpha(0.85f));
+    list.gradient_rect({0, kScreenH - 150, kBarX - 10, 150}, 0, look.page.with_alpha(0.0f), look.page.with_alpha(0.85f));
 
     // The A to Z bar.
     if (!l.letters.empty())
@@ -1057,6 +1245,7 @@ void LibraryPage::draw_grid(hui::gfx::DrawList &list, const hui::ui::Fonts &font
         {
             const float cy = kBarTop + 12 + pitch * (static_cast<float>(s) + 0.5f);
             const bool has = slots[static_cast<std::size_t>(s)] >= 0;
+            touch::zone(list, {kBarX - 20, cy - pitch * 0.5f, kBarW + 40, pitch}, &letter_, s, touch::kScrub);
             const bool focused = on_letters_ && s == letter_;
             if (focused)
                 list.rounded_rect({kBarX + 16, cy - pitch * 0.5f - 2, kBarW - 32, pitch + 4}, 8, look.highlight);
@@ -1088,8 +1277,23 @@ void LibraryPage::open_search(const Scope &scope)
     keys_.enter();
 }
 
-void LibraryPage::update_search(App &app, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+void LibraryPage::update_search(App &app, const hui::InputFrame &pad, float dt, hui::ui::Feedback &feedback,
+                                bool &details)
 {
+    hui::InputFrame input = touch::type(keys_, pad);
+    // A result touched: the search's grid, and that game's details
+    if (const touch::Touch t = touch::take(&applied_); t.pressed && t.index >= 0 && !applied_.empty())
+    {
+        open_grid(app, search_scope_, applied_);
+        GameList &l = grid(app);
+        index_ = t.index;
+        focus_list_ = &l;
+        focus_raw_ = l.ready() ? l.raw(index_) : index_;
+        focus_hidden_ = l.hidden.size();
+        details = true;
+        feedback.play(Cue::open);
+        return;
+    }
     keys_.style.theme = *look(current_look()).theme;
     keys_.set_length(static_cast<int>(query_.size()));
     const hui::ui::Event e = keys_.handle(input, feedback);
@@ -1159,6 +1363,7 @@ void LibraryPage::draw_search(hui::gfx::DrawList &list, const hui::ui::Fonts &fo
             if (r.x + r.w > kResultsEnd)
                 break;
             x += r.w + kResultGap;
+            touch::zone(list, r, &applied_, i);
             draw_cover(list, fonts, look, app, g, r, 1.0f, 14);
             draw_badge(list, look, app, g, r, accent);
             draw_version(list, fonts, look, g, r);
@@ -1166,6 +1371,7 @@ void LibraryPage::draw_search(hui::gfx::DrawList &list, const hui::ui::Fonts &fo
     }
     ui::Canvas canvas{list, fonts, 0, clock};
     keys_.draw(canvas);
+    touch::keys(list, keys_);
     list.pop_opacity();
 }
 

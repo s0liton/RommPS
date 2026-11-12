@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -230,9 +231,32 @@ static const cJSON *by_md5(const cJSON *files, const char *md5) {
 
 typedef struct {
     const cJSON *f;
-    char name[256];
-    int named; /* the name came from the rules' "names" */
+    char name[512]; /* under the target folder, or a path of its own (by_ext's "/...") */
+    int named;      /* the name came from the rules' "names" */
 } plan_t;
+
+/* Where a planned file goes: its name under dir, or the path by_ext gave it. */
+static void plan_dest(const char *dir, const char *name, char *out, size_t n) {
+    if (name[0] == '/') str_copy(out, n, name);
+    else path_join(out, n, dir, name);
+}
+
+/* The name a file of RomM's goes in under, by by_ext: a folder under dir, or
+ * one of its own ("/..."): Eden's keys beside its data, its firmware in its
+ * NAND, wherever that is. Or a path with the file's id in it ("{id}": its
+ * name up to the first dot), as Ryujinx keeps an NCA: registered/<id>.nca/00.
+ * 0 when by_ext has no place for it. */
+static int by_ext_name(const cJSON *by_ext, const char *name, char *out, size_t n) {
+    str_copy(out, n, name);
+    if (!cJSON_IsObject(by_ext)) return 1;
+    const cJSON *sub = NULL, *e;
+    cJSON_ArrayForEach(e, by_ext) if (cJSON_IsString(e) && str_ieq(path_ext(name), e->string)) sub = e;
+    const char *v = sub ? sub->valuestring : "", *idp = strstr(v, "{id}");
+    if (!sub || strstr(v, "..") || (strchr(v, '{') && (!idp || strchr(idp + 1, '{')))) return 0;
+    if (idp) snprintf(out, n, "%.*s%.*s%s", (int)(idp - v), v, (int)strcspn(name, "."), name, idp + 4);
+    else if (v[0]) snprintf(out, n, "%s/%s", v, name);
+    return 1;
+}
 
 /* A Switch firmware set alone is 200-odd .nca files. */
 #define MAX_PLAN 1024
@@ -349,7 +373,7 @@ static void tidy_pick_one(const char *dir, const cJSON *files, const cJSON *pick
     state_unlock();
     if (removed) {
         LOGI("BIOS: kept %s in %s, removed %d more of RomM's", names[keep], dir, removed);
-        plat_notify("RommPS: %d extra BIOS file%s removed\nKept %s", removed, removed == 1 ? "" : "s", names[keep]);
+        plat_notify("%s: %d extra BIOS file%s removed\nKept %s", plat_product(), removed, removed == 1 ? "" : "s", names[keep]);
     }
 }
 
@@ -390,12 +414,41 @@ static int md5_once(const char *path, char out[33]) {
     return 0;
 }
 
-/* RomM's files for the plan being made, which users_set needs to tell a set
- * with no records from the user's own. Set by make_plan, under g_lock. */
-static const cJSON *g_plan_files;
+/* RomM's files for the plan being made and where by_ext puts them under dir,
+ * which users_set needs to tell a set with no records from the user's own.
+ * Set by make_plan, under g_lock. */
+static const cJSON *g_plan_files, *g_plan_by_ext;
+static const char *g_plan_dir;
+
+/* RomM's file that goes to path (the first, as make_plan takes them), or with
+ * inside, one that goes into the folder at path. */
+static const cJSON *romms_file_at(const char *path, int inside) {
+    const size_t pl = strlen(path);
+    const cJSON *x;
+    cJSON_ArrayForEach(x, g_plan_files) {
+        char name[512], at[PATH_MAX_LEN];
+        if (!usable(x) || !by_ext_name(g_plan_by_ext, jget_str(x, "file_name", ""), name, sizeof name)) continue;
+        plan_dest(g_plan_dir, name, at, sizeof at);
+        if (inside ? !strncasecmp(at, path, pl) && at[pl] == '/' : str_ieq(at, path)) return x;
+    }
+    return NULL;
+}
+
+/* Whether the file at path is ours by a record, or RomM's by where it is and
+ * its size, and with reading, its md5 too. */
+static int romms_file(const char *path, int reading) {
+    state_lock();
+    const int ours = state_entry("firmware", path) != NULL;
+    state_unlock();
+    if (ours) return 1;
+    const cJSON *f = romms_file_at(path, 0);
+    char md5[33];
+    return f && file_exists(path) && file_size(path) == (int64_t)jget_num(f, "file_size_bytes", -1) &&
+           (!reading || (md5_once(path, md5) == 0 && str_ieq(md5, jget_str(f, "md5_hash", "-"))));
+}
 
 /* Whether the set's files in folder that no record calls ours are all RomM's
- * to the byte, each under its name in RomM: what an install before this one
+ * to the byte, each where the sync puts it: what an install before this one
  * put there, its records gone with it. Then it's RomM's set (place() takes
  * each file on); a single file RomM hasn't got and it's the user's. Names and
  * sizes first, so a foreign set is mostly told without reading a byte. */
@@ -406,16 +459,25 @@ static int romms_set(const char *folder, const char *ext) {
         int foreign = !d;
         while (d && !foreign && (de = readdir(d))) {
             if (de->d_name[0] == '.' || !str_ieq(path_ext(de->d_name), ext)) continue;
-            char path[PATH_MAX_LEN], md5[33];
+            char path[PATH_MAX_LEN];
             path_join(path, sizeof path, folder, de->d_name);
-            state_lock();
-            const int ours = state_entry("firmware", path) != NULL;
-            state_unlock();
-            if (ours) continue;
-            const cJSON *f = NULL, *x;
-            cJSON_ArrayForEach(x, g_plan_files) if (!f && usable(x) && str_ieq(jget_str(x, "file_name", ""), de->d_name)) f = x;
-            foreign = !f || !file_exists(path) || file_size(path) != (int64_t)jget_num(f, "file_size_bytes", -1) ||
-                      (reading && (md5_once(path, md5) != 0 || !str_ieq(md5, jget_str(f, "md5_hash", "-"))));
+            if (!dir_exists(path)) {
+                foreign = !romms_file(path, reading);
+                continue;
+            }
+            /* An NCA that's a folder (Ryujinx's <id>.nca/00): RomM's only where
+             * RomM's goes into one, with nothing in it but RomM's. Empty, or a
+             * download of ours cut off (.part), is a download still to come. */
+            DIR *in = romms_file_at(path, 1) ? opendir(path) : NULL;
+            struct dirent *ie;
+            foreign = !in;
+            while (in && !foreign && (ie = readdir(in))) {
+                if (ie->d_name[0] == '.' || ext_in_list(ie->d_name, ".part")) continue;
+                char file[PATH_MAX_LEN];
+                path_join(file, sizeof file, path, ie->d_name);
+                foreign = !romms_file(file, reading);
+            }
+            if (in) closedir(in);
         }
         if (d) closedir(d);
         if (foreign) return 0;
@@ -429,6 +491,43 @@ static int romms_set(const char *folder, const char *ext) {
  * user's; RomM's files already put in beside the user's set come out again.
  * 1 when the folder holds the user's own set. */
 #define ONE_SET_EXTS ".nca"
+
+/* The folder a set's file is in: its own, or for Ryujinx's layout, where
+ * each NCA is a folder of its own (registered/<id>.nca/00), the one above. */
+static void set_folder(const char *path, char *out, size_t n) {
+    str_copy(out, n, path);
+    char *slash = strrchr(out, '/');
+    if (!slash) {
+        out[0] = 0;
+        return;
+    }
+    *slash = 0;
+    if (ext_in_list(path_basename(out), ONE_SET_EXTS) && (slash = strrchr(out, '/'))) *slash = 0;
+}
+
+/* Whether path is one of a set's files in folder: folder/<x>.nca, or
+ * folder/<x>.nca/<file> (Ryujinx's). */
+static int in_set(const char *path, const char *folder) {
+    const size_t fl = strlen(folder);
+    if (strncmp(path, folder, fl) != 0 || path[fl] != '/') return 0;
+    const char *name = path + fl + 1, *slash = strchr(name, '/');
+    if (!slash) return ext_in_list(name, ONE_SET_EXTS);
+    char first[512];
+    snprintf(first, sizeof first, "%.*s", (int)(slash - name), name);
+    return !strchr(slash + 1, '/') && ext_in_list(first, ONE_SET_EXTS);
+}
+
+/* One of our set's files gone, and its own folder when it had one (Ryujinx's <id>.nca/). */
+static int unlink_set_file(const char *path) {
+    if (unlink(path) != 0) return -1;
+    char up[PATH_MAX_LEN];
+    str_copy(up, sizeof up, path);
+    char *slash = strrchr(up, '/');
+    if (slash) *slash = 0;
+    if (ext_in_list(path_basename(up), ONE_SET_EXTS)) rmdir(up);
+    return 0;
+}
+
 static int users_set(const char *folder, const char *ext) {
     DIR *d = opendir(folder);
     struct dirent *de;
@@ -440,7 +539,10 @@ static int users_set(const char *folder, const char *ext) {
         char path[PATH_MAX_LEN];
         path_join(path, sizeof path, folder, de->d_name);
         state_lock();
-        const int ours = state_entry("firmware", path) != NULL;
+        int ours = state_entry("firmware", path) != NULL;
+        const size_t pl = strlen(path);
+        const cJSON *rec;
+        cJSON_ArrayForEach(rec, state_section("firmware")) ours |= !strncmp(rec->string, path, pl) && rec->string[pl] == '/';
         state_unlock();
         if (!ours) users = 1;
     }
@@ -452,10 +554,7 @@ static int users_set(const char *folder, const char *ext) {
         state_lock();
         const cJSON *recs = state_section("firmware"), *e;
         cJSON_ArrayForEach(e, recs) {
-            const char *slash = strrchr(e->string, '/');
-            if (nours < 64 && slash && (size_t)(slash - e->string) == strlen(folder) &&
-                !strncmp(e->string, folder, strlen(folder)) && str_ieq(path_ext(e->string), ext))
-                str_copy(paths[nours++], sizeof paths[0], e->string);
+            if (nours < 64 && in_set(e->string, folder)) str_copy(paths[nours++], sizeof paths[0], e->string);
         }
         state_unlock();
         for (int i = 0; i < nours; i++) {
@@ -466,7 +565,7 @@ static int users_set(const char *folder, const char *ext) {
             const int64_t size = rec ? (int64_t)jget_num(rec, "size", -1) : -1;
             state_unlock();
             /* Changed since we put it there: the user's now, left as it is. */
-            if (file_exists(paths[i]) && still_ours(paths[i], md5, size) && unlink(paths[i]) == 0) removed++;
+            if (file_exists(paths[i]) && still_ours(paths[i], md5, size) && unlink_set_file(paths[i]) == 0) removed++;
             state_lock();
             cJSON_DeleteItemFromObjectCaseSensitive(state_section("firmware"), paths[i]);
             state_unlock();
@@ -477,7 +576,7 @@ static int users_set(const char *folder, const char *ext) {
         state_save();
         state_unlock();
         LOGI("BIOS: %s holds a firmware set of its own: removed the %d files of RomM's put in beside it", folder, removed);
-        plat_notify("RommPS: removed RomM's Switch firmware\nYour own firmware was there already");
+        plat_notify("%s: removed RomM's Switch firmware\nYour own firmware was there already", plat_product());
     }
     return 1;
 }
@@ -486,6 +585,8 @@ static int users_set(const char *folder, const char *ext) {
 static int make_plan(const cJSON *rules, const cJSON *files, const char *dir, plan_t *plan) {
     int n = 0;
     g_plan_files = files;
+    g_plan_by_ext = cJSON_GetObjectItemCaseSensitive(rules, "by_ext");
+    g_plan_dir = dir;
     const cJSON *pick = cJSON_GetObjectItemCaseSensitive(rules, "pick_one");
     if (cJSON_IsArray(pick)) {
         tidy_pick_one(dir, files, pick);
@@ -530,23 +631,14 @@ static int make_plan(const cJSON *rules, const cJSON *files, const char *dir, pl
         if (dup) continue;
         const char *name = jget_str(f, "file_name", "");
         if (cJSON_IsArray(only) && !list_has_name(only, name)) continue;
-        char full[256];
-        str_copy(full, sizeof full, name);
-        if (cJSON_IsObject(by_ext)) {
-            const cJSON *sub = NULL, *e;
-            cJSON_ArrayForEach(e, by_ext) if (cJSON_IsString(e) && str_ieq(path_ext(name), e->string)) sub = e;
-            if (!sub) continue;
-            if (sub->valuestring[0]) snprintf(full, sizeof full, "%s/%s", sub->valuestring, name);
-        }
+        char full[512];
+        if (!by_ext_name(by_ext, name, full, sizeof full)) continue;
         if (ext_in_list(name, ONE_SET_EXTS)) {
             if (sets_checked == 0) {
-                char folder[PATH_MAX_LEN];
-                str_copy(folder, sizeof folder, full);
-                char *slash = strrchr(folder, '/');
-                if (slash) *slash = 0; else folder[0] = 0;
-                char in[PATH_MAX_LEN];
-                if (folder[0]) path_join(in, sizeof in, dir, folder);
-                else str_copy(in, sizeof in, dir);
+                char at[PATH_MAX_LEN], in[PATH_MAX_LEN];
+                plan_dest(dir, full, at, sizeof at);
+                set_folder(at, in, sizeof in);
+                if (!in[0]) str_copy(in, sizeof in, dir);
                 sets_checked = users_set(in, path_ext(name)) ? 2 : 1;
             }
             if (sets_checked == 2) continue;
@@ -664,6 +756,71 @@ static int place(const profile_map *m, const cJSON *f, const char *dest, fetched
     return 1;
 }
 
+/* Whether the plan's file goes to the old set's place (by_ext's "/..." or under dir). */
+static int planned_path(const char *dir, const plan_t *plan, int np, const char *path) {
+    for (int k = 0; k < np; k++) {
+        char planned[PATH_MAX_LEN];
+        plan_dest(dir, plan[k].name, planned, sizeof planned);
+        if (!strcmp(planned, path)) return 1;
+    }
+    return 0;
+}
+
+/* RomM's firmware set swapped for another version: the files of ours that
+ * the new set doesn't have go, or the two versions sit in one folder and
+ * Eden fails every game on "NCA validation failed". The plan only holds set
+ * files when RomM's set goes in (never beside the user's own, see users_set),
+ * and a file changed since we put it there is the user's and stays.
+ * Only once the new set is all here (whole: every file of it RomM listed came
+ * down, checked, in a list as long as the platform says): a set half
+ * downloaded, or a list cut short, would cost the old set for one that can't
+ * run either, and 200-odd downloads to put it back. A new set less than half
+ * the size of what it replaces is taken for a list cut short too. */
+static void drop_old_set(const char *dir, const plan_t *plan, int np, const cJSON *files, int whole) {
+    char folder[PATH_MAX_LEN] = "";
+    int planned = 0;
+    for (int k = 0; k < np; k++) {
+        if (!ext_in_list(jget_str(plan[k].f, "file_name", ""), ONE_SET_EXTS)) continue;
+        planned++;
+        if (folder[0]) continue;
+        char at[PATH_MAX_LEN];
+        plan_dest(dir, plan[k].name, at, sizeof at);
+        set_folder(at, folder, sizeof folder);
+    }
+    if (!folder[0]) return;
+    const cJSON *f;
+    cJSON_ArrayForEach(f, files) if (ext_in_list(jget_str(f, "file_name", ""), ONE_SET_EXTS) && !usable(f)) whole = 0;
+    int leaving = 0;
+    state_lock();
+    const cJSON *rec;
+    cJSON_ArrayForEach(rec, state_section("firmware")) leaving += in_set(rec->string, folder) && !planned_path(dir, plan, np, rec->string);
+    state_unlock();
+    if (!leaving) return;
+    if (!whole || planned * 2 < leaving) {
+        LOGW("BIOS: RomM's firmware set in %s isn't all here (%d files of it, %d of the old one): the old one stays until it is",
+             folder, planned, leaving);
+        return;
+    }
+    int removed = 0;
+    state_lock();
+    cJSON *recs = state_section("firmware"), *e = recs ? recs->child : NULL;
+    while (e) {
+        cJSON *next = e->next;
+        const char *p = e->string;
+        if (in_set(p, folder) && !planned_path(dir, plan, np, p)) {
+            if (file_exists(p) && still_ours(p, jget_str(e, "md5", ""), (int64_t)jget_num(e, "size", -1)) && unlink_set_file(p) == 0) {
+                events_add("bios", "removed", 0, p, NULL, path_basename(p));
+                removed++;
+            }
+            cJSON_DeleteItemFromObjectCaseSensitive(recs, p);
+        }
+        e = next;
+    }
+    if (removed) state_save();
+    state_unlock();
+    if (removed) LOGI("BIOS: RomM's firmware set changed, removed %d files of the old one from %s", removed, folder);
+}
+
 /* Copies of ours under RomM's other name for a file that now goes in under
  * the name the emulator wants (dc/flash.bin beside dc/dc_flash.bin) go,
  * unless they were changed since. */
@@ -672,7 +829,7 @@ static void drop_named_twins(const char *dir, const plan_t *plan, int np) {
         if (!plan[k].named) continue;
         const char *md5 = jget_str(plan[k].f, "md5_hash", "");
         char keep[PATH_MAX_LEN];
-        path_join(keep, sizeof keep, dir, plan[k].name);
+        plan_dest(dir, plan[k].name, keep, sizeof keep);
         if (!md5[0]) continue;
         state_lock();
         cJSON *recs = state_section("firmware"), *e = recs ? recs->child : NULL;
@@ -685,7 +842,7 @@ static void drop_named_twins(const char *dir, const plan_t *plan, int np) {
                 int planned = 0;
                 for (int j = 0; j < np && !planned; j++) {
                     char p[PATH_MAX_LEN];
-                    path_join(p, sizeof p, dir, plan[j].name);
+                    plan_dest(dir, plan[j].name, p, sizeof p);
                     planned = !strcmp(p, e->string);
                 }
                 if (!planned) {
@@ -700,6 +857,57 @@ static void drop_named_twins(const char *dir, const plan_t *plan, int np) {
         }
         state_unlock();
     }
+}
+
+/* The first file in dir with one of by_ext's extensions (what RomM brought
+ * for an installer, PS3UPDAT.PUP), or "". */
+static void delivered(const char *dir, const cJSON *by_ext, char *out, size_t n) {
+    out[0] = 0;
+    DIR *d = cJSON_IsObject(by_ext) ? opendir(dir) : NULL;
+    struct dirent *de;
+    while (d && !out[0] && (de = readdir(d))) {
+        const cJSON *e;
+        cJSON_ArrayForEach(e, by_ext) if (!out[0] && de->d_name[0] != '.' && str_ieq(path_ext(de->d_name), e->string))
+            path_join(out, n, dir, de->d_name);
+    }
+    if (d) closedir(d);
+}
+
+/* Firmware an emulator installs itself, not one copied into place (RPCS3
+ * and the PS3's PS3UPDAT.PUP): "installed" names what's there once it's
+ * done. RomM's installer file comes down like any BIOS file (by_ext, into
+ * dir), and "install" says what to do with it, {file} being where it is;
+ * "install_without" says what to do while RomM has none. Missing, that's
+ * said: whenever one of its platform's games comes down (asked), and once a
+ * run otherwise. */
+static void say_install(const profile_map *m, const cJSON *rules, const char *dir, int asked) {
+    const char *tpl = jget_str(rules, "installed", "");
+    if (!tpl[0]) return;
+    char path[PATH_MAX_LEN], file[PATH_MAX_LEN], how[PATH_MAX_LEN * 2];
+    const char *vars[] = {"bios", m->bios_dir, "root", m->root, "rom_dir", m->rom_dir, "save_dir", m->save_dir, NULL};
+    str_template(path, sizeof path, tpl, vars);
+    if (file_exists(path) || dir_exists(path)) return;
+    delivered(dir, cJSON_GetObjectItemCaseSensitive(rules, "by_ext"), file, sizeof file);
+    if (file[0]) {
+        const char *with[] = {"file", file, NULL};
+        str_template(how, sizeof how, jget_str(rules, "install", ""), with);
+    } else {
+        str_copy(how, sizeof how, jget_str(rules, "install_without", jget_str(rules, "install", "")));
+    }
+    /* Once a run for what there is to say: the file coming down is news. */
+    static char said[16][PATH_MAX_LEN];
+    static int nsaid;
+    char what[PATH_MAX_LEN];
+    snprintf(what, sizeof what, "%s|%s", m->profile_id, file);
+    int before = 0;
+    for (int i = 0; i < nsaid && !before; i++) before = !strcmp(said[i], what);
+    if (before && !asked) return;
+    if (!before && nsaid < 16) str_copy(said[nsaid++], sizeof said[0], what);
+    LOGW("%s: its firmware isn't installed (no %s)", m->profile_name, path);
+    config_lock();
+    const int notify = g_cfg.notify;
+    config_unlock();
+    if (notify) plat_notify("%s: %s needs its firmware installed%s%s", plat_product(), m->profile_name, how[0] ? "\n" : "", how);
 }
 
 int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int only_platform, int *failed) {
@@ -735,25 +943,32 @@ int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int on
             fails++;
             continue;
         }
+        /* Shorter than the platform says: cut off on the way, not a smaller set. */
+        const int whole_list = cJSON_GetArraySize(files) >= (int)jget_num(plat, "firmware_count", 0);
         for (int i = 0; i < n; i++) {
             const profile_map *m = &maps[i];
             if (!profile_map_handles(m, slug, fs_slug)) continue;
             cJSON *rules = rules_for(m);
+            char dir[PATH_MAX_LEN];
+            target_dir(m, rules, dir, sizeof dir);
             if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(rules, "skip"))) {
+                say_install(m, rules, dir, only_platform != 0);
                 cJSON_Delete(rules);
                 continue;
             }
+            const int fails_before = fails;
             cJSON *mine = with_borrowed(files, rules, platforms, &fails);
-            char dir[PATH_MAX_LEN];
-            target_dir(m, rules, dir, sizeof dir);
             const int np = dir[0] && cJSON_GetArraySize(mine) > 0 ? make_plan(rules, mine, dir, plan) : 0;
+            int whole = whole_list && fails == fails_before; /* no borrowed list missing either */
             for (int k = 0; k < np; k++) {
                 char dest[PATH_MAX_LEN];
-                path_join(dest, sizeof dest, dir, plan[k].name);
+                plan_dest(dir, plan[k].name, dest, sizeof dest);
                 const int r = place(m, plan[k].f, dest, got, &ngot, 64);
                 if (r == 1) added++;
                 else if (r == 2) adopted++;
                 else if (r < 0) fails++;
+                if (ext_in_list(jget_str(plan[k].f, "file_name", ""), ONE_SET_EXTS) && (r < 0 || (!file_exists(dest) && !dir_exists(dest))))
+                    whole = 0;
             }
             if (adopted) {
                 state_lock();
@@ -764,6 +979,8 @@ int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int on
                 adopted = 0;
             }
             drop_named_twins(dir, plan, np);
+            drop_old_set(dir, plan, np, mine, whole);
+            say_install(m, rules, dir, only_platform != 0); /* with what just came down */
             cJSON_Delete(mine);
             cJSON_Delete(rules);
         }
@@ -774,7 +991,7 @@ int firmware_sync(const profile_map *maps, int n, const cJSON *platforms, int on
     pthread_mutex_unlock(&g_lock);
     cJSON_Delete(own);
     events_save();
-    if (added) plat_notify("RommPS: %d BIOS file%s added", added, added == 1 ? "" : "s");
+    if (added) plat_notify("%s: %d BIOS file%s added", plat_product(), added, added == 1 ? "" : "s");
     if (failed) *failed = fails;
     return added;
 }

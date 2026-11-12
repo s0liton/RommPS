@@ -1,0 +1,40 @@
+# Static checks (tools/lint.sh: formatting, cppcheck, shellcheck, Python
+# syntax) on every pull request and every push to main. Runs in the Deck
+# build image because that's where the pinned clang-format-16 lives: a
+# different clang-format version disagrees with itself about whitespace, and
+# nobody needs that kind of drama in CI.
+#
+# Branch protection on main makes "Lint" a required check, so nothing
+# unlinted gets merged.
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # The same image and cache steamdeck.yml uses; keep the tag in step
+      # with tools/deck-build.sh. The cache only saves time.
+      - uses: docker/build-push-action@v6
+        with:
+          context: platform/steamdeck/app/docker
+          tags: romm-sync-deck:6
+          load: true
+          cache-from: type=gha,scope=steamdeck
+          cache-to: type=gha,mode=max,scope=steamdeck,ignore-error=true
+
+      # Generates the headers cppcheck needs, then runs tools/lint.sh in the image.
+      - run: make lint

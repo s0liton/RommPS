@@ -16,9 +16,26 @@
 #include "zip.h"
 
 int bundle_supported(const char *layout) {
-    return layout && (!strcmp(layout, "psp") || !strcmp(layout, "gci") || !strcmp(layout, "wii") ||
+    return layout && (!strcmp(layout, "psp") || !strcmp(layout, "ps3") || !strcmp(layout, "gci") || !strcmp(layout, "wii") ||
                       !strcmp(layout, "3ds") || !strcmp(layout, "wiiu") || !strcmp(layout, "ps2") ||
-            !strcmp(layout, "switch") || !strcmp(layout, "xbox") || !strcmp(layout, "x360"));
+            !strcmp(layout, "switch") || !strcmp(layout, "xbox") || !strcmp(layout, "x360") || !strcmp(layout, "psvita") ||
+            !strcmp(layout, "ps4") || !strcmp(layout, "folder") || !strcmp(layout, "scummvm") ||
+            !strcmp(layout, "ryujinx"));
+}
+
+/* psvita, ps4, folder: a game's saves are the one folder its id names. */
+static int one_folder(const char *layout) {
+    return !strcmp(layout, "psvita") || !strcmp(layout, "ps4") || !strcmp(layout, "folder");
+}
+
+/* scummvm: one of the target's save files, "<target>.<number>" (most
+ * engines: monkey2.000) or "<target>.s<number>" (SCUMM's: monkey.s01). */
+static int scummvm_save(const char *name, const char *target) {
+    const size_t tl = strlen(target);
+    if (strncasecmp(name, target, tl) != 0 || name[tl] != '.') return 0;
+    const char *n = name + tl + 1;
+    if (*n == 's' || *n == 'S') n++;
+    return *n && strspn(n, "0123456789") == strlen(n);
 }
 
 static void add(bundle *b, const char *path, const char *name) {
@@ -98,12 +115,20 @@ static int is_psp_save(const char *folder) {
     return sfo_file_get(sfo, "SAVEDATA_PARAMS", v, sizeof v) == 0 || sfo_file_get(sfo, "SAVEDATA_FILE_LIST", v, sizeof v) == 0;
 }
 
-static const char *gc_region(char r) {
+/* Dolphin's region folder for a game: USA, JAP or EUR, unless the folder
+ * has RetroDECK's shorter US, JP or EU instead. */
+static const char *gc_region(const char *base, char r) {
+    const char *full, *brief;
     switch (r) {
-    case 'E': return "USA";
-    case 'J': case 'K': case 'W': return "JAP";
-    default: return "EUR";
+    case 'E': full = "USA", brief = "US"; break;
+    case 'J': case 'K': case 'W': full = "JAP", brief = "JP"; break;
+    default: full = "EUR", brief = "EU"; break;
     }
+    char p[PATH_MAX_LEN];
+    path_join(p, sizeof p, base, full);
+    if (dir_exists(p)) return full;
+    path_join(p, sizeof p, base, brief);
+    return dir_exists(p) ? brief : full;
 }
 
 static void wii_title_hex(const char *id, char *out) {
@@ -223,6 +248,52 @@ static int title_id_of(const char *name, char out[10]) {
     return 0;
 }
 
+/* The user every yuzu fork keeps its device saves under. */
+#define NX_DEVICE_USER "00000000000000000000000000000000"
+
+static uint64_t le64(const unsigned char *p) {
+    uint64_t v = 0;
+    for (int i = 7; i >= 0; i--) v = v << 8 | p[i];
+    return v;
+}
+
+static uint32_t le32(const unsigned char *p) { return (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24; }
+
+/* Ryujinx's save index (LibHac's KeyValueArchive, imkvdb.arc): "IMKV", its
+ * entry count at 8, then entries of "IMEN", the key's and value's sizes, the
+ * key (a SaveDataAttribute: program id, the user's two halves at 8 and 16,
+ * the type at 0x20, 1 a user's save and 3 the device's) and the value (the
+ * save's folder id first; its space at 0x18, 1 the user's; its state at 0x19,
+ * 3 deleted). The game's save for user (as Profiles.json writes the id: the
+ * two halves in hex) and its device save: their folder ids, 0 for none. As
+ * argosy-sigil's load_index reads it. */
+static void ryujinx_saves(const char *root, const char *title, const char *user, uint64_t *account, uint64_t *device) {
+    char path[PATH_MAX_LEN];
+    snprintf(path, sizeof path, "%s/bis/system/save/8000000000000000/0/imkvdb.arc", root);
+    size_t len = 0;
+    unsigned char *d = (unsigned char *)read_file(path, &len);
+    const uint64_t program = strtoull(title, NULL, 16);
+    *account = *device = 0;
+    if (!d || len < 12 || le32(d) != 0x564B4D49u || !program) {
+        free(d);
+        return;
+    }
+    const uint32_t count = le32(d + 8);
+    size_t at = 12;
+    for (uint32_t i = 0; i < count && at + 12 <= len && le32(d + at) == 0x4E454D49u; i++) {
+        const uint32_t kl = le32(d + at + 4), vl = le32(d + at + 8);
+        if (kl > len || vl > len || at + 12 + kl + vl > len) break;
+        const unsigned char *key = d + at + 12, *value = key + kl;
+        at += 12 + (size_t)kl + vl;
+        if (kl < 0x40 || vl < 0x1A || le64(key) != program || value[0x18] != 1 || value[0x19] == 3) continue;
+        char whose[40];
+        snprintf(whose, sizeof whose, "%016llx%016llx", (unsigned long long)le64(key + 8), (unsigned long long)le64(key + 16));
+        if (key[0x20] == 1 && !strcasecmp(whose, user)) *account = le64(value);
+        else if (key[0x20] == 3) *device = le64(value);
+    }
+    free(d);
+}
+
 int bundle_open(bundle *b, const char *layout, const char *id, const char *also, char bases[][PATH_MAX_LEN], int nbases) {
     memset(b, 0, sizeof *b);
     if (!bundle_supported(layout) || !id[0] || nbases < 1) return -1;
@@ -266,20 +337,24 @@ int bundle_open(bundle *b, const char *layout, const char *id, const char *also,
     const char *base = bases[pick];
     str_copy(b->base, sizeof b->base, base);
 
-    if (!strcmp(layout, "psp")) {
+    if (!strcmp(layout, "psp") || !strcmp(layout, "ps3")) {
+        /* ps3: RPCS3's savedata, each folder a game writes starting with
+         * its title id. Its installs are in dev_hdd0/game, not here, so
+         * there's no size to tell them apart by. */
+        const int psp = !strcmp(layout, "psp");
         str_copy(b->dir, sizeof b->dir, base);
         DIR *d = opendir(base);
         struct dirent *de;
         while (d && (de = readdir(d))) {
             char folder[PATH_MAX_LEN];
             path_join(folder, sizeof folder, base, de->d_name);
-            if (!folder_is_games(b, de->d_name) || !dir_exists(folder) || !is_psp_save(folder)) continue;
+            if (!folder_is_games(b, de->d_name) || !dir_exists(folder) || (psp && !is_psp_save(folder))) continue;
             add_tree(b, folder, de->d_name, 0);
         }
         if (d) closedir(d);
     } else if (!strcmp(layout, "gci")) {
         if (strlen(id) < 6) return -1;
-        snprintf(b->dir, sizeof b->dir, "%s/%s/Card A", base, gc_region(id[3]));
+        snprintf(b->dir, sizeof b->dir, "%s/%s/Card A", base, gc_region(base, id[3]));
         DIR *d = opendir(b->dir);
         struct dirent *de;
         while (d && (de = readdir(d))) {
@@ -314,10 +389,60 @@ int bundle_open(bundle *b, const char *layout, const char *id, const char *also,
         snprintf(dir, sizeof dir, "%s/Headers/00000001", b->dir);
         snprintf(name, sizeof name, "%s/Headers/00000001", id);
         add_tree(b, dir, name, 0);
+    } else if (one_folder(layout)) {
+        /* The one folder the game's saves are in, in whatever case it's there:
+         * Vita3K's ux0:user/00/savedata/<save folder> (gameid_vita), shadPS4's
+         * savedata/<title id> (its save folders in it), MAME's nvram/<set>. */
+        DIR *d = opendir(base);
+        struct dirent *de;
+        snprintf(b->dir, sizeof b->dir, "%s/%s", base, id);
+        while (d && (de = readdir(d)))
+            if (!strcasecmp(de->d_name, id)) path_join(b->dir, sizeof b->dir, base, de->d_name);
+        if (d) closedir(d);
+        add_tree(b, b->dir, id, 0);
+    } else if (!strcmp(layout, "scummvm")) {
+        /* ScummVM's save folder, every game's saves side by side: this target's. */
+        str_copy(b->dir, sizeof b->dir, base);
+        DIR *d = opendir(base);
+        struct dirent *de;
+        while (d && (de = readdir(d))) {
+            char path[PATH_MAX_LEN];
+            path_join(path, sizeof path, base, de->d_name);
+            if (scummvm_save(de->d_name, id) && file_exists(path)) add(b, path, de->d_name);
+        }
+        if (d) closedir(d);
     } else if (!strcmp(layout, "switch")) {
-        /* The game's folder under the user's: save/0000000000000000/<user>/<title id>. */
+        /* The game's folder under the user's: save/0000000000000000/<user>/<title id>;
+         * its device save beside it, under the all-zero user. */
         snprintf(b->dir, sizeof b->dir, "%s/%s", base, id);
         add_tree(b, b->dir, id, 0);
+        char up[PATH_MAX_LEN], name[64];
+        str_copy(up, sizeof up, base);
+        char *slash = strrchr(up, '/');
+        if (slash && strcmp(slash + 1, NX_DEVICE_USER) != 0) {
+            *slash = 0;
+            snprintf(b->dir2, sizeof b->dir2, "%s/" NX_DEVICE_USER "/%s", up, id);
+            snprintf(name, sizeof name, "device/%s", id);
+            add_tree(b, b->dir2, name, 0);
+        }
+    } else if (!strcmp(layout, "ryujinx")) {
+        uint64_t account = 0, device = 0;
+        char root[PATH_MAX_LEN], name[64];
+        const char *user = path_basename(base);
+        str_copy(root, sizeof root, base);
+        const size_t rl = strlen(root), tail = strlen("/bis/user/save/") + strlen(user);
+        if (rl <= tail || strncmp(root + rl - tail, "/bis/user/save/", 15) != 0) return -1;
+        root[rl - tail] = 0;
+        ryujinx_saves(root, id, user, &account, &device);
+        if (account) {
+            snprintf(b->dir, sizeof b->dir, "%s/bis/user/save/%016llx/0", root, (unsigned long long)account);
+            add_tree(b, b->dir, id, 0);
+        }
+        if (device) {
+            snprintf(b->dir2, sizeof b->dir2, "%s/bis/user/save/%016llx/0", root, (unsigned long long)device);
+            snprintf(name, sizeof name, "device/%s", id);
+            add_tree(b, b->dir2, name, 0);
+        }
     } else if (!strcmp(layout, "3ds")) {
         char hi[9], lo[9], root[64], meta[PATH_MAX_LEN];
         if (title_halves(id, hi, lo) != 0) return -1;
@@ -361,7 +486,12 @@ void bundle_free(bundle *b) {
 
 static int cmp_lines(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
 
-int bundle_hash(const bundle *b, char out[33]) {
+/* switch, ryujinx: the layouts with a device save beside the user's. */
+static int with_device(const bundle *b) { return !strcmp(b->layout, "switch") || !strcmp(b->layout, "ryujinx"); }
+
+/* RomM's hash of the zip: md5 of its sorted "name:md5" lines. In user (may
+ * be NULL), the same without the device save's; each file read once. */
+static void hash_lines(const bundle *b, char out[33], char *user) {
     char **lines = calloc((size_t)b->n + 1, sizeof *lines);
     size_t total = 1;
     for (int i = 0; i < b->n; i++) {
@@ -377,10 +507,55 @@ int bundle_hash(const bundle *b, char out[33]) {
     *p = 0;
     for (int i = 0; i < b->n; i++) p += sprintf(p, i ? "\n%s" : "%s", lines[i]);
     md5_hex(joined, strlen(joined), out);
+    if (user) {
+        p = joined;
+        *p = 0;
+        for (int i = 0; i < b->n; i++)
+            if (!with_device(b) || strncmp(lines[i], "device/", 7) != 0) p += sprintf(p, p != joined ? "\n%s" : "%s", lines[i]);
+        md5_hex(joined, strlen(joined), user);
+    }
     for (int i = 0; i < b->n; i++) free(lines[i]);
     free(lines);
     free(joined);
+}
+
+int bundle_hash(const bundle *b, char out[33]) {
+    hash_lines(b, out, NULL);
     return 0;
+}
+
+int bundle_hashes(const bundle *b, char out[33], char user[33]) {
+    hash_lines(b, out, user);
+    return 0;
+}
+
+int bundle_device_only(const bundle *b) {
+    if (!with_device(b) || !b->n) return 0;
+    for (int i = 0; i < b->n; i++)
+        if (strncmp(b->files[i].name, "device/", 7) != 0) return 0;
+    return 1;
+}
+
+int bundle_zip_has_user(const bundle *b, const char *zip_path, const char *tmp_dir) {
+    remove_tree(tmp_dir);
+    if (zip_extract_all(zip_path, tmp_dir) < 0) {
+        remove_tree(tmp_dir);
+        return -1;
+    }
+    /* As place_unpacked reads it: "<title id>/...", or with no device save
+     * either, whatever the zip holds (the folder's contents). */
+    char src[PATH_MAX_LEN], dev[PATH_MAX_LEN];
+    path_join(src, sizeof src, tmp_dir, b->game_id);
+    snprintf(dev, sizeof dev, "%s/device/%s", tmp_dir, b->game_id);
+    int user = dir_exists(src);
+    if (!user && !dir_exists(dev)) {
+        DIR *d = opendir(tmp_dir);
+        struct dirent *de;
+        while (d && !user && (de = readdir(d))) user = de->d_name[0] != '.';
+        if (d) closedir(d);
+    }
+    remove_tree(tmp_dir);
+    return user;
 }
 
 int bundle_zip(const bundle *b, const char *zip_path) {
@@ -478,9 +653,88 @@ static int place_unpacked(bundle *b, const char *tmp) {
         else remove_tree(to);
         return rc;
     }
-    if (!strcmp(b->layout, "switch")) { /* "<title id>/...", or the folder's contents */
+    if (one_folder(b->layout)) {
+        /* "<id>/..." in any case (argosy-sigil's vita3k unit, and the same
+         * shape for the others); for psvita and ps4, one folder alone under
+         * another title id (a client that went by TITLE_ID where the game
+         * saves under another's); or the folder's contents. A folder named
+         * like another game's id (or, for MAME, any lone folder but the
+         * set's) isn't this game's: nothing is touched. */
+        const int titles = strcmp(b->layout, "folder") != 0;
+        DIR *d = opendir(tmp);
+        struct dirent *de;
+        char only[PATH_MAX_LEN] = "", tid[10];
+        int entries = 0, dirs = 0, foreign = 0, exact = 0;
+        str_copy(src, sizeof src, tmp);
+        while (d && (de = readdir(d))) {
+            char in[PATH_MAX_LEN];
+            if (de->d_name[0] == '.') continue;
+            path_join(in, sizeof in, tmp, de->d_name);
+            entries++;
+            if (!dir_exists(in)) continue;
+            dirs++;
+            str_copy(only, sizeof only, in);
+            if (!strcasecmp(de->d_name, b->game_id)) {
+                str_copy(src, sizeof src, in);
+                exact = 1;
+            } else if (titles && strlen(de->d_name) == 9 && title_id_of(de->d_name, tid) == 0) {
+                foreign++;
+            }
+        }
+        if (d) closedir(d);
+        if (!exact && titles && entries == 1 && foreign == 1) str_copy(src, sizeof src, only);
+        else if (!exact && (foreign || (!titles && entries == 1 && dirs == 1))) return -2;
+        return put_folder(src, b->dir);
+    }
+    if (!strcmp(b->layout, "scummvm")) {
+        /* The target's save files, at the zip's top or in one folder: they
+         * replace the target's saves here, whole. */
+        DIR *d = opendir(tmp);
+        struct dirent *de;
+        char from[PATH_MAX_LEN];
+        int any = 0;
+        str_copy(from, sizeof from, tmp);
+        while (d && (de = readdir(d))) {
+            char in[PATH_MAX_LEN];
+            path_join(in, sizeof in, tmp, de->d_name);
+            if (de->d_name[0] != '.' && dir_exists(in)) str_copy(from, sizeof from, in);
+            any |= scummvm_save(de->d_name, b->game_id);
+        }
+        if (d) closedir(d);
+        if (any) str_copy(from, sizeof from, tmp);
+        d = opendir(from);
+        int rc = 0, got = 0;
+        while (d && (de = readdir(d))) {
+            if (!scummvm_save(de->d_name, b->game_id)) continue;
+            if (!got++)
+                for (int i = 0; i < b->n; i++) unlink(b->files[i].path);
+            char in[PATH_MAX_LEN], to[PATH_MAX_LEN];
+            path_join(in, sizeof in, from, de->d_name);
+            path_join(to, sizeof to, b->dir, de->d_name);
+            if (mkdir_parent(to) != 0 || (rename(in, to) != 0 && link_or_copy(in, to) != 0)) rc = -1;
+        }
+        if (d) closedir(d);
+        return got ? rc : -2;
+    }
+    if (!strcmp(b->layout, "switch") || !strcmp(b->layout, "ryujinx")) {
+        /* "<title id>/..." and "device/<title id>/...", or the folder's contents.
+         * A device save with no folder here (Ryujinx made none) stays out. */
+        char dev[PATH_MAX_LEN], devs[PATH_MAX_LEN];
+        int rc = 0, any = 0;
+        path_join(devs, sizeof devs, tmp, "device");
+        path_join(dev, sizeof dev, devs, b->game_id);
+        const int had_dev = dir_exists(dev);
+        if (had_dev && b->dir2[0]) {
+            rc |= put_folder(dev, b->dir2);
+            any = 1;
+        }
+        remove_tree(devs);
         path_join(src, sizeof src, tmp, b->game_id);
-        return put_folder(dir_exists(src) ? src : tmp, b->dir);
+        if (b->dir[0] && (dir_exists(src) || !had_dev)) {
+            rc |= put_folder(dir_exists(src) ? src : tmp, b->dir);
+            any = 1;
+        }
+        return any ? rc : -2;
     }
     if (!strcmp(b->layout, "3ds")) {
         /* data/00000001 wherever it is: "<hi>/<lo>/data/00000001", "data/00000001"
@@ -547,8 +801,8 @@ int bundle_replace(bundle *b, const char *zip_path, const char *tmp_dir) {
         return -1;
     }
     int rc;
-    if (!strcmp(b->layout, "psp") || !strcmp(b->layout, "gci")) {
-        if (!strcmp(b->layout, "psp")) {
+    if (!strcmp(b->layout, "psp") || !strcmp(b->layout, "ps3") || !strcmp(b->layout, "gci")) {
+        if (strcmp(b->layout, "gci") != 0) {
             /* The save folders the zip brings replace theirs, whole. The
              * game's others stay: its downloaded content (which may not be
              * there to download again), what it installed, another slot. */

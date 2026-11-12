@@ -536,7 +536,7 @@ void App::tick(float dt, hui::gfx::Renderer *renderer)
     else if (start_state_ == 3)
     {
         start_state_ = 0;
-        say("Couldn't start RommPS's background service: " + start_error_);
+        say("Couldn't start " ROMM_APP "'s background service: " + start_error_);
     }
 
     // A few covers a frame become textures; the rest wait their turn, so a
@@ -610,10 +610,21 @@ void App::start_payload()
 {
     if (start_state_ == 1)
         return;
+#if defined(ROMMPS_DECK)
+    // On the Deck it's a user service; systemd starts it.
+    start_error_.clear();
+    start_state_ = 1;
+    std::thread([this] {
+        const int rc = std::system("systemctl --user start romm-sync.service");
+        start_error_ = rc == 0 ? "" : "systemd couldn't start romm-sync.service";
+        start_state_ = rc == 0 ? 2 : 3;
+    }).detach();
+    return;
+#endif
     const std::string &elf = bundled_payload();
     if (elf.size() < 4 || elf.compare(0, 4, "\x7f" "ELF") != 0)
     {
-        start_error_ = "this RommPS doesn't carry its background service";
+        start_error_ = "this " ROMM_APP " doesn't carry its background service";
         start_state_ = 3;
         return;
     }
@@ -684,7 +695,7 @@ bool App::payload_too_old() const
 // copy can be running and not answering yet, after a start or a wake.
 int App::payload_lock()
 {
-    const int fd = ::open("/data/romm-sync/romm-sync.lock", O_RDONLY);
+    const int fd = ::open((service_dir() + "/romm-sync.lock").c_str(), O_RDONLY);
     if (fd < 0)
         return errno == ENOENT ? 0 : -1;
     int held = 0;
@@ -737,7 +748,7 @@ void App::refresh_status()
         if (payload_too_old() && !updated_payload_ && idle)
         {
             updated_payload_ = true;
-            say("Updating RommPS's background service to " + std::string(kMinPayload));
+            say("Updating " ROMM_APP "'s background service to " + std::string(kMinPayload));
             start_payload();
         }
         else if (!repaired_ && version_cmp(status_.version.c_str(), kMinPayload) == 0)
@@ -1371,7 +1382,7 @@ void App::download_collection(const Collection &c)
         if (!r.ok())
             say("Couldn't download " + name + ": " + r.message());
         else if (queued == 0)
-            say("Everything in " + name + " that can play here is on this console");
+            say("Everything in " + name + " that can play here is on this " ROMM_HERE);
         else
             say("Downloading " + std::to_string(queued) + (queued == 1 ? " game from " : " games from ") + name);
         refresh_queue();
@@ -1509,10 +1520,10 @@ void App::refresh_update()
             if (u.state == "error")
                 say("Update: " + (u.error.empty() ? u.message : u.error));
             else if (u.available)
-                say(u.self_update ? "RommPS " + u.latest + " is available"
-                                  : "RommPS " + u.latest + " is available in ProsperoStore");
+                say(u.self_update ? ROMM_APP " " + u.latest + " is available"
+                                  : ROMM_APP " " + u.latest + " is available " ROMM_UPDATE_IN);
             else if (u.state == "idle")
-                say("RommPS is up to date");
+                say(ROMM_APP " is up to date");
             else if (!u.message.empty())
                 say(u.message);
         }

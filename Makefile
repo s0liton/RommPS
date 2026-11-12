@@ -3,6 +3,7 @@
 #   make host                          macOS/Linux build for development, in build/host/
 #   make ps5                           PS5 payload, needs the SDK (see platform/ps5/ps5.mk)
 #   make ps4                           PS4 payload, needs the SDK (see platform/ps4/ps4.mk)
+#   make steamdeck                     Steam Deck service, with the machine's compiler (platform/steamdeck/steamdeck.mk)
 #   tools/ps5-build.sh, tools/ps4-build.sh   the same inside the Docker SDK image
 #   make deploy PS5_HOST=<ip>          send the PS5 payload to the loader on port 9021
 #   make install PS5_HOST=<ip>         same, plus copy it into the HEN's autostart over FTP (PS5_HEN_DIR)
@@ -11,6 +12,8 @@
 #   make ps5 VERSION=1.2.3             override the version baked into the build
 #   make ps4-pkg NETLOG=1              test build that broadcasts its log on the LAN (tools/netlog.py)
 #   make tools                         release-sign, for signing releases (tools/release-sign.c)
+#   make lint                          formatting, cppcheck, shellcheck (tools/lint.sh, in the Deck build image)
+#   make format                        format the files tools/lint.sh checks
 #
 # Code shared by every console is in src/. Each console has its own folder in
 # platform/: platform.c (src/platform.h), its make rules and its SDK image.
@@ -32,7 +35,7 @@ SIGIL_SRCS := $(addprefix $(SIGIL)/src/,sync.c sync_state.c sync_kinds.c sync_ki
         zip_entries.c md5.c sha1.c io_file.c n64_save.c clock_gb.c rzip.c sfo_parser.c psp_sfo.c) \
         $(SIGIL)/third_party/tiny-AES-c/aes.c
 SRCS := src/main.c src/util.c src/version.c src/http.c src/clientcert.c src/romm.c src/config.c src/state.c \
-        src/profiles.c src/sync.c src/watch.c src/detect.c src/ra2.c src/playlist.c src/autostart.c src/memcard.c src/zip.c src/bundle.c src/gcmem.c src/statefmt.c src/events.c src/gameid.c src/covers.c src/library.c src/firmware.c src/pair.c src/web.c src/update.c src/presets.c src/jsonlean.c src/ps2card.c src/xboxhdd.c src/n64.c src/switchid.c \
+        src/profiles.c src/sync.c src/watch.c src/detect.c src/ra2.c src/playlist.c src/autostart.c src/memcard.c src/zip.c src/bundle.c src/gcmem.c src/statefmt.c src/events.c src/gameid.c src/covers.c src/library.c src/firmware.c src/pair.c src/web.c src/update.c src/presets.c src/cfgvars.c src/cfgwrite.c src/jsonlean.c src/ps2card.c src/xboxhdd.c src/n64.c src/duckcard.c src/switchid.c \
         third_party/cJSON.c third_party/md5.c third_party/monocypher.c third_party/monocypher-ed25519.c \
         $(CHDR_SRCS) $(SIGIL_SRCS)
 HDRS := $(wildcard src/*.h) third_party/cJSON.h third_party/md5.h third_party/monocypher.h third_party/monocypher-ed25519.h \
@@ -58,7 +61,7 @@ COMMON_CFLAGS += -DROMM_NETLOG
 endif
 COMMON_CFLAGS += $(EXTRA_CFLAGS)
 
-.PHONY: unit all host ps5 ps4 tools deploy install install-ps4 run clean
+.PHONY: unit all host ps5 ps4 steamdeck deploy-deck tools lint format deploy install install-ps4 run clean
 
 all: host
 
@@ -93,11 +96,13 @@ $(HOST_BIN): $(SRCS) platform/host/platform.c $(HDRS) $(GEN_HEADERS)
 	$(HOST_CC) $(COMMON_CFLAGS) -DROMM_UPDATE_TEST_KEY -o $@ $(SRCS) platform/host/platform.c -lcurl $(HOST_SSL) -lz -lpthread
 
 # Unit tests for the parts with file formats of their own, and the version rules.
-unit: build/host/gcmem_test build/host/jsonlean_cli build/host/ps2card_test build/host/gameid_cli build/host/switchid_test \
-        build/host/version_test
+unit: build/host/gcmem_test build/host/jsonlean_cli build/host/ps2card_test build/host/gameid_cli build/host/cfgvars_test \
+        build/host/duckcard_test build/host/switchid_test build/host/version_test
 	build/host/version_test
 	build/host/gcmem_test
+	build/host/cfgvars_test
 	build/host/ps2card_test
+	build/host/duckcard_test
 	tests/gameid_test.sh build/host/gameid_cli
 	build/host/switchid_test
 	python3 tests/jsonlean_test.py build/host/jsonlean_cli
@@ -107,6 +112,10 @@ build/host/jsonlean_cli: tests/jsonlean_cli.c src/jsonlean.c src/jsonlean.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=gnu11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc -o $@ tests/jsonlean_cli.c src/jsonlean.c
 
+build/host/cfgvars_test: tests/cfgvars_test.c src/cfgvars.c src/cfgvars.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=gnu11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc -o $@ tests/cfgvars_test.c src/cfgvars.c
+
 build/host/version_test: tests/version_test.c src/version.c src/version.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=gnu11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc -o $@ tests/version_test.c src/version.c
@@ -115,10 +124,16 @@ build/host/gcmem_test: tests/gcmem_test.c src/gcmem.c src/gcmem.h
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=gnu11 -g -Wall -Wextra -fsanitize=address,undefined -Isrc -o $@ tests/gcmem_test.c src/gcmem.c
 
-build/host/gameid_cli: tests/gameid_cli.c src/gameid.c src/gameid.h src/util.c
+build/host/gameid_cli: tests/gameid_cli.c src/gameid.c src/gameid.h src/util.c src/zip.c
 	@mkdir -p $(dir $@)
-	$(HOST_CC) $(filter-out -O2,$(COMMON_CFLAGS)) -g -fsanitize=address,undefined -o $@ tests/gameid_cli.c src/gameid.c src/util.c third_party/cJSON.c \
+	$(HOST_CC) $(filter-out -O2,$(COMMON_CFLAGS)) -g -fsanitize=address,undefined -o $@ tests/gameid_cli.c src/gameid.c src/util.c src/zip.c third_party/cJSON.c \
 		third_party/md5.c $(CHDR_SRCS) -lz -lpthread
+
+# DuckStation's card names, on a made-up database (ps2card.c: sigil's platform table).
+build/host/duckcard_test: tests/duckcard_test.c src/duckcard.c src/duckcard.h src/cfgvars.c src/ps2card.c src/util.c src/zip.c $(SIGIL_SRCS)
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(filter-out -O2,$(COMMON_CFLAGS)) -g -fsanitize=address,undefined -o $@ $(filter %.c,$^) \
+		third_party/md5.c third_party/libchdr/deps/zstd/zstddeclib.c -lz -lpthread
 
 build/host/ps2card_test: tests/ps2card_test.c src/ps2card.c src/ps2card.h src/util.c src/zip.c $(SIGIL_SRCS)
 	@mkdir -p $(dir $@)
@@ -143,11 +158,19 @@ build/host/release-sign: tools/release-sign.c src/update_keys.h third_party/mono
 	@mkdir -p $(dir $@)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Isrc -Ithird_party -o $@ $(filter %.c,$^)
 
+# Static checks and formatting, in the Deck build image (it has the tools).
+lint: $(GEN_HEADERS) build/steamdeck/gen/emulators_json.h
+	tools/deck-build.sh tools/lint.sh
+
+format:
+	tools/deck-build.sh bash -c 'clang-format-16 -i platform/steamdeck/platform.c platform/steamdeck/app/src/*.cpp platform/steamdeck/app/src/*.hpp platform/steamdeck/app/src/*.h'
+
 run: host
 	ROMM_SYNC_DATA=$${ROMM_SYNC_DATA:-./host-data} $(HOST_BIN)
 
 include platform/ps5/ps5.mk
 include platform/ps4/ps4.mk
+include platform/steamdeck/steamdeck.mk
 
 clean:
 	rm -rf build

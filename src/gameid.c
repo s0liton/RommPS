@@ -7,11 +7,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <sys/stat.h>
 #include <zlib.h>
 
 #include "cJSON.h"
 #include "state.h" /* jget_str */
 #include "util.h"
+#include "zip.h"
 
 #define SECTOR 2048
 
@@ -177,17 +179,17 @@ static void clean_id(char *id) {
     id[o] = 0;
 }
 
-int gameid_psp(const char *path, char *out, size_t n) {
-    if (!str_ends_with_ci(path, ".iso") && !str_ends_with_ci(path, ".cso")) return -1;
+/* A value from <folder>/PARAM.SFO on an ISO 9660 disc image (PSP_GAME's, PS3_GAME's). */
+static int iso_sfo(const char *path, const char *folder, const char *key, char *out, size_t n) {
     image im;
     int rc = -1;
     unsigned char pvd[SECTOR];
     if (image_open(&im, path) == 0 && image_read(&im, 16 * SECTOR, pvd, sizeof pvd) == 0 && !memcmp(pvd + 1, "CD001", 5)) {
         uint32_t root_lba = le32(pvd + 156 + 2), root_size = le32(pvd + 156 + 10), lba, size, slba, ssize;
-        if (iso_find(&im, root_lba, root_size, "PSP_GAME", &lba, &size) == 0 &&
+        if (iso_find(&im, root_lba, root_size, folder, &lba, &size) == 0 &&
             iso_find(&im, lba, size, "PARAM.SFO", &slba, &ssize) == 0 && ssize < 64 * 1024) {
             unsigned char *sfo = malloc(ssize);
-            if (sfo && image_read(&im, (uint64_t)slba * SECTOR, sfo, ssize) == 0 && sfo_get(sfo, ssize, "DISC_ID", out, n) == 0) {
+            if (sfo && image_read(&im, (uint64_t)slba * SECTOR, sfo, ssize) == 0 && sfo_get(sfo, ssize, key, out, n) == 0) {
                 clean_id(out);
                 rc = out[0] ? 0 : -1;
             }
@@ -196,6 +198,23 @@ int gameid_psp(const char *path, char *out, size_t n) {
     }
     image_close(&im);
     return rc;
+}
+
+int gameid_psp(const char *path, char *out, size_t n) {
+    if (!str_ends_with_ci(path, ".iso") && !str_ends_with_ci(path, ".cso")) return -1;
+    return iso_sfo(path, "PSP_GAME", "DISC_ID", out, n);
+}
+
+int gameid_ps3(const char *path, char *out, size_t n) {
+    if (!dir_exists(path)) return iso_sfo(path, "PS3_GAME", "TITLE_ID", out, n); /* whatever its name ends in */
+    /* A game folder (JB, .ps3, .ps3dir) has PS3_GAME/ in it; an installed
+     * one (dev_hdd0/game/<id>) its PARAM.SFO right there. */
+    char sfo[PATH_MAX_LEN];
+    path_join(sfo, sizeof sfo, path, "PS3_GAME/PARAM.SFO");
+    if (!file_exists(sfo)) path_join(sfo, sizeof sfo, path, "PARAM.SFO");
+    if (sfo_file_get(sfo, "TITLE_ID", out, n) != 0) return -1;
+    clean_id(out);
+    return out[0] ? 0 : -1;
 }
 
 int gameid_dolphin(const char *path, char *out, size_t n) {
@@ -839,5 +858,220 @@ int gameid_x360(const char *path, char *out, size_t n) {
                 }
     }
     fclose(f);
+    return rc;
+}
+
+/* A Vita title id: nine letters and digits ("PCSE00001", a homebrew's "VITASHELL"). */
+static int vita_id(const char *in, char *out, size_t n) {
+    char id[16];
+    str_copy(id, sizeof id, in);
+    clean_id(id);
+    if (strlen(id) != 9 || n < 10) return -1;
+    str_copy(out, n, id);
+    return 0;
+}
+
+/* The shallowest sce_sys/param.sfo at or below dir, depth folders down:
+ * the game's own, not a save's further in. */
+static int vita_sfo_in(const char *dir, int depth, char *out, size_t n) {
+    if (depth == 0) {
+        path_join(out, n, dir, "sce_sys/param.sfo");
+        return file_exists(out) ? 0 : -1;
+    }
+    DIR *d = opendir(dir);
+    struct dirent *de;
+    int rc = -1;
+    while (d && rc && (de = readdir(d))) {
+        char sub[PATH_MAX_LEN];
+        if (de->d_name[0] == '.' || !strcmp(de->d_name, "sce_sys")) continue;
+        path_join(sub, sizeof sub, dir, de->d_name);
+        if (dir_exists(sub)) rc = vita_sfo_in(sub, depth - 1, out, n);
+    }
+    if (d) closedir(d);
+    return rc;
+}
+
+/* TITLE_ID and INSTALL_DIR_SAVEDATA (save left as it was when there's none). */
+static int vita_sfo_ids(const unsigned char *sfo, size_t len, char *tid, size_t tn, char *save, size_t sn) {
+    char v[64];
+    if (sfo_get(sfo, len, "TITLE_ID", v, sizeof v) != 0 || vita_id(v, tid, tn) != 0) return -1;
+    if (save && sfo_get(sfo, len, "INSTALL_DIR_SAVEDATA", v, sizeof v) == 0) vita_id(v, save, sn);
+    return 0;
+}
+
+int gameid_vita(const char *path, const char *apps, char *title_id, size_t tn, char *save_dir, size_t sn) {
+    char save[16] = "", file[PATH_MAX_LEN];
+    unsigned char *sfo = NULL, h[0x54];
+    size_t len = 0;
+    int rc = -1, read_sfo = 0;
+    title_id[0] = 0;
+    if (dir_exists(path)) {
+        for (int depth = 0; depth <= 3 && rc; depth++)
+            if (vita_sfo_in(path, depth, file, sizeof file) == 0) {
+                sfo = (unsigned char *)read_file(file, &len);
+                rc = sfo ? vita_sfo_ids(sfo, len, title_id, tn, save, sizeof save) : -1;
+                read_sfo = !rc;
+                free(sfo);
+            }
+        /* No unpacked game in it: RomM keeps plenty of Vita games as a folder
+         * holding one package, named whatever the dumper's mood was
+         * ("XsGHXcWr...bv.pkg"). The package says which game it is. */
+        DIR *d = rc ? opendir(path) : NULL;
+        struct dirent *de;
+        while (d && rc && (de = readdir(d))) {
+            if (de->d_name[0] == '.' || !ext_in_list(de->d_name, ".pkg,.vpk,.zip,.psvita")) continue;
+            path_join(file, sizeof file, path, de->d_name);
+            if (!file_exists(file)) continue;
+            const int got = gameid_vita(file, NULL, title_id, tn, save, sizeof save);
+            if (got >= 0) {
+                rc = 0;
+                read_sfo = got == 0;
+            }
+        }
+        if (d) closedir(d);
+    } else if (str_ends_with_ci(path, ".psvita")) {
+        /* ES-DE's: the title id on its first line. */
+        char *txt = read_file(path, NULL);
+        if (txt) {
+            txt[strcspn(txt, "\r\n")] = 0;
+            rc = vita_id(txt, title_id, tn);
+        }
+        free(txt);
+    } else {
+        FILE *f = fopen(path, "rb");
+        const int got = f && fread(h, 1, sizeof h, f) == sizeof h;
+        if (f) fclose(f);
+        if (got && !memcmp(h, "\x7FPKG", 4)) {
+            /* A .pkg: its contents need the license to read, but its header's
+             * content id has the title id, "EP0001-PCSE00001_00-...". */
+            char cid[37];
+            memcpy(cid, h + 0x30, 36);
+            cid[36] = 0;
+            if (cid[6] == '-' && cid[16] == '_') {
+                cid[16] = 0;
+                rc = vita_id(cid + 7, title_id, tn);
+            }
+        } else if (got && !memcmp(h, "PK\3\4", 4) &&
+                   zip_read_suffix(path, "sce_sys/param.sfo", 256 * 1024, &sfo, &len) == 0) {
+            rc = vita_sfo_ids(sfo, len, title_id, tn, save, sizeof save);
+            read_sfo = !rc;
+            free(sfo);
+        }
+    }
+    if (rc) {
+        title_id[0] = 0;
+        return -1;
+    }
+    /* Installed, Vita3K's copy says where its saves go: a .pkg or .psvita
+     * can't tell. */
+    if (apps && apps[0]) {
+        snprintf(file, sizeof file, "%s/%s/sce_sys/param.sfo", apps, title_id);
+        sfo = (unsigned char *)read_file(file, &len);
+        if (sfo) {
+            char tid[16], from[16] = "";
+            if (vita_sfo_ids(sfo, len, tid, sizeof tid, from, sizeof from) == 0) {
+                read_sfo = 1;
+                if (from[0]) str_copy(save, sizeof save, from);
+            }
+            free(sfo);
+        }
+    }
+    if (save_dir) str_copy(save_dir, sn, save[0] ? save : title_id);
+    return read_sfo ? 0 : 1;
+}
+
+int gameid_ps4(const char *path, char *out, size_t n) {
+    char file[PATH_MAX_LEN], id[64];
+    if (n < 10) return -1;
+    if (dir_exists(path)) {
+        /* An installed game's folder: sce_sys/param.sfo, the folder itself
+         * or one inside it. */
+        for (int depth = 0; depth <= 2; depth++) {
+            if (vita_sfo_in(path, depth, file, sizeof file) != 0 || sfo_file_get(file, "TITLE_ID", id, sizeof id) != 0) continue;
+            clean_id(id);
+            if (strlen(id) == 9) {
+                str_copy(out, n, id);
+                return 0;
+            }
+        }
+        return -1;
+    }
+    /* A .pkg: "\x7FCNT", then the content id at 0x40, "UP0001-CUSA00001_00-...". */
+    unsigned char h[0x64];
+    FILE *f = fopen(path, "rb");
+    const int got = f && fread(h, 1, sizeof h, f) == sizeof h;
+    if (f) fclose(f);
+    if (!got || memcmp(h, "\x7F" "CNT", 4) != 0 || h[0x46] != '-' || h[0x50] != '_') return -1;
+    memcpy(id, h + 0x47, 9);
+    id[9] = 0;
+    clean_id(id);
+    if (strlen(id) != 9) return -1;
+    str_copy(out, n, id);
+    return 0;
+}
+
+/* A ScummVM target out of a line: "scumm:monkey" is "monkey", spaces off. */
+static int scummvm_target(const char *line, char *out, size_t n) {
+    const char *colon = strchr(line, ':');
+    if (colon) line = colon + 1;
+    while (*line == ' ' || *line == '\t') line++;
+    size_t l = strcspn(line, "\r\n");
+    while (l && (line[l - 1] == ' ' || line[l - 1] == '\t')) l--;
+    if (!l || l >= n) return -1;
+    for (size_t i = 0; i < l; i++) /* a target: letters, digits, - and _ ("monkey2", "loom-fm") */
+        if (!isalnum((unsigned char)line[i]) && line[i] != '-' && line[i] != '_') return -1;
+    memcpy(out, line, l);
+    out[l] = 0;
+    return 0;
+}
+
+/* The same folder, whatever slashes end it or links lead there. */
+static int same_dir(const char *a, const char *b) {
+    struct stat sa, sb;
+    if (stat(a, &sa) == 0 && stat(b, &sb) == 0) return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
+    size_t la = strlen(a), lb = strlen(b);
+    while (la > 1 && a[la - 1] == '/') la--;
+    while (lb > 1 && b[lb - 1] == '/') lb--;
+    return la == lb && !strncmp(a, b, la);
+}
+
+int gameid_scummvm(const char *path, const char *ini, char *out, size_t n) {
+    char file[PATH_MAX_LEN] = "";
+    if (!dir_exists(path)) {
+        if (str_ends_with_ci(path, ".scummvm")) str_copy(file, sizeof file, path);
+    } else {
+        /* ES-DE's: a <name>.scummvm file in the game's folder. */
+        DIR *d = opendir(path);
+        struct dirent *de;
+        while (d && !file[0] && (de = readdir(d))) {
+            char p[PATH_MAX_LEN];
+            path_join(p, sizeof p, path, de->d_name);
+            if (de->d_name[0] != '.' && str_ends_with_ci(de->d_name, ".scummvm") && file_exists(p)) str_copy(file, sizeof file, p);
+        }
+        if (d) closedir(d);
+    }
+    if (file[0]) {
+        char *txt = read_file(file, NULL);
+        const int rc = txt ? scummvm_target(txt, out, n) : -1;
+        free(txt);
+        if (rc == 0) return 0;
+    }
+    /* scummvm.ini: the section whose path= is the game's folder. */
+    char *txt = ini && ini[0] && dir_exists(path) ? read_file(ini, NULL) : NULL;
+    char section[256] = "";
+    int rc = -1;
+    for (char *l = txt, *next; l && *l && rc; l = next) {
+        next = strchr(l, '\n');
+        if (next) *next++ = 0;
+        while (*l == ' ' || *l == '\t') l++;
+        l[strcspn(l, "\r")] = 0;
+        if (*l == '[') {
+            const size_t sl = strcspn(l + 1, "]");
+            snprintf(section, sizeof section, "%.*s", (int)sl, l + 1);
+        } else if (!strncmp(l, "path=", 5) && section[0] && strcmp(section, "scummvm") != 0 && same_dir(l + 5, path)) {
+            rc = scummvm_target(section, out, n);
+        }
+    }
+    free(txt);
     return rc;
 }

@@ -26,6 +26,7 @@
 #include "update.h"
 #include "util.h"
 #include "watch.h"
+#include "cfgwrite.h"
 #include "web.h"
 #include "presets.h"
 
@@ -111,8 +112,8 @@ static void announce_new_emulators(void) {
     if (!fresh) return;
     events_save();
     LOGI("new emulators found: %s%s", names, fresh > 3 ? " and more" : "");
-    if (fresh > 3) plat_notify("RommPS: found %s and %d more\nTurn them on in Emulator Settings", names, fresh - 3);
-    else plat_notify("RommPS: found %s\nTurn %s on in Emulator Settings", names, fresh == 1 ? "it" : "them");
+    if (fresh > 3) plat_notify("%s: found %s and %d more\nTurn them on in Emulator Settings", plat_product(), names, fresh - 3);
+    else plat_notify("%s: found %s\nTurn %s on in Emulator Settings", plat_product(), names, fresh == 1 ? "it" : "them");
 }
 
 static void *app_main(void *arg) {
@@ -120,7 +121,7 @@ static void *app_main(void *arg) {
     int init = plat_init();
     if (init > 0) {
         /* RommPS and the HEN can both start a copy at boot; that's no news. */
-        if (!plat_app_installed()) plat_notify("RommPS is already running");
+        if (!plat_app_installed()) plat_notify("%s is already running", plat_product());
         return NULL;
     }
     if (init != 0) fprintf(stderr, "platform init reported a problem\n");
@@ -143,7 +144,7 @@ static void *app_main(void *arg) {
      * breaks HTTPS certificate checks and save timestamps. */
     if (time(NULL) < 1577836800) { /* 2020-01-01 */
         LOGW("the console clock isn't set; HTTPS and save times will be wrong");
-        plat_notify("RommPS: the console's date and time aren't set\nSet them in Settings to sync");
+        plat_notify("%s: the %s's date and time aren't set\nSet them in Settings to sync", plat_product(), plat_here());
     }
 
     presets_init();
@@ -163,6 +164,7 @@ static void *app_main(void *arg) {
 
     sync_init();
     watch_init();
+    cfgwrite_init();
     library_init();
     covers_init();
     int port = g_cfg.web_port;
@@ -186,14 +188,14 @@ static void *app_main(void *arg) {
     plat_app_version(app_version, sizeof app_version);
     if (quiet && app_version[0] && !strchr(APP_VERSION, '-') && version_cmp(app_version, APP_VERSION) < 0) {
         LOGI("RommPS %s is older than RomM Sync %s", app_version, APP_VERSION);
-        plat_notify("RommPS %s is out of date\nUpdate it from your homebrew store", app_version);
+        plat_notify("%s %s is out of date\nUpdate it from your homebrew store", plat_product(), app_version);
     } else if (quiet) {
     } else if (!plat_info()->self_update) {
-        plat_notify("RommPS is running\nInstall the RommPS app from your homebrew store");
+        plat_notify("%s is running\nInstall the %s app from %s", plat_product(), plat_product(), plat_update_source());
     } else if (config_is_paired()) {
-        plat_notify("RommPS is running\nhttp://%s:%d", ip[0] ? ip : "127.0.0.1", port);
+        plat_notify("%s is running\nhttp://%s:%d", plat_product(), ip[0] ? ip : "127.0.0.1", port);
     } else {
-        plat_notify("RommPS: open http://%s:%d to pair with RomM", ip[0] ? ip : "127.0.0.1", port);
+        plat_notify("%s: open http://%s:%d to pair with RomM", plat_product(), ip[0] ? ip : "127.0.0.1", port);
     }
 
     /* The extras' mounts are watched for from the start: an emulator opened
@@ -238,7 +240,7 @@ static void *app_main(void *arg) {
             if (ip[0] || --resume_ticks == 0) {
                 resume_ticks = 0;
                 resume_notified = now;
-                if (!quiet) plat_notify("RommPS resumed\nhttp://%s:%d", ip[0] ? ip : "127.0.0.1", port);
+                if (!quiet) plat_notify("%s resumed\nhttp://%s:%d", plat_product(), ip[0] ? ip : "127.0.0.1", port);
             }
         }
 

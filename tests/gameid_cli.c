@@ -1,7 +1,11 @@
 /* For tests/gameid_test.sh: a disc's PlayStation serial and PS2 CRC.
  *   gameid_cli <disc>        prints "<serial> <crc>", "-" for what it can't read
+ *   gameid_cli ps3 <game>    prints the PS3 title id, or "-"
  *   gameid_cli xbox <game>   prints the Xbox title id, or "-"
  *   gameid_cli x360 <game>   prints the Xbox 360 title id, or "-"
+ *   gameid_cli vita <game> [ux0/app]   prints "<title id> <save folder>", or "-"
+ *   gameid_cli ps4 <game>    prints the PS4 title id, or "-"
+ *   gameid_cli scummvm <game> [scummvm.ini]   prints the ScummVM target, or "-"
  *   gameid_cli xbox-short <game>   prints "<needs> <has>" for an image cut short, or "-" */
 #include <stdio.h>
 #include <string.h>
@@ -21,6 +25,25 @@ int main(int argc, char **argv) {
         uint64_t need = 0, have = 0;
         if (gameid_xbox_short(argv[2], &need, &have) == 1) printf("%llu %llu\n", (unsigned long long)need, (unsigned long long)have);
         else printf("-\n");
+        return 0;
+    }
+    if ((argc == 3 || argc == 4) && !strcmp(argv[1], "vita")) {
+        char save[32];
+        const int rc = gameid_vita(argv[2], argc == 4 ? argv[3] : NULL, serial, sizeof serial, save, sizeof save);
+        if (rc >= 0) printf("%s %s%s\n", serial, save, rc ? " (title id only)" : "");
+        else printf("-\n");
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "ps4")) {
+        printf("%s\n", gameid_ps4(argv[2], serial, sizeof serial) == 0 ? serial : "-");
+        return 0;
+    }
+    if ((argc == 3 || argc == 4) && !strcmp(argv[1], "scummvm")) {
+        printf("%s\n", gameid_scummvm(argv[2], argc == 4 ? argv[3] : NULL, serial, sizeof serial) == 0 ? serial : "-");
+        return 0;
+    }
+    if (argc == 3 && !strcmp(argv[1], "ps3")) {
+        printf("%s\n", gameid_ps3(argv[2], serial, sizeof serial) == 0 ? serial : "-");
         return 0;
     }
     if (argc == 3 && (!strcmp(argv[1], "xbox") || !strcmp(argv[1], "x360"))) {

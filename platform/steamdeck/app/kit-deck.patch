@@ -1,0 +1,116 @@
+diff -ruN a/src/gfx/draw_list.hpp b/src/gfx/draw_list.hpp
+--- a/src/gfx/draw_list.hpp	2026-11-05 17:27:20.029658365 -0500
++++ b/src/gfx/draw_list.hpp	2026-11-05 17:27:20.048580174 -0500
+@@ -16,7 +16,11 @@
+ // The virtual canvas every screen is laid out in; the viewport scales it to
+ // the surface (1080p, 1440p or 4K) so layouts never deal with real pixels.
+ constexpr float kVirtualWidth = 1920.0f;
+-constexpr float kVirtualHeight = 1080.0f;
++// RommDeck: the Steam Deck's 16:10 (1920x1200) is set at build time.
++#ifndef HUI_VIRTUAL_HEIGHT
++#define HUI_VIRTUAL_HEIGHT 1080.0f
++#endif
++constexpr float kVirtualHeight = HUI_VIRTUAL_HEIGHT;
+ 
+ struct Color
+ {
+@@ -188,6 +192,20 @@
+     void pop_transform();
+     void push_opacity(float opacity); // multiplies every colour's alpha
+     void pop_opacity();
++    // RommDeck: where r lands on the canvas, under the current transform and
++    // cut to the clip in force (an empty rectangle when the clip hides it).
++    // The touch screen's hit zones are these.
++    Rect on_canvas(const Rect &r) const
++    {
++        Rect a = apply(r);
++        if (clips_.empty())
++            return a;
++        const Rect &c = clips_.back();
++        const float x0 = a.x > c.x ? a.x : c.x, y0 = a.y > c.y ? a.y : c.y;
++        const float x1 = a.x + a.w < c.x + c.w ? a.x + a.w : c.x + c.w;
++        const float y1 = a.y + a.h < c.y + c.h ? a.y + a.h : c.y + c.h;
++        return {x0, y0, x1 > x0 ? x1 - x0 : 0.0f, y1 > y0 ? y1 - y0 : 0.0f};
++    }
+ 
+     const std::vector<Instance> &instances() const
+     {
+diff -ruN a/src/ui/glyphs.cpp b/src/ui/glyphs.cpp
+--- a/src/ui/glyphs.cpp	2026-11-05 17:27:20.034979184 -0500
++++ b/src/ui/glyphs.cpp	2026-11-05 17:27:20.039627519 -0500
+@@ -22,9 +22,24 @@
+     text(list, fonts.semibold, value, cx, cy + size * 0.36f, size, style.ink, gfx::Align::center);
+ }
+ 
+-void face(gfx::DrawList &list, const GlyphStyle &style, Button button, float cx, float cy,
+-          float size)
++void face(gfx::DrawList &list, const Fonts &fonts, const GlyphStyle &style, Button button, float cx,
++          float cy, float size)
+ {
++#if defined(HUI_DECK_GLYPHS)
++    // RommDeck: the Steam Deck's face buttons, lettered in place of the
++    // DualSense symbols they stand for (Cross is A, the south button).
++    {
++        const float half = size * 0.5f;
++        list.circle(cx, cy, half, style.body);
++        list.ring(cx, cy, half - 0.75f, 1.5f, style.edge);
++        const char *letter = button == Button::cross    ? "A"
++                             : button == Button::circle ? "B"
++                             : button == Button::square ? "X"
++                                                        : "Y";
++        label(list, fonts, style, letter, cx, cy + size * 0.02f, size * 0.56f);
++        return;
++    }
++#endif
+     const float half = size * 0.5f;
+     const float stroke = size * 0.11f;
+     // A disc behind the symbol, like the physical button. Single-colour
+@@ -115,7 +130,11 @@
+     case Button::options:
+         return size * 1.05f;
+     case Button::touchpad:
++#if defined(HUI_DECK_GLYPHS)
++        return size * 1.05f; // the Deck's View button
++#else
+         return size * 1.6f;
++#endif
+     case Button::none:
+         return 0.0f;
+     default:
+@@ -136,7 +155,7 @@
+     case Button::circle:
+     case Button::square:
+     case Button::triangle:
+-        face(list, style, button, cx, cy, size);
++        face(list, fonts, style, button, cx, cy, size);
+         return;
+     case Button::l1:
+     case Button::r1:
+@@ -196,6 +215,15 @@
+     }
+     case Button::touchpad:
+     {
++#if defined(HUI_DECK_GLYPHS)
++        // The Deck's View button: a pill carrying two overlapping windows.
++        const float ph = size * 0.7f;
++        list.bordered_rect({x, cy - ph * 0.5f, w, ph}, ph * 0.5f, style.body, 1.5f, style.edge);
++        const float s = size * 0.26f, stroke = size * 0.06f;
++        list.bordered_rect({cx - s * 0.75f, cy - s * 0.75f, s, s}, s * 0.18f, style.body, stroke, style.ink);
++        list.bordered_rect({cx - s * 0.25f, cy - s * 0.25f, s, s}, s * 0.18f, style.body, stroke, style.ink);
++        return;
++#endif
+         const float h = size * 0.72f;
+         list.bordered_rect({x, cy - h * 0.5f, w, h}, h * 0.22f, style.body, 1.5f, style.edge);
+         list.line(cx, cy - h * 0.3f, cx, cy + h * 0.3f, 1.5f, style.edge);
+diff -ruN a/src/ui/glyphs.hpp b/src/ui/glyphs.hpp
+--- a/src/ui/glyphs.hpp	2026-11-05 17:27:20.034997958 -0500
++++ b/src/ui/glyphs.hpp	2026-11-05 17:27:20.039580902 -0500
+@@ -65,7 +65,7 @@
+ {
+     float size = 40.0f;
+     float text_size = 26.0f;
+-    float cy = 1010.0f;
++    float cy = gfx::kVirtualHeight - 70.0f; // RommDeck: the canvas's bottom row, whatever its height
+     float item_gap = 44.0f;
+     const FontRef *font = nullptr; // label face; the regular one when null
+ };

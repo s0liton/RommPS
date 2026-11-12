@@ -16,8 +16,10 @@
 #include "config.h"
 #include "events.h"
 #include "firmware.h"
+#include "gameid.h"
 #include "http.h"
 #include "platform.h"
+#include "presets.h"
 #include "profiles.h"
 #include "romm.h"
 #include "state.h"
@@ -228,7 +230,7 @@ static const char *console_name(const cJSON *p, const char *slug_key, const char
 
 /* No emulator found because the list of them couldn't be built (memory, on
  * the PS4), not because none plays the platform: say which. */
-#define MAPS_SHORT_MSG "the console was short of memory just then. Try again in a moment"
+#define MAPS_SHORT_MSG "the %s was short of memory just then. Try again in a moment"
 static int maps_failed(const profile_map *maps, int n) {
     config_lock();
     const int have = cJSON_GetArraySize(g_cfg.profiles) > 0;
@@ -722,13 +724,78 @@ static void finish_download(job *j, const profile_map *maps, int n, const cJSON 
         const int notify = g_cfg.notify;
         config_unlock();
         download_notice(head, sizeof head, name, system);
-        if (notify && problem[0]) plat_notify("RommPS: %s, but %s", head, problem);
-        else if (notify) plat_notify("RommPS: %s", head);
+        if (notify && problem[0]) plat_notify("%s: %s, but %s", plat_product(), head, problem);
+        else if (notify) plat_notify("%s: %s", plat_product(), head);
     }
     pthread_mutex_lock(&g_q_lock);
     j->saves = saves;
     pthread_mutex_unlock(&g_q_lock);
     job_end(j, JOB_DONE, NULL, NULL);
+}
+
+/* Whether the platform entry an emulator's games come from says key: its
+ * saved profile's (the platform's, else the profile's own), else the
+ * built-in catalog's for the same emulator and system, as presets change. */
+static int platform_says(const profile_map *m, const char *key) {
+    char sys[64];
+    str_copy(sys, sizeof sys, m->romm_slugs);
+    sys[strcspn(sys, ",")] = 0;
+    int on = -1;
+    const cJSON *p, *e, *v;
+    config_lock();
+    cJSON_ArrayForEach(p, g_cfg.profiles) {
+        if (strcmp(jget_str(p, "id", ""), m->profile_id) != 0) continue;
+        cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(p, "platforms")) {
+            if (strcmp(profiles_system_key(e), sys) != 0) continue;
+            if (!(v = cJSON_GetObjectItemCaseSensitive(e, key))) v = cJSON_GetObjectItemCaseSensitive(p, key);
+            if (v) on = cJSON_IsTrue(v);
+        }
+    }
+    config_unlock();
+    if (on >= 0) return on;
+    cJSON_ArrayForEach(p, presets_catalog()) {
+        if (strcmp(jget_str(p, "id", ""), m->profile_id) != 0) continue;
+        const cJSON *prof = cJSON_GetObjectItemCaseSensitive(p, "profile");
+        cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(prof, "platforms")) {
+            if (strcmp(profiles_system_key(e), sys) != 0) continue;
+            if (!(v = cJSON_GetObjectItemCaseSensitive(e, key))) v = cJSON_GetObjectItemCaseSensitive(prof, key);
+            if (v) return cJSON_IsTrue(v);
+        }
+    }
+    return 0;
+}
+
+/* A Vita game, for an emulator whose platform entry says "vita_install"
+ * (Vita3K): ES-DE lists it by a <name>.psvita beside it holding its title id,
+ * which Vita3K runs once it has the game installed. Installing is Vita3K's
+ * (it decrypts the game as it goes), so the download says how, unless
+ * ux0/app/<title id> is there already. */
+static void vita_ready(const profile_map *m, const char *game, const char *name) {
+    if (!platform_says(m, "vita_install")) return;
+    char tid[16], apps[PATH_MAX_LEN], app[PATH_MAX_LEN], stem[256], stub[PATH_MAX_LEN];
+    path_join(apps, sizeof apps, m->root, "ux0/app");
+    if (gameid_vita(game, apps, tid, sizeof tid, NULL, 0) < 0) {
+        LOGW("%s: no Vita title id in it, so ES-DE won't list it", path_basename(game));
+        return;
+    }
+    if (dir_exists(game)) str_copy(stem, sizeof stem, path_basename(game));
+    else path_stem(stem, sizeof stem, path_basename(game));
+    snprintf(stub, sizeof stub, "%s/%s.psvita", m->rom_dir, stem);
+    char *had = read_file(stub, NULL);
+    if (!had || strcmp(had, tid) != 0) {
+        if (write_file_atomic(stub, tid, strlen(tid)) == 0) LOGI("%s: ES-DE lists it as %s (%s)", name, path_basename(stub), tid);
+        else LOGW("could not write %s", stub);
+    }
+    free(had);
+    path_join(app, sizeof app, apps, tid);
+    if (dir_exists(app)) return;
+    LOGI("%s: %s isn't installed in %s yet", name, tid, m->profile_name);
+    config_lock();
+    const int notify = g_cfg.notify;
+    config_unlock();
+    if (notify)
+        plat_notify("%s: %s needs installing in %s\nIn Vita3K: File, Install..., then pick %s%s", plat_product(), name,
+                    m->profile_name, game, str_ends_with_ci(game, ".pkg") ? ", with its zRIF" : "");
 }
 
 /* A file a Switch download brings: one of a game's, or of its update's or DLC's. */
@@ -973,7 +1040,7 @@ static void run_rom_job(job *j) {
     const char *slug = jget_str(rom, "platform_slug", "");
     const profile_map *m = profile_find_for_platform(maps, n, slug, jget_str(rom, "platform_fs_slug", ""));
     if (!m) {
-        if (maps_failed(maps, n)) job_end(j, JOB_ERROR, MAPS_SHORT_MSG "%s", "");
+        if (maps_failed(maps, n)) job_end(j, JOB_ERROR, MAPS_SHORT_MSG, plat_here());
         else job_end(j, JOB_ERROR, "no emulator is set up for %s", slug);
         profiles_free(maps);
         cJSON_Delete(rom);
@@ -1101,6 +1168,7 @@ static void run_rom_job(job *j) {
                 LOGW("could not put %s in %s", j->name, x->rom_dir);
             }
         }
+        vita_ready(m, game, j->name);
         finish_download(j, maps, n, rom, m, game);
     } else {
         if (cancelled(j) && !(multi && had)) discard_partial(dest, multi);
@@ -1122,7 +1190,7 @@ static void run_firmware_job(job *j) {
     str_copy(j->platform, sizeof j->platform, console_name(plat, "slug", "fs_slug", jget_str(plat, "display_name", "")[0] ? "display_name" : "name"));
     pthread_mutex_unlock(&g_q_lock);
     if (st != 200 || !profile_find_for_platform(maps, n, jget_str(plat, "slug", ""), jget_str(plat, "fs_slug", ""))) {
-        if (st == 200 && maps_failed(maps, n)) job_end(j, JOB_ERROR, MAPS_SHORT_MSG "%s", "");
+        if (st == 200 && maps_failed(maps, n)) job_end(j, JOB_ERROR, MAPS_SHORT_MSG, plat_here());
         else job_end(j, JOB_ERROR, "no emulator is set up for %s", plat ? jget_str(plat, "slug", "") : "this platform");
         cJSON_Delete(plat);
         profiles_free(maps);
@@ -1662,7 +1730,7 @@ static int collections_of(collection_kind kind, const char *me, cJSON ***all, in
     }
     if (st != 200 || !cJSON_IsArray(list)) {
         if (st == 403) {
-            snprintf(err, (size_t)en, "RomM didn't allow reading collections: pair RommPS again to grant it");
+            snprintf(err, (size_t)en, "RomM didn't allow reading collections: pair %s again to grant it", plat_product());
             *refused = 1;
         }
         else if (st || !romm_no_answer(err, en))
@@ -1844,7 +1912,7 @@ static int move_to_main(const profile_map *maps, int n) {
         if (d) closedir(d);
         if (here) {
             events_save();
-            plat_notify("RommPS: %d %s game%s moved to %s", here, x->profile_name, here == 1 ? "" : "s", m->profile_name);
+            plat_notify("%s: %d %s game%s moved to %s", plat_product(), here, x->profile_name, here == 1 ? "" : "s", m->profile_name);
         }
         moved += here;
     }
@@ -2007,7 +2075,7 @@ static void clear_old_copies(const profile_map *maps, int n) {
         if (gone) {
             LOGI("%s plays %s's games now: removed %d copies (%lld bytes)", x->profile_name, x->rom_dir, gone, (long long)freed);
             events_save();
-            plat_notify("RommPS: %s now plays the same game files\n%.1f GB freed", x->profile_name, (double)freed / 1e9);
+            plat_notify("%s: %s now plays the same game files\n%.1f GB freed", plat_product(), x->profile_name, (double)freed / 1e9);
         }
     }
 }
@@ -2169,7 +2237,7 @@ again:;
             str_copy(sys, sizeof sys, x->platform_dir);
             for (char *c = sys; *c; c++)
                 if (*c >= 'a' && *c <= 'z') *c -= 32;
-            plat_notify("RommPS: %d %s %s with %s", here, sys, here == 1 ? "game now also syncs" : "games now also sync",
+            plat_notify("%s: %d %s %s with %s", plat_product(), here, sys, here == 1 ? "game now also syncs" : "games now also sync",
                         x->profile_name);
             linked += here;
         }

@@ -7,6 +7,16 @@
 <script>
 // The consoles' browsers can't blur fast enough: themes drop the blur there.
 if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className += " low-gpu";
+// The app's name, the service's, where updates come from and what the machine
+// is called: the service puts them on <html> where they aren't RommPS's and a
+// console's (RommDeck's, from GitHub, on a Deck).
+var APP = document.documentElement.getAttribute("data-product") || "RommPS";
+var SERVICE = document.documentElement.getAttribute("data-product") || "RomM Sync";
+var STORE = document.documentElement.getAttribute("data-store") || "your homebrew store";
+var HERE = document.documentElement.getAttribute("data-here") || "console";
+var PEERS = document.documentElement.getAttribute("data-peers") || "consoles";
+var CONSOLE = !document.documentElement.getAttribute("data-here");
+document.title = APP;
 </script>
 <style>
 <!--INCLUDE:build/gen/inter-font.css-->
@@ -53,7 +63,7 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
     </div>
 
     <div class="wz" id="wz2">
-      <h2>Approve this console</h2>
+      <h2>Approve this <span class="here-name">console</span></h2>
       <div class="pairbox">
         <div class="qr" id="pairQr"></div>
         <div>
@@ -83,7 +93,7 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
         <p class="muted" id="ps2Intro"></p>
         <label class="choice" id="ps2BackupChoice"><input type="radio" name="ps2" value="shared"><div>
           <b>Shared memory cards</b>
-          <span class="muted">Needs RomM 5.3.0 or newer. The whole cards sync with your other consoles as they change; when both changed, the newer wins and the other is kept.</span>
+          <span class="muted">Needs RomM 5.3.0 or newer. The whole cards sync with your other <span class="peers-name">consoles</span> as they change; when both changed, the newer wins and the other is kept.</span>
           <div class="warn" id="ps2BackupNote"></div>
         </div></label>
         <label class="choice"><input type="radio" name="ps2" value="per_game" checked><div>
@@ -106,11 +116,11 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
       <select id="wzPolicy">
         <option value="ask">Ask me each time</option>
         <option value="newest">Keep the newest</option>
-        <option value="local">Keep the one on this console</option>
+        <option value="local" class="here-keep">Keep the one on this console</option>
         <option value="server">Keep the one on RomM</option>
       </select>
       <div class="notice">
-        <b>Back up your saves first.</b> Before the first sync, copy your save folders somewhere safe (FTP or a USB drive). RommPS keeps local backups before it replaces a file, but a copy of your own is the only guarantee.
+        <b>Back up your saves first.</b> Before the first sync, copy your save folders somewhere safe (<span id="backupHow">FTP or a USB drive</span>). <span class="app-name">RommPS</span> keeps local backups before it replaces a file, but a copy of your own is the only guarantee.
         <div class="toggle" style="margin-top:10px"><input type="checkbox" id="wzBackedUp"><label for="wzBackedUp">I have backed up my saves</label></div>
       </div>
       </div>
@@ -126,7 +136,7 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
       <label for="wzInterval">Sync every (minutes, 0 to turn off)</label><input id="wzInterval" type="number" min="0" value="15">
       </div>
       <div class="toggle"><input type="checkbox" id="wzNotify" checked><label for="wzNotify">Notifications</label></div>
-      <h3>Start with the console</h3>
+      <h3>Start with the <span class="here-name">console</span></h3>
       <div id="autostart"><p class="muted">Checking autostart</p></div>
       <div class="row" style="margin-top:16px"><button id="wzBack5">Back</button><button class="primary" id="wzFinish">Finish</button></div>
     </div>
@@ -153,7 +163,7 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
   <div class="card" id="conflictCard" style="display:none">
     <h2 class="warn">Conflicts</h2>
     <p class="muted">Changed here and on RomM. The one you don't keep is backed up.</p>
-    <table><thead><tr><th>Game</th><th>This console</th><th>RomM</th><th></th></tr></thead><tbody id="conflicts"></tbody></table>
+    <table><thead><tr><th>Game</th><th>This <span class="here-name">console</span></th><th>RomM</th><th></th></tr></thead><tbody id="conflicts"></tbody></table>
   </div>
   <div class="card syncCard">
     <h2>Recent syncs</h2>
@@ -236,9 +246,11 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
     <div class="row"><button id="editEmus">Emulators</button><button id="rerunSetup">Run setup again</button><button class="danger" id="forget">Unpair</button></div>
     <h3>Client certificate (mTLS)</h3>
     <div class="certBox" id="setCert"></div>
+    <div id="pkgFeeds">
     <h3>PS4 and PS5 packages</h3>
     <p class="muted">Add these feeds to FPKGi. They use your RomM username and password.</p>
     <p><code id="feed4"></code><br><code id="feed5"></code></p>
+    </div>
   </div>
   <div class="card">
     <div class="row"><h2 style="margin:0">Updates</h2><button id="updCheck">Check now</button></div>
@@ -265,7 +277,7 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
     <select id="policy">
       <option value="ask">Ask me each time</option>
       <option value="newest">Keep the newest</option>
-      <option value="local">Keep the one on this console</option>
+      <option value="local" class="here-keep">Keep the one on this console</option>
       <option value="server">Keep the one on RomM</option>
     </select>
     <label for="states">Save states</label>
@@ -297,7 +309,7 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
     <div id="systems"></div>
   </div>
   <div class="card" data-collapse="folders">
-    <div class="row"><h2 style="margin:0">Folders on this console</h2><button class="small fixed" data-toggle>Expand</button></div>
+    <div class="row"><h2 style="margin:0">Folders on this <span class="here-name">console</span></h2><button class="small fixed" data-toggle>Expand</button></div>
     <div class="collapsible">
       <table id="pathsTable" style="margin-top:12px"><thead><tr><th>Platforms</th><th>Games</th><th class="syncCol">Saves</th><th class="syncCol">States</th><th>BIOS</th></tr></thead><tbody id="paths"></tbody></table>
     </div>
@@ -326,6 +338,15 @@ if (/PlayStation/.test(navigator.userAgent)) document.documentElement.className 
 "use strict";
 var $ = function (id) { return document.getElementById(id); };
 var each = function (sel, fn) { Array.prototype.forEach.call(document.querySelectorAll(sel), fn); };
+each(".app-name", function (e) { e.textContent = APP; });
+each(".here-name", function (e) { e.textContent = HERE; });
+each(".peers-name", function (e) { e.textContent = PEERS; });
+each(".here-keep", function (e) { e.textContent = "Keep the one on this " + HERE; });
+$("devname").placeholder = "Empty: the " + HERE + "'s own name";
+if (!CONSOLE) {
+  $("backupHow").textContent = "a USB drive or another computer";
+  $("pkgFeeds").style.display = "none"; // FPKGi's feeds are for the consoles
+}
 // Older WebKit (the PS4's browser) lacks :focus-visible and flex gap; the CSS
 // has fallbacks keyed on these classes.
 (function () {
@@ -463,7 +484,7 @@ function poll(timer) {
     if (key === poll.last) return;
     poll.last = key;
     renderStatus(s);
-  }).catch(function () { poll.last = null; $("conn").innerHTML = '<span class="err">&#9679;</span> Can\'t reach RommPS'; });
+  }).catch(function () { poll.last = null; $("conn").innerHTML = '<span class="err">&#9679;</span> Can\'t reach ' + esc(APP); });
   if (document.querySelector("#downloads.active")) loadDownloads();
   if (document.querySelector("#library.active") && $("romCard").style.display !== "none") pollLibraryDownloads();
 }
@@ -848,10 +869,10 @@ function ps2GameSaves(p) {
   return (p.platforms || []).some(function (e) { return (e.romm || []).indexOf("ps2") >= 0 && (e.save_layout || p.save_layout) === "ps2"; });
 }
 var PS2_TEXT = {
-  layout: { intro: "RomM Sync syncs one of the two, never both.", name: "One memory card per game",
+  layout: { intro: SERVICE + " syncs one of the two, never both.", name: "One memory card per game",
             text: "Works with any RomM version. Each game gets its own card, with its saves copied from the shared card, which stays as it is.",
-            hint: { shared: "The whole cards sync between your consoles.", per_game: "The default. Each game's card syncs as its save, so other RomM apps can load it." } },
-  card: { intro: "LRPS2 can keep one memory card per game or shared cards for every game. RomM Sync syncs one of the two, never both.",
+            hint: { shared: "The whole cards sync between your " + PEERS + ".", per_game: "The default. Each game's card syncs as its save, so other RomM apps can load it." } },
+  card: { intro: "LRPS2 can keep one memory card per game or shared cards for every game. " + SERVICE + " syncs one of the two, never both.",
           name: "One memory card per game",
           text: "Works with any RomM version. In RetroArch, open the LRPS2 core options and turn off Shared Memory Cards. Saves already on the shared card stay there." }
 };
@@ -895,7 +916,7 @@ function loadPreview() {
   $("preview").innerHTML = '<p class="muted">Checking</p>';
   api("GET", "/api/setup/preview").then(function (p) {
     $("preview").innerHTML = '<div class="stats" style="margin-bottom:12px">' +
-      stat(p.local_games, "games on this console") + stat(p.local_saves, "saves on this console") +
+      stat(p.local_games, "games on this " + HERE) + stat(p.local_saves, "saves on this " + HERE) +
       stat(p.uploads.length, "to upload") + stat(p.downloads.length, "to download") +
       stat(p.conflicts.length, "different on both", p.conflicts.length ? "warn" : "") + stat(p.in_sync, "already in sync") + "</div>" +
       previewList("to upload", p.uploads) +
@@ -903,7 +924,7 @@ function loadPreview() {
       previewList("different here and on RomM", p.conflicts, "warn") +
       previewList("in the wrong folder, left alone", (p.strays || []).map(function (x) { return { game: x.rom_name, path: x.path }; }), "warn") +
       previewList("games not found in RomM", (p.unmatched || []).map(function (u) { return { path: u }; })) +
-      (p.not_on_console ? '<p class="muted">' + (p.not_on_console == 1 ? "1 save on RomM is for a game that isn't" : p.not_on_console + " saves on RomM are for games that aren't") + " on this console.</p>" : "");
+      (p.not_on_console ? '<p class="muted">' + (p.not_on_console == 1 ? "1 save on RomM is for a game that isn't" : p.not_on_console + " saves on RomM are for games that aren't") + " on this " + esc(HERE) + ".</p>" : "");
   }).catch(function (e) { $("preview").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
 }
 $("wzBackedUp").onchange = function () { $("wzPreviewOk").disabled = !this.checked; };
@@ -921,11 +942,14 @@ $("wzPreviewOk").onclick = function () { wzGo(5); };
 function loadAutostart() {
   api("GET", "/api/autostart").then(function (a) {
     var h, ld = esc(a.loader), pl = "<code>" + esc(a.payload) + "</code>";
-    if (!a.supported) h = '<p class="muted">' + ld + " can't start payloads with the console. Send " + pl + " again after each boot.</p>";
+    // A systemd user unit (the Deck's): it starts with the session, or install.sh sets that up.
+    if (a.loader === "systemd") h = a.enabled ? '<p class="ok">Starts with the ' + esc(HERE) + ", in Game Mode and Desktop Mode.</p>"
+      : '<p class="warn">' + esc(SERVICE) + "'s background service isn't set to start with the " + esc(HERE) + ". Run install.sh again, or in Desktop Mode: <code>systemctl --user enable romm-sync</code></p>";
+    else if (!a.supported) h = '<p class="muted">' + ld + " can't start payloads with the console. Send " + pl + " again after each boot.</p>";
     else if (!a.loader_found) h = '<p class="muted">' + ld + " not found. Load the payload after each boot.</p>";
     else if (a.enabled && a.hint) h = '<p class="ok">Copied to <code>' + esc(a.path) + "</code>.</p><p>" + esc(a.hint) + "</p>";
     else if (a.enabled) h = '<p class="ok">Starts with ' + ld + ".</p>";
-    else if (a.installed) h = '<p class="muted">Installed at <code>' + esc(a.path) + '</code></p><button class="primary" id="asOn">Start with the console</button>';
+    else if (a.installed) h = '<p class="muted">Installed at <code>' + esc(a.path) + '</code></p><button class="primary" id="asOn">Start with the ' + esc(HERE) + "</button>";
     else h = '<p class="muted">' + ld + " needs a copy of " + pl + "." + (state.status && state.status.platform === "ps5" ? " Open RommPS on the console and it sets this up, or pick the file from a computer." : " Pick the file from a computer.") +
       '</p><div class="row"><input type="file" id="asFile" accept=".elf"><button class="primary" id="asUpload">Upload</button></div>';
     $("autostart").innerHTML = h;
@@ -1186,7 +1210,7 @@ $("roms").onclick = function (ev) {
   });
   if (b.dataset.archived) notice("Can't download", ARCHIVED);
   if (b.dataset.hist) showHistory(+b.dataset.hist);
-  if (b.dataset.del && confirm("Remove this game from the console? Its saves are kept.")) api("POST", "/api/delete", { rom_id: +b.dataset.del }).then(function () { toast("Removed"); loadRoms(); }).catch(function (e) { toast(e.message, 1); });
+  if (b.dataset.del && confirm("Remove this game from the " + HERE + "? Its saves are kept.")) api("POST", "/api/delete", { rom_id: +b.dataset.del }).then(function () { toast("Removed"); loadRoms(); }).catch(function (e) { toast(e.message, 1); });
 };
 $("biosBtn").onclick = function () { api("POST", "/api/download", { platform_id: state.scope.platform_id }).then(function () { toast("Downloading BIOS files"); }).catch(function (e) { toast(e.message, 1); }); };
 function historyTable(kind, list) {
@@ -1206,7 +1230,7 @@ function showHistory(romId) {
   Promise.all([api("GET", "/api/history?rom_id=" + romId), api("GET", "/api/tracked?rom_id=" + romId), api("GET", "/api/events?limit=30&rom_id=" + romId)]).then(function (r) {
     var h = r[0], here = [], log = (r[2] || []).slice().sort(function (a, b) { return b.t - a.t; });
     r[1].platforms.forEach(function (p) { p.games.forEach(function (g) { here = here.concat(g.files); }); });
-    $("histBody").innerHTML = "<h3>On this console</h3>" + (here.length ? trackedFiles(here) : '<p class="muted">No saves or states here yet.</p>') +
+    $("histBody").innerHTML = "<h3>On this " + esc(HERE) + "</h3>" + (here.length ? trackedFiles(here) : '<p class="muted">No saves or states here yet.</p>') +
       "<h3>Saves on RomM</h3>" + historyTable("save", h.saves) + "<h3>Save states on RomM</h3>" + historyTable("state", h.states) +
       "<h3>Log</h3>" + (log.length ? "<table><tbody>" + log.map(function (e) { return eventRow(e, false); }).join("") + "</tbody></table>" : '<p class="muted">Nothing synced yet.</p>');
     var first = $("histBody").querySelector("button"); if (first) first.focus();
@@ -1216,7 +1240,7 @@ $("histClose").onclick = function () { $("modal").classList.remove("on"); };
 $("histBody").onclick = function (ev) {
   var b = ev.target.closest("button[data-restore-id]"); if (!b) return;
   var kind = b.dataset.restoreKind;
-  if (!confirm(kind === "save" ? "Replace the save on this console with this version? The current one is backed up, and this version becomes the latest on RomM." : "Restore this save state? The current file is backed up.")) return;
+  if (!confirm(kind === "save" ? "Replace the save on this " + HERE + " with this version? The current one is backed up, and this version becomes the latest on RomM." : "Restore this save state? The current file is backed up.")) return;
   b.disabled = true;
   api("POST", "/api/restore", { kind: kind, id: +b.dataset.restoreId }).then(function () { toast("Restored"); $("modal").classList.remove("on"); }).catch(function (e) { b.disabled = false; toast(e.message, 1); });
 };
@@ -1327,13 +1351,13 @@ function loadInstalled() {
     state.installed = list;
     $("instCount").textContent = list.length ? (list.length + (list.length === 1 ? " game" : " games")) : "";
     $("instList").innerHTML = list.map(installedRow).join("") ||
-      '<p class="muted">Nothing on this console yet. Games you download from your library land here.</p>';
+      '<p class="muted">Nothing on this ' + esc(HERE) + " yet. Games you download from your library land here.</p>";
   }).catch(function (e) { $("instList").innerHTML = '<p class="err">' + esc(e.message) + "</p>"; });
 }
 $("instList").onclick = function (ev) {
   var b = ev.target.closest("[data-del]"); if (!b) return;
   var g = (state.installed || []).filter(function (x) { return x.id == +b.dataset.del; })[0];
-  if (!g || !confirm("Remove " + g.name + " from this console? Its saves are kept.")) return;
+  if (!g || !confirm("Remove " + g.name + " from this " + HERE + "? Its saves are kept.")) return;
   b.disabled = true;
   api("POST", "/api/delete", { rom_id: g.id }).then(function () { toast("Game removed"); loadInstalled(); })
     .catch(function (e) { b.disabled = false; toast(e.message, 1); });
@@ -1472,7 +1496,7 @@ function renderUpdate(u) {
     h += "<p>" + esc(u.message || u.state) + (u.state === "downloading" && u.total ? " (" + pct + "%)" : "") + "</p>";
     if (u.state === "downloading") h += '<div class="bar"><i style="width:' + pct + '%"></i></div>';
   } else if (u.available && u.self_update === false) {
-    h += '<p class="ok">RommPS ' + esc(u.latest) + " is available. Update it from your homebrew store.</p>";
+    h += '<p class="ok">' + esc(APP) + " " + esc(u.latest) + " is available. Update it from " + esc(STORE) + ".</p>";
   } else if (u.available) {
     h += '<p class="ok">Version ' + esc(u.latest) + " is available.</p>";
     if (!u.autostart) h += '<p class="warn">' + (u.autostart_supported ? "Autostart isn't set up, so the" : "The") + " update only lasts until the console restarts.</p>";
@@ -1485,7 +1509,7 @@ function renderUpdate(u) {
   $("updBody").innerHTML = h;
   if ($("updInstall")) $("updInstall").onclick = installUpdate;
   $("updNotice").style.display = u.available && !busy ? "" : "none";
-  $("updNotice").innerHTML = "<b>RommPS " + esc(u.latest) + ' is available.</b> <button class="small" id="updGo">See what\'s new</button>';
+  $("updNotice").innerHTML = "<b>" + esc(APP) + " " + esc(u.latest) + ' is available.</b> <button class="small" id="updGo">See what\'s new</button>';
   $("updGo").onclick = function () { showTab("settings"); };
 }
 function loadUpdate() { return api("GET", "/api/update").then(renderUpdate).catch(function () {}); }
@@ -1501,13 +1525,13 @@ function watchUpdate() {
   });
 }
 function installUpdate() {
-  if (!confirm("Update RommPS to " + state.update.latest + "? It restarts once no sync, download or game is running.")) return;
+  if (!confirm("Update " + APP + " to " + state.update.latest + "? It restarts once no sync, download or game is running.")) return;
   api("POST", "/api/update/install").then(function (u) { renderUpdate(u); watchUpdate(); }).catch(function (e) { toast(e.message, 1); });
 }
 $("updCheck").onclick = function () { api("POST", "/api/update/check").then(function (u) { renderUpdate(u); watchUpdate(); }).catch(function (e) { toast(e.message, 1); }); };
 $("updAuto").onchange = function () { api("POST", "/api/config", { update_check: this.checked }).then(function () { toast("Saved"); }).catch(function (e) { toast(e.message, 1); }); };
 
-$("forget").onclick = function () { if (confirm("Unpair from this RomM server? Files on the console are kept.")) api("POST", "/api/pair/forget").then(function () { poll(); showTab("pair"); }); };
+$("forget").onclick = function () { if (confirm("Unpair from this RomM server? Files on the " + HERE + " are kept.")) api("POST", "/api/pair/forget").then(function () { poll(); showTab("pair"); }); };
 
 // Collapsible settings cards, collapsed until opened. The choice sticks per browser.
 each("[data-collapse]", function (card) {
@@ -1579,7 +1603,7 @@ api("GET", "/api/status").then(function (s) {
   api("GET", "/api/config").then(function (c) { $("wzInsecure").checked = !c.tls_verify; }).catch(function () {});
   loadCert();
   loadUpdate().then(function () { if (state.update && updBusy(state.update)) watchUpdate(); });
-}).catch(function () { $("conn").textContent = "Can't reach RommPS"; });
+}).catch(function () { $("conn").textContent = "Can't reach " + APP; });
 // Every 3 s, or 10 s on the PS4, whose browser is slow to redraw.
 (function next() { setTimeout(function () { poll(true); next(); }, poll.slow ? 10000 : 3000); })();
 </script>

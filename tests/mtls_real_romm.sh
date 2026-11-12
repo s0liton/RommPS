@@ -88,7 +88,7 @@ EOF
     echo "2. a stranger's certificate: refused, and said so"
     cert /t/certs/stranger.p12 "" >/dev/null
     r=$(pair $ROMM)
-    [[ "$r" == *"didn't accept this console's client certificate"* ]] && ok "$(echo "$r" | jq_ "d.get('error', '')")" || bad "$r"
+    [[ "$r" == *"didn't accept the client certificate"* ]] && ok "$(echo "$r" | jq_ "d.get('error', '')")" || bad "$r"
 
     echo "3. the right .p12, through the web UI's API"
     r=$(cert /t/certs/client.p12 geheim)

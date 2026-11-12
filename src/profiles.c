@@ -7,13 +7,18 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
+#include "cfgvars.h"
 #include "config.h"
 #include "detect.h"
+#include "events.h"
 #include "library.h"
 #include "platform.h"
 #include "state.h"
+#include "switchid.h"
+#include "sync.h"
 
 /* Platforms are matched on RomM's slug or fs_slug. The roots are the PS5's;
  * profiles_default() swaps in the console's own (plat_info). */
@@ -88,9 +93,39 @@ static const char *jstr(const cJSON *a, const cJSON *b, const char *key, const c
     return cJSON_IsString(v) ? v->valuestring : def;
 }
 
+/* Built-in profiles that make no sense on this machine: standalone Mednafen
+ * where the platform has no folder for it (the Deck runs Mednafen as RetroArch
+ * cores), and PS2 ISOs for FPKG tools anywhere that isn't a PlayStation. */
+static int unsupported_here(const char *id) {
+    const plat_info_t *pi = plat_info();
+    if (!strcmp(id, "mednafen")) return !pi->mednafen_root || !pi->mednafen_root[0];
+    if (!strcmp(id, "ps2-classics"))
+        return strcmp(pi->name, "ps5") != 0 && strcmp(pi->name, "ps4") != 0 && strcmp(pi->name, "host") != 0;
+    return 0;
+}
+
+static int drop_unsupported(cJSON *profiles, int say) {
+    int n = 0;
+    cJSON *p = profiles ? profiles->child : NULL;
+    while (p) {
+        cJSON *next = p->next;
+        const char *id = jstr(p, NULL, "id", "");
+        if (unsupported_here(id)) {
+            if (say) LOGI("profile %s isn't used on this %s; removed", id, plat_info()->console);
+            cJSON_Delete(cJSON_DetachItemViaPointer(profiles, p));
+            n++;
+        }
+        p = next;
+    }
+    return n;
+}
+
+int profiles_drop_unsupported(cJSON *profiles) { return drop_unsupported(profiles, 1); }
+
 cJSON *profiles_default(void) {
     cJSON *defs = cJSON_Parse(DEFAULT_PROFILES_JSON), *p;
     const plat_info_t *pi = plat_info();
+    drop_unsupported(defs, 0);
     cJSON_ArrayForEach(p, defs) {
         const char *id = jstr(p, NULL, "id", "");
         const char *root = !strcmp(id, "retroarch") ? pi->retroarch_root : !strcmp(id, "mednafen") ? pi->mednafen_root : NULL;
@@ -218,7 +253,9 @@ static int ra_cfg_get(const char *cfg, const char *key, char *out, size_t n) {
 static void ra_apply(const char *cfg, const char *key, const char *root, char *dst, size_t n) {
     char v[PATH_MAX_LEN];
     if (!ra_cfg_get(cfg, key, v, sizeof v) || !v[0] || !strcmp(v, "default")) return;
-    if (v[0] == ':' || v[0] == '~')
+    if (plat_info()->real_path && plat_info()->real_path(root, v, dst, n))
+        ;
+    else if (v[0] == ':' || v[0] == '~')
         snprintf(dst, n, "%s%s", root, v + 1);
     else if (!strncmp(v, "/app0", 5) && (v[5] == '/' || !v[5]))
         snprintf(dst, n, "%s%s", root, v + 5);
@@ -381,34 +418,55 @@ const char *profiles_save_family(const char *format) {
     return !strcmp(format, "nds-dsv") ? "nds-raw" : format;
 }
 
+/* A twin of entry e for one of its cores, with the core's rule's keys. */
+static cJSON *core_twin(const cJSON *e, const char *core, const char *emulator) {
+    static const char *const keep[] = {"romm", "dir", "db", "rom_dir", "update_dir", "dlc_dir", "bios_dir", "sync"};
+    cJSON *t = cJSON_CreateObject();
+    for (size_t k = 0; k < sizeof keep / sizeof *keep; k++) {
+        const cJSON *v = cJSON_GetObjectItemCaseSensitive(e, keep[k]);
+        if (v) cJSON_AddItemToObject(t, keep[k], cJSON_Duplicate(v, 1));
+    }
+    cJSON_AddStringToObject(t, "emulator", emulator);
+    cJSON_AddStringToObject(t, "core_name", core);
+    cJSON_AddBoolToObject(t, "twin", 1);
+    detect_apply_core_rules(t, profiles_system_key(e), core, 0);
+    return t;
+}
+
 /* A profile's platform entries, with a twin for each of RetroArch's other
  * cores per system ("cores") whose rule names a save format: RetroArch picks
  * the core as a game starts, and a core reads its save before anyone can
  * react, so each one's save is kept. Only cores keeping it in the entry's
- * own core's format (or a form of it): the others would each need a slot. */
+ * own core's format (or a form of it): the others would each need a slot.
+ * A core whose saves are a kind of their own (an "apart" rule: MAME's NVRAM
+ * folders) gets that slot, and a twin even when it's the entry's own core,
+ * whose entry goes on syncing the system's .srm saves as before. */
 static cJSON *with_core_twins(const cJSON *p) {
-    static const char *const keep[] = {"romm", "dir", "db", "rom_dir", "update_dir", "dlc_dir", "bios_dir", "sync"};
     cJSON *plats = cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(p, "platforms"), 1);
     if (!plats) plats = cJSON_CreateArray();
     const int n = cJSON_GetArraySize(plats);
     for (int i = 0; i < n; i++) {
         const cJSON *e = cJSON_GetArrayItem(plats, i), *c;
+        const char *own = jstr(e, NULL, "core_name", ""), *sys = profiles_system_key(e);
+        if (own[0] && detect_core_apart(sys, own)) {
+            cJSON *t = core_twin(e, own, jstr(e, NULL, "emulator", own));
+            cJSON_AddBoolToObject(t, "apart", 1);
+            cJSON_AddItemToArray(plats, t);
+        }
         cJSON_ArrayForEach(c, cJSON_GetObjectItemCaseSensitive(e, "cores")) {
             const char *core = jget_str(c, "core_name", "");
-            if (!core[0] || str_ieq(core, jstr(e, NULL, "core_name", ""))) continue;
-            cJSON *t = cJSON_CreateObject();
-            for (size_t k = 0; k < sizeof keep / sizeof *keep; k++) {
-                const cJSON *v = cJSON_GetObjectItemCaseSensitive(e, keep[k]);
-                if (v) cJSON_AddItemToObject(t, keep[k], cJSON_Duplicate(v, 1));
-            }
-            cJSON_AddStringToObject(t, "emulator", jget_str(c, "emulator", core));
-            cJSON_AddStringToObject(t, "core_name", core);
-            cJSON_AddBoolToObject(t, "twin", 1);
-            detect_apply_core_rules(t, profiles_system_key(e), core, 0);
+            if (!core[0] || str_ieq(core, own)) continue;
+            cJSON *t = core_twin(e, core, jget_str(c, "emulator", core));
             /* One save between them: the same family as the entry's own core. */
             const char *mine = jstr(e, NULL, "save_format", ""), *its = jstr(t, NULL, "save_format", "");
-            if (mine[0] && its[0] && !strcmp(profiles_save_family(mine), profiles_save_family(its))) cJSON_AddItemToArray(plats, t);
-            else cJSON_Delete(t);
+            if (detect_core_apart(sys, core)) {
+                cJSON_AddBoolToObject(t, "apart", 1);
+                cJSON_AddItemToArray(plats, t);
+            } else if (mine[0] && its[0] && !strcmp(profiles_save_family(mine), profiles_save_family(its))) {
+                cJSON_AddItemToArray(plats, t);
+            } else {
+                cJSON_Delete(t);
+            }
         }
     }
     return plats;
@@ -649,9 +707,13 @@ static profile_map *maps_grow(profile_map *old, size_t used, size_t count) {
 
 /* A Switch emulator's user whose saves sync: the one the profile names
  * ("switch_user"), else its first (ProsperoEden, and PS5-ECAM's Eden, keep
- * profiles.first in their config: "switch_users"). That user's saves are left
- * alone when the emulator syncs them itself ("switch_sync": ProsperoEden's
- * save-sync.json gives the user a server). Never another user's. */
+ * profiles.first in their config: "switch_users"), or, from a yuzu fork's
+ * profiles.dat (Eden, Citron), the one its config has open
+ * ("switch_user_index": its qt-config.ini, [System] current_user), or
+ * Ryujinx's Profiles.json's open one ("last_opened"). That
+ * user's saves are left alone when the emulator syncs them itself
+ * ("switch_sync": ProsperoEden's save-sync.json gives the user a server).
+ * Never another user's. */
 static cJSON *read_json(const char *path) {
     char *txt = path[0] ? read_file(path, NULL) : NULL;
     cJSON *j = txt ? cJSON_Parse(txt) : NULL;
@@ -659,19 +721,68 @@ static cJSON *read_json(const char *path) {
     return j;
 }
 
+/* The index'th user in a yuzu fork's profiles.dat (else its first), as its
+ * save folder is named: a 0x10 header, then 0xC8 bytes a user, each starting
+ * with the user's UUID; the folder is those 16 bytes backwards in capitals
+ * (savedata_factory.cpp formats the UUID's two halves as {:016X}{:016X}, high
+ * one first; sigil's yuzu_profiles reads it the same way). Slots with no user
+ * are all zeros and don't count. 1 if there's one. */
+static int yuzu_user(const char *path, long index, char *out, size_t n) {
+    size_t len = 0;
+    unsigned char *d = (unsigned char *)read_file(path, &len);
+    int found = 0;
+    long at = 0;
+    for (size_t off = 0x10; d && off + 0xC8 <= len && n > 32; off += 0xC8) {
+        int empty = 1;
+        for (int k = 0; k < 16 && empty; k++) empty = d[off + k] == 0;
+        if (empty) continue;
+        if (!found || at == index) {
+            for (int k = 0; k < 16; k++) snprintf(out + 2 * k, 3, "%02X", d[off + 15 - k]);
+            found = 1;
+        }
+        if (at++ == index) break;
+    }
+    free(d);
+    return found;
+}
+
 static void switch_user_for(profile_map *m, const cJSON *p, const cJSON *e, const char **vars) {
     char path[PATH_MAX_LEN];
     str_copy(m->switch_user, sizeof m->switch_user, jstr(p, e, "switch_user", ""));
-    if (!m->switch_user[0]) {
-        str_template(path, sizeof path, jstr(p, e, "switch_users", ""), vars);
+    str_template(path, sizeof path, jstr(p, e, "switch_users", ""), vars);
+    const int dat = str_ieq(path_ext(path), ".dat");
+    if (!m->switch_user[0] && dat) {
+        char cfg[PATH_MAX_LEN], v[32] = "";
+        str_template(cfg, sizeof cfg, jstr(p, e, "switch_user_index", ""), vars);
+        char *txt = cfg[0] ? read_file(cfg, NULL) : NULL;
+        const long index = txt && cfgvars_lookup(txt, "ini", "System", "current_user", v, sizeof v) ? strtol(v, NULL, 10) : 0;
+        free(txt);
+        yuzu_user(path, index, m->switch_user, sizeof m->switch_user);
+    } else if (!m->switch_user[0]) {
         cJSON *cfg = read_json(path);
-        str_copy(m->switch_user, sizeof m->switch_user,
-                 jget_str(cJSON_GetObjectItemCaseSensitive(cfg, "profiles"), "first", ""));
+        const cJSON *list = cJSON_GetObjectItemCaseSensitive(cfg, "profiles"), *u;
+        if (cJSON_IsArray(list)) {
+            /* Ryujinx's Profiles.json: the user it has open ("last_opened"),
+             * else its first, as "user_id" writes them. */
+            const char *last = jget_str(cfg, "last_opened", ""), *first = NULL, *open = NULL;
+            cJSON_ArrayForEach(u, list) {
+                const char *id = jget_str(u, "user_id", "");
+                if (strlen(id) != 32) continue;
+                if (!first) first = id;
+                if (!open && !strcasecmp(id, last)) open = id;
+            }
+            str_copy(m->switch_user, sizeof m->switch_user, open ? open : first ? first : "");
+        } else {
+            str_copy(m->switch_user, sizeof m->switch_user, jget_str(list, "first", ""));
+        }
         cJSON_Delete(cfg);
     }
     if (!m->switch_user[0]) {
         m->sync_saves = m->base_sync_saves = 0;
-        str_copy(m->off_note, sizeof m->off_note, "No Switch user in the emulator yet: open it and make one.");
+        /* A yuzu fork makes its first user itself the first time it starts,
+         * and Ryujinx its RyuPlayer. */
+        if (dat || !strcmp(path_basename(path), "Profiles.json")) snprintf(m->off_note, sizeof m->off_note, "No Switch user in %s yet: open %s once.", m->profile_name, m->profile_name);
+        else str_copy(m->off_note, sizeof m->off_note, "No Switch user in the emulator yet: open it and make one.");
         str_copy(m->sync_note, sizeof m->sync_note, m->off_note);
         return;
     }
@@ -687,25 +798,91 @@ static void switch_user_for(profile_map *m, const cJSON *p, const cJSON *e, cons
     cJSON_Delete(own);
 }
 
-/* An Xbox 360 emulator's player whose saves sync: the one the profile names
- * ("x360_user"), else the first signed in (PS5X360's local-players.txt, one
- * XUID per player slot, 0 for none: "x360_users"). Its saves folder is the
- * XUID in capitals, as Xenia names it. Never another player's. */
-static void x360_user_for(profile_map *m, const cJSON *p, const cJSON *e, const char **vars) {
-    char path[PATH_MAX_LEN];
-    str_copy(m->xuid, sizeof m->xuid, jstr(p, e, "x360_user", ""));
-    str_template(path, sizeof path, jstr(p, e, "x360_users", ""), vars);
-    char *txt = !m->xuid[0] && path[0] ? read_file(path, NULL) : NULL, *save = NULL;
-    for (char *l = txt ? strtok_r(txt, "\r\n", &save) : NULL; l && !m->xuid[0]; l = strtok_r(NULL, "\r\n", &save)) {
-        size_t n = 0;
-        while (isxdigit((unsigned char)l[n])) n++;
-        if (n == 16 && !l[n] && strspn(l, "0") != 16) str_copy(m->xuid, sizeof m->xuid, l);
+/* A player's XUID: 16 hex digits, not all zeros, put in capitals. */
+static int x360_xuid(const char *s, size_t len, char out[20]) {
+    if (len != 16 || strspn(s, "0") >= 16) return 0;
+    for (size_t i = 0; i < 16; i++)
+        if (!isxdigit((unsigned char)s[i])) return 0;
+    for (size_t i = 0; i < 16; i++) out[i] = (char)toupper((unsigned char)s[i]);
+    out[16] = 0;
+    return 1;
+}
+
+/* The player in the lowest slot an emulator has signed in: PS5X360's
+ * local-players.txt has a XUID per slot, one a line (0 for none); Xenia's
+ * config.toml has [Profiles] logged_profile_slot_<n>_xuid = "<XUID>". */
+static int x360_signed_in(char *txt, char out[20]) {
+    int best = -1, line = 0;
+    char *save = NULL;
+    for (char *l = strtok_r(txt, "\r\n", &save); l; l = strtok_r(NULL, "\r\n", &save), line++) {
+        char xuid[20];
+        while (*l == ' ' || *l == '\t') l++;
+        int slot = line;
+        size_t n = strspn(l, "0123456789abcdefABCDEF");
+        if (!strncmp(l, "logged_profile_slot_", 20)) {
+            slot = atoi(l + 20);
+            const char *q = strchr(l, '=');
+            if (q) q += strspn(q + 1, " \t") + 1;
+            if (!q || (*q != '"' && *q != '\'')) continue;
+            const char *end = strchr(q + 1, *q);
+            if (!end || !x360_xuid(q + 1, (size_t)(end - q - 1), xuid)) continue;
+        } else if (l[n] || !x360_xuid(l, n, xuid)) {
+            continue;
+        }
+        if (best < 0 || slot < best) {
+            best = slot;
+            str_copy(out, 20, xuid);
+        }
     }
-    free(txt);
-    for (char *c = m->xuid; *c; c++) *c = (char)toupper((unsigned char)*c);
+    return best >= 0;
+}
+
+/* Xenia's profiles, when none is signed in: content/<XUID>/FFFE07D1/00010000/<XUID>
+ * (its profile package), in the content folder bundle_dirs puts {xuid} under.
+ * The one there is, if there's only one. */
+static int x360_only_profile(const cJSON *p, const cJSON *e, const char **vars, char out[20]) {
+    char list[1024], *save = NULL;
+    int found = 0;
+    str_template(list, sizeof list, jstr(p, e, "bundle_dirs", ""), vars);
+    for (char *t = strtok_r(list, ",", &save); t && found < 2; t = strtok_r(NULL, ",", &save)) {
+        char *at = strstr(t, "/{xuid}");
+        if (!at || at[7]) continue;
+        *at = 0;
+        DIR *d = opendir(t);
+        struct dirent *de;
+        while (d && found < 2 && (de = readdir(d))) {
+            char xuid[20], pkg[PATH_MAX_LEN];
+            if (!x360_xuid(de->d_name, strlen(de->d_name), xuid)) continue;
+            snprintf(pkg, sizeof pkg, "%s/%s/FFFE07D1/00010000/%s", t, de->d_name, de->d_name);
+            if (!dir_exists(pkg) || (found && !strcmp(out, xuid))) continue;
+            str_copy(out, 20, xuid);
+            found++;
+        }
+        if (d) closedir(d);
+    }
+    return found == 1;
+}
+
+/* An Xbox 360 emulator's player whose saves sync: the one the profile names
+ * ("x360_user"), else the one signed in first ("x360_users": files, comma
+ * separated, the first with one wins; see x360_signed_in), else Xenia's only
+ * profile. Its saves folder is the XUID in capitals, as Xenia names it.
+ * Never another player's. */
+static void x360_user_for(profile_map *m, const cJSON *p, const cJSON *e, const char **vars) {
+    char list[1024], xuid[20] = "", *save = NULL;
+    const char *named = jstr(p, e, "x360_user", "");
+    if (named[0] && !x360_xuid(named, strlen(named), xuid)) LOGW("%s: x360_user %s isn't a XUID", m->profile_name, named);
+    str_template(list, sizeof list, jstr(p, e, "x360_users", ""), vars);
+    for (char *t = strtok_r(list, ",", &save); t && !xuid[0]; t = strtok_r(NULL, ",", &save)) {
+        char *txt = read_file(t, NULL);
+        if (txt) x360_signed_in(txt, xuid);
+        free(txt);
+    }
+    if (!xuid[0]) x360_only_profile(p, e, vars, xuid);
+    str_copy(m->xuid, sizeof m->xuid, xuid);
     if (!m->xuid[0]) {
         m->sync_saves = m->base_sync_saves = 0;
-        snprintf(m->off_note, sizeof m->off_note, "No player profile in %s yet: open it and make one.", m->profile_name);
+        snprintf(m->off_note, sizeof m->off_note, "No player profile in %s yet: sign in to a profile in it.", m->profile_name);
         str_copy(m->sync_note, sizeof m->sync_note, m->off_note);
     }
 }
@@ -780,8 +957,174 @@ static int path_under(const char *path, const char *dir) {
     return !strncmp(path, dir, n) && path[n] == '/';
 }
 
+/* Games downloaded into a folder a newer preset moved: detect.c notes where
+ * a saved profile's folders were ("moved_from") when they follow the preset
+ * (Eden's Flatpak sees no folder but its own). They go into the folders the
+ * profile has now, a Switch game's update and DLC into theirs. In the
+ * background: across drives (the SD card) each is a copy. The note goes once
+ * all of them moved. */
+typedef struct {
+    char from[PATH_MAX_LEN], to[PATH_MAX_LEN];
+    int rom_id;
+} game_move;
+
+typedef struct {
+    char profile[32], name[64];
+    game_move *moves;
+    int n;
+} move_job;
+
+static void forget_moved_from(const char *profile) {
+    config_lock();
+    cJSON *p, *e;
+    int had = 0;
+    cJSON_ArrayForEach(p, g_cfg.profiles) {
+        if (strcmp(jstr(p, NULL, "id", ""), profile) != 0) continue;
+        had |= cJSON_GetObjectItemCaseSensitive(p, "moved_from") != NULL;
+        cJSON_DeleteItemFromObjectCaseSensitive(p, "moved_from");
+        cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(p, "platforms")) {
+            had |= cJSON_GetObjectItemCaseSensitive(e, "moved_from") != NULL;
+            cJSON_DeleteItemFromObjectCaseSensitive(e, "moved_from");
+        }
+    }
+    if (had) config_save();
+    config_unlock();
+}
+
+static void *move_games(void *arg) {
+    move_job *j = arg;
+    int moved = 0, failed = 0;
+    for (int i = 0; i < j->n; i++) {
+        const game_move *g = &j->moves[i];
+        if (mkdir_parent(g->to) != 0 ||
+            (rename(g->from, g->to) != 0 && (link_or_copy(g->from, g->to) != 0 || (remove_tree(g->from), 0)))) {
+            LOGW("%s: could not move %s to %s", j->name, g->from, g->to);
+            remove_tree(g->to); /* a copy that didn't finish */
+            failed++;
+            continue;
+        }
+        state_lock();
+        state_rekey_moved(g->from, g->to);
+        state_save();
+        state_unlock();
+        LOGI("%s: moved %s to %s, the folder it reads now", j->name, g->from, g->to);
+        events_add("game", "moved", g->rom_id, g->to, j->name, "Into the folder the emulator reads now");
+        moved++;
+    }
+    /* (events.json is written by the next sync's events_save) */
+    if (!failed) forget_moved_from(j->profile);
+    if (moved) {
+        plat_notify("%s: moved %d game%s into %s's folder", plat_product(), moved, moved == 1 ? "" : "s", j->name);
+        /* A sync that ran while they were on the move didn't see them where
+         * they live now, so their saves never came down. Go get them before
+         * someone launches a game and starts over (BDSP, a fresh trainer). */
+        sync_request("games moved");
+    }
+    free(j->moves);
+    free(j);
+    return NULL;
+}
+
+/* A Switch file's kind by the title id in its name: an update's ends in 800,
+ * a DLC's is above the game's 1000. 0 for the game (or no title id). */
+static int nx_addon_kind(const char *name) {
+    for (const char *b = strchr(name, '['); b; b = strchr(b + 1, '[')) {
+        if (strspn(b + 1, "0123456789abcdefABCDEF") != 16 || b[17] != ']') continue;
+        const unsigned low = (unsigned)(strtoull(b + 1, NULL, 16) & 0x1FFF);
+        return low == 0x800 ? 1 : low > 0x1000 ? 2 : 0;
+    }
+    return 0;
+}
+
+static void follow_folders(const cJSON *profiles) {
+    profile_map *maps = NULL;
+    const int nmaps = profiles_expand(profiles, &maps);
+    const cJSON *p, *e;
+    cJSON_ArrayForEach(p, profiles) {
+        const char *id = jstr(p, NULL, "id", ""), *root = jstr(p, NULL, "root", "");
+        const cJSON *top = cJSON_GetObjectItemCaseSensitive(p, "moved_from");
+        int noted = cJSON_IsObject(top);
+        cJSON_ArrayForEach(e, cJSON_GetObjectItemCaseSensitive(p, "platforms")) noted |= cJSON_IsObject(
+            cJSON_GetObjectItemCaseSensitive(e, "moved_from"));
+        if (!noted) continue;
+        move_job *j = calloc(1, sizeof *j);
+        int cap = 0;
+        if (!j) continue;
+        str_copy(j->profile, sizeof j->profile, id);
+        str_copy(j->name, sizeof j->name, jstr(p, NULL, "name", id));
+        for (int i = 0; i < nmaps; i++) {
+            const profile_map *m = &maps[i];
+            if (strcmp(m->profile_id, id) != 0) continue;
+            /* The folders it had: the system's own note, else the profile's. */
+            const cJSON *mf = top, *pe;
+            char sys[64];
+            str_copy(sys, sizeof sys, m->romm_slugs);
+            sys[strcspn(sys, ",")] = 0;
+            cJSON_ArrayForEach(pe, cJSON_GetObjectItemCaseSensitive(p, "platforms"))
+                if (!strcmp(profiles_system_key(pe), sys) && cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(pe, "moved_from")))
+                    mf = cJSON_GetObjectItemCaseSensitive(pe, "moved_from");
+            char old[3][PATH_MAX_LEN];
+            static const char *const keys[3] = {"rom_dir", "update_dir", "dlc_dir"};
+            for (int k = 0; k < 3; k++) {
+                const char *vars[] = {"root", root, "platform", m->platform_dir, NULL};
+                str_template(old[k], sizeof old[k], jstr(mf, NULL, keys[k], ""), vars);
+                cfgvars_normalize(old[k]);
+            }
+            state_lock();
+            const cJSON *r;
+            cJSON_ArrayForEach(r, state_section("roms")) {
+                if (strcmp(jget_str(r, "profile", ""), id) != 0 || strcmp(jget_str(r, "platform_dir", ""), m->platform_dir) != 0)
+                    continue;
+                char dir[PATH_MAX_LEN];
+                str_copy(dir, sizeof dir, r->string);
+                char *slash = strrchr(dir, '/');
+                if (!slash) continue;
+                *slash = 0;
+                cfgvars_normalize(dir);
+                int was = 0;
+                for (int k = 0; k < 3 && !was; k++) was = old[k][0] && !strcmp(dir, old[k]);
+                if (!was) continue;
+                /* No tag in the name: what the file itself said it is (library.c
+                 * keeps its title id), so an untagged update isn't sent back to
+                 * rom_dir only for the sync to move it out again. */
+                int named = nx_addon_kind(slash + 1);
+                const char *tid = jget_str(r, "title_id", "");
+                if (!named && strlen(tid) == 16) {
+                    const switchid_kind k = switchid_kind_of(strtoull(tid, NULL, 16));
+                    named = k == SWITCHID_UPDATE ? 1 : k == SWITCHID_DLC ? 2 : 0;
+                }
+                const int kind = jget_num(r, "with", 0) > 0 ? (named == 2 ? 2 : 1) : named;
+                const char *into = kind == 1 ? m->update_dir : kind == 2 ? m->dlc_dir : m->rom_dir;
+                char to[PATH_MAX_LEN], now[PATH_MAX_LEN];
+                str_copy(now, sizeof now, into);
+                cfgvars_normalize(now);
+                path_join(to, sizeof to, now, slash + 1);
+                if (!strcmp(now, dir) || file_exists(to) || dir_exists(to) || !(file_exists(r->string) || dir_exists(r->string)))
+                    continue;
+                if (j->n == cap) {
+                    game_move *grown = realloc(j->moves, sizeof *grown * (size_t)(cap ? cap * 2 : 8));
+                    if (!grown) continue;
+                    j->moves = grown;
+                    cap = cap ? cap * 2 : 8;
+                }
+                str_copy(j->moves[j->n].from, sizeof j->moves[0].from, r->string);
+                str_copy(j->moves[j->n].to, sizeof j->moves[0].to, to);
+                j->moves[j->n].rom_id = (int)jget_num(r, "rom_id", 0);
+                j->n++;
+            }
+            state_unlock();
+        }
+        if (j->n && thread_start(move_games, j) == 0) continue;
+        if (!j->n) forget_moved_from(id);
+        free(j->moves);
+        free(j);
+    }
+    profiles_free(maps);
+}
+
 void profiles_follow_moves(const cJSON *profiles) {
     const cJSON *p, *e;
+    follow_folders(profiles);
     cJSON_ArrayForEach(p, profiles) {
         if (!jbool(p, NULL, "enabled", 1)) continue;
         const char *root = jstr(p, NULL, "root", ""), *name = jstr(p, NULL, "name", "");
@@ -1033,6 +1376,7 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
             str_copy(m->disc_id, sizeof m->disc_id, jstr(p, e, "disc_id", ""));
             m->extra = profile_lists(p, "extra", profiles_system_key(e));
             m->twin = jbool(e, NULL, "twin", 0);
+            m->apart = m->twin && jbool(e, NULL, "apart", 0);
             /* How it reads its games was checked on the console: the preset's
              * call, as its cards are, never a saved copy's. */
             const cJSON *mg = card_setting(p, e, "mount_games");
@@ -1098,7 +1442,7 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
             }
             /* Platform-wide answer, for the UI; games can override it. */
             check_requirement(m, NULL, NULL, &m->sync_saves, m->sync_note, sizeof m->sync_note);
-            if (!strcmp(m->save_layout, "switch")) switch_user_for(m, p, e, vars);
+            if (!strcmp(m->save_layout, "switch") || !strcmp(m->save_layout, "ryujinx")) switch_user_for(m, p, e, vars);
             if (!strcmp(m->save_layout, "x360")) x360_user_for(m, p, e, vars);
             if (m->sync_off) str_copy(m->sync_note, sizeof m->sync_note, "Save sync is off for this platform.");
             cnt++;

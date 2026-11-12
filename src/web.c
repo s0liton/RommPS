@@ -1,6 +1,7 @@
 #include "web.h"
 
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -87,12 +88,22 @@ static void send_response(int fd, int status, const char *ctype, const void *bod
     if (send_all(fd, hdr, (size_t)n) == 0 && len) send_all(fd, body, len);
 }
 
-/* The UI with the theme already on <html>, so the first frame is right. */
+/* The UI with the theme already on <html>, so the first frame is right, and
+ * the app's name, where its updates come from and what the machine is called
+ * where they aren't RommPS's and a console's. */
 static void send_page(int fd) {
-    char attr[64], hdr[256];
+    char attr[256], hdr[256];
     config_lock();
     snprintf(attr, sizeof attr, " data-theme=\"%s\"", g_cfg.ui_theme);
     config_unlock();
+    size_t an = strlen(attr);
+    if (plat_info()->product)
+        an += (size_t)snprintf(attr + an, sizeof attr - an, " data-product=\"%s\" data-store=\"%s\"", plat_product(),
+                               plat_update_source());
+    if (plat_info()->here && an < sizeof attr)
+        an += (size_t)snprintf(attr + an, sizeof attr - an, " data-here=\"%s\"", plat_info()->here);
+    if (plat_info()->peers && an < sizeof attr)
+        snprintf(attr + an, sizeof attr - an, " data-peers=\"%s\"", plat_info()->peers);
     const char *page = UI_INDEX_HTML, *at = strstr(page, "<html");
     size_t len = sizeof UI_INDEX_HTML - 1, head = at ? (size_t)(at - page) + 5 : 0;
     if (!at) attr[0] = 0;
@@ -434,7 +445,7 @@ static char *diagnostics_text(void) {
     char line[512], about[256], now_iso[40], path[PATH_MAX_LEN];
     plat_describe(about, sizeof about);
     iso8601_utc(time(NULL), now_iso, sizeof now_iso);
-    snprintf(line, sizeof line, "RommPS diagnostics\nversion %s, build %s, %s\n%s\nclock %s, up %lds\n",
+    snprintf(line, sizeof line, "%s diagnostics\nversion %s, build %s, %s\n%s\nclock %s, up %lds\n", plat_product(),
              APP_VERSION, APP_BUILD, plat_name(), about, now_iso, (long)(time(NULL) - g_started));
     tb_str(&b, line);
     tb_json(&b, "status", status_json());
@@ -726,15 +737,25 @@ static int diagnostics_bundle(const char *zip_path) {
     return rc;
 }
 
+/* What bundles are named after: the app, in lower case ("rommps-diagnostics",
+ * "rommdeck-diagnostics"). */
+static void diagnostics_prefix(char *out, size_t n) {
+    const char *app = plat_product();
+    size_t i = 0;
+    for (; app[i] && i + 1 < n; i++) out[i] = (char)tolower((unsigned char)app[i]);
+    snprintf(out + i, n - i, "-diagnostics");
+}
+
 /* Saves a bundle where the person can get at it: a USB drive when one is in,
  * and the payload's folder. The newest three are kept there. */
 static cJSON *diagnostics_save(void) {
-    char stamp[32], name[64], path[PATH_MAX_LEN], dir[PATH_MAX_LEN];
+    char stamp[32], prefix[32], name[80], path[PATH_MAX_LEN], dir[PATH_MAX_LEN];
     time_t now = time(NULL);
     struct tm tm;
     localtime_r(&now, &tm);
     strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tm);
-    snprintf(name, sizeof name, "rommps-diagnostics-%s.zip", stamp);
+    diagnostics_prefix(prefix, sizeof prefix);
+    snprintf(name, sizeof name, "%s-%s.zip", prefix, stamp);
     path_join(dir, sizeof dir, plat_data_dir(), "diagnostics");
     mkdir_p(dir);
     path_join(path, sizeof path, dir, name);
@@ -744,8 +765,17 @@ static cJSON *diagnostics_save(void) {
     struct dirent *de;
     char (*old)[64] = malloc(64 * sizeof *old);
     int n = 0;
-    while (old && d && (de = readdir(d)) && n < 64)
-        if (!strncmp(de->d_name, "rommps-diagnostics-", 19)) str_copy(old[n++], sizeof old[0], de->d_name);
+    size_t pl = strlen(prefix);
+    while (old && d && (de = readdir(d)) && n < 64) {
+        if (!strncmp(de->d_name, prefix, pl) && de->d_name[pl] == '-') {
+            str_copy(old[n++], sizeof old[0], de->d_name);
+        } else if (strcmp(prefix, "rommps-diagnostics") != 0 && !strncmp(de->d_name, "rommps-diagnostics-", 19)) {
+            /* one from before RommDeck named them after itself */
+            char p[PATH_MAX_LEN];
+            path_join(p, sizeof p, dir, de->d_name);
+            unlink(p);
+        }
+    }
     if (d) closedir(d);
     if (old) {
         qsort(old, (size_t)n, sizeof old[0], (int (*)(const void *, const void *))strcmp);
@@ -827,7 +857,7 @@ static cJSON *fs_folders(const char *path, char *err, int en) {
     if (clean[0] != '/' || strstr(clean, "/..") || strstr(clean, "/./") || !inside || !dir_exists(clean)) {
         cJSON_Delete(j);
         cJSON_Delete(dirs);
-        snprintf(err, (size_t)en, "not a folder the console can use");
+        snprintf(err, (size_t)en, "not a folder the %s can use", plat_here());
         return NULL;
     }
     DIR *d = opendir(clean);
@@ -913,8 +943,10 @@ static void route(request *r) {
         cJSON *j = diagnostics_save();
         size_t len = 0;
         char *zip = j ? read_file(jget_str(j, "path", ""), &len) : NULL;
-        if (zip) send_response(fd, 200, "application/zip", zip, len,
-                               "Content-Disposition: attachment; filename=\"rommps-diagnostics.zip\"\r\n");
+        char prefix[32], disposition[96];
+        diagnostics_prefix(prefix, sizeof prefix);
+        snprintf(disposition, sizeof disposition, "Content-Disposition: attachment; filename=\"%s.zip\"\r\n", prefix);
+        if (zip) send_response(fd, 200, "application/zip", zip, len, disposition);
         else send_error(fd, 500, "couldn't make the bundle");
         free(zip);
         cJSON_Delete(j);
@@ -1288,7 +1320,7 @@ static void route(request *r) {
         /* RommPS's own messages, as the console's notifications: an app can't send those. */
         cJSON *j = body_json(r);
         const char *message = jget_str(j, "message", "");
-        if (message[0]) plat_notify("RommPS: %s", message);
+        if (message[0]) plat_notify("%s: %s", plat_product(), message);
         cJSON_Delete(j);
         send_ok(fd);
         return;
@@ -1582,14 +1614,14 @@ static void route(request *r) {
         }
         char html[1024];
         int n = snprintf(html, sizeof html,
-                         "<!doctype html><html><head><meta charset=\"utf-8\"><title>RommPS</title>"
+                         "<!doctype html><html><head><meta charset=\"utf-8\"><title>%s</title>"
                          "<meta name=\"referrer\" content=\"strict-origin-when-cross-origin\">"
                          "<style>html,body{margin:0;height:100%%;background:#000;overflow:hidden}"
                          "iframe{position:fixed;inset:0;width:100%%;height:100%%;border:0}</style></head><body>"
                          "<iframe src=\"https://www.youtube.com/embed/%s?autoplay=1&rel=0&playsinline=1&fs=1\" "
                          "allow=\"autoplay; fullscreen; encrypted-media; picture-in-picture\" allowfullscreen "
                          "referrerpolicy=\"strict-origin-when-cross-origin\"></iframe></body></html>",
-                         v);
+                         plat_product(), v);
         send_response(fd, 200, "text/html; charset=utf-8", html, (size_t)n, NULL);
         return;
     }

@@ -1,0 +1,26 @@
+# RommPS's screens (and RommDeck's host, platform/steamdeck/app/src):
+# Allman braces, as the UI kit they're built on.
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 120
+BreakBeforeBraces: Allman
+AccessModifierOffset: -2
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: true
+IndentCaseLabels: false
+NamespaceIndentation: None
+PointerAlignment: Right
+SortIncludes: Never
+ReflowComments: false
+AlignTrailingComments:
+  Kind: Always
+  OverEmptyLines: 0
+AlignOperands: Align
+AlignEscapedNewlines: DontAlign
+Cpp11BracedListStyle: true
+FixNamespaceComments: true
+MaxEmptyLinesToKeep: 2
+IndentExternBlock: NoIndent

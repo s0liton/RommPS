@@ -23,6 +23,13 @@ int zip_extract_entry(const char *zip_path, const char *name, const char *dest);
  * dest_dir are refused. Returns the number of files, or -1. */
 int zip_extract_all(const char *zip_path, const char *dest_dir);
 
+/* The shallowest entry named suffix or ending in "/" suffix (any case; the
+ * fewest folders deep, then the shortest name), read without loading the
+ * whole zip: a Vita dump's app/PCSE00001/sce_sys/param.sfo out of a 3 GB
+ * .vpk. Zip64 too. A malloc'd copy in *out, its size in *len; -1 for none,
+ * one bigger than max, or a zip it can't read. */
+int zip_read_suffix(const char *zip_path, const char *suffix, size_t max, unsigned char **out, size_t *len);
+
 /* When the zip's first entry was last written (its file's time when we made
  * the zip), or 0 if it doesn't say. */
 time_t zip_first_time(const char *zip_path);

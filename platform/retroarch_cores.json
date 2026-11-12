@@ -4,7 +4,9 @@
     "Each rule matches a core by its name (\"names\", exact, any case, or \"contains\") and, when given, the system it plays",
     "(\"systems\", the first slug of detect.c's DB_MAP). The first rule that matches adds its \"entry\" keys to the core's",
     "platform entry (src/profiles.h: save_exts, save_name, save_stems, save_format, save_layout, disc_id, memcards, cards).",
-    "Defaults: saves <save folder>/<game>.srm (.sav, .rtc), states <state folder>/<game>.state*. \"note\" is for docs/emulators.md."
+    "Defaults: saves <save folder>/<game>.srm (.sav, .rtc), states <state folder>/<game>.state*. \"note\" is for docs/emulators.md.",
+    "\"apart\": the core's saves are a kind of their own. Its keys never go on the system's entry, whichever core plays it; a twin",
+    "of the core's own (src/profiles.c) syncs them, in a slot of its own (<slot>-<core id>)."
   ],
   "rules": [
     {"names": ["LRPS2", "PCSX2"], "systems": ["ps2"],
@@ -68,6 +70,9 @@
     {"names": ["Dolphin"],
      "note": "A GCI folder: one file per save, so each game's own; synced as a zip of the game's .gci files.",
      "entry": {"save_layout": "gci", "cards": {"default": "per_game", "modes": "per_game"}}},
-    {"names": ["Azahar", "Citra"], "entry": {"save_layout": "3ds"}}
+    {"names": ["Azahar", "Citra"], "entry": {"save_layout": "3ds"}},
+    {"names": ["MAME"], "apart": true,
+     "note": "Each game's NVRAM folder, <save folder>/mame/nvram/<set>/, synced as a zip of it (<set>.zip), the same as standalone MAME's, in a slot of its own (autosave-mame). The arcade entry's .srm saves sync as before, whichever core plays them.",
+     "entry": {"save_layout": "folder", "bundle_dirs": "{save_path}/mame/nvram,{save_root}/mame/nvram"}}
   ]
 }

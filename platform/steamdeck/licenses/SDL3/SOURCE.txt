@@ -1,0 +1,4 @@
+SDL release-3.2.10 877399b2b2cf21e67554ed9046410f268ce1d1b2 (Mon Mar 31 2025), https://github.com/libsdl-org/SDL
+Linked statically into RommDeck (app/docker/Dockerfile builds it): LICENSE.txt, and the notices of the
+parts it bundles that RommDeck links, src/hidapi/LICENSE*.txt as hidapi-*.txt and src/video/yuv2rgb/LICENSE
+as yuv2rgb-LICENSE.txt. A new SDL_TAG there wants these again: tools/stage-notices.py refuses a mismatch.

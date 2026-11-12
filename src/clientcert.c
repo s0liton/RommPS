@@ -55,7 +55,7 @@ void clientcert_init(void) {
         char msg[sizeof g_error];
         snprintf(msg, sizeof msg, "client certificate %s: %s", name, err);
         LOGE("%s", msg);
-        plat_notify("RommPS: the client certificate can't be used\n%s", err);
+        plat_notify("%s: the client certificate can't be used\n%s", plat_product(), err);
         set_error(msg);
     } else {
         set_error("");

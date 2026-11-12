@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
@@ -126,7 +127,12 @@ int zip_write(const char *zip_path, const zip_member *members, int count) {
         }
         fclose(in);
 
-        central = realloc(central, central_len + 46 + nl);
+        unsigned char *grown = realloc(central, central_len + 46 + nl);
+        if (!grown) {
+            rc = -1;
+            break;
+        }
+        central = grown;
         unsigned char *ch = central + central_len;
         memset(ch, 0, 46);
         put32(ch, 0x02014b50);
@@ -377,6 +383,131 @@ int zip_content_hash(const char *zip_path, char out[33]) {
     }
     free(e);
     free(z);
+    return rc;
+}
+
+static uint64_t get64(const unsigned char *p) { return (uint64_t)get32(p) | (uint64_t)get32(p + 4) << 32; }
+
+static int read_at64(FILE *f, uint64_t at, void *buf, size_t n) {
+    return fseeko(f, (off_t)at, SEEK_SET) == 0 && fread(buf, 1, n, f) == n ? 0 : -1;
+}
+
+/* A central directory entry's sizes and offset, from its zip64 extra field
+ * where the 32-bit ones say 0xFFFFFFFF (in that order, only those that do). */
+static void zip64_fields(const unsigned char *x, size_t xl, uint64_t *usize, uint64_t *csize, uint64_t *lo) {
+    for (size_t p = 0; p + 4 <= xl;) {
+        const uint16_t id = get16(x + p), l = get16(x + p + 2);
+        if (p + 4 + l > xl) return;
+        if (id == 0x0001) {
+            size_t o = p + 4;
+            uint64_t *want[] = {usize, csize, lo};
+            for (int i = 0; i < 3; i++) {
+                if (*want[i] != 0xFFFFFFFFu) continue;
+                if (o + 8 > p + 4 + l) return;
+                *want[i] = get64(x + o);
+                o += 8;
+            }
+            return;
+        }
+        p += 4 + (size_t)l;
+    }
+}
+
+int zip_read_suffix(const char *zip_path, const char *suffix, size_t max, unsigned char **out, size_t *len) {
+    *out = NULL;
+    *len = 0;
+    FILE *f = fopen(zip_path, "rb");
+    if (!f) return -1;
+    int rc = -1;
+    unsigned char *tail = NULL, *cdir = NULL, *data = NULL, *buf = NULL;
+    struct stat st;
+    if (fstat(fileno(f), &st) != 0 || st.st_size < 22) goto out;
+    const uint64_t size = (uint64_t)st.st_size;
+    /* The end record is in the last 22 bytes, plus a comment of up to 64 KB. */
+    const size_t tl = size < 22 + 65535 ? (size_t)size : 22 + 65535;
+    tail = malloc(tl);
+    if (!tail || read_at64(f, size - tl, tail, tl) != 0) goto out;
+    long eocd = -1;
+    for (long i = (long)tl - 22; i >= 0 && eocd < 0; i--)
+        if (get32(tail + i) == 0x06054b50) eocd = i;
+    if (eocd < 0) goto out;
+    uint64_t count = get16(tail + eocd + 10), cd_size = get32(tail + eocd + 12), cd = get32(tail + eocd + 16);
+    if (count == 0xFFFF || cd_size == 0xFFFFFFFFu || cd == 0xFFFFFFFFu) {
+        /* Zip64: a locator right before the end record points at its own. */
+        unsigned char loc[20], z64[56];
+        const uint64_t at = size - tl + (uint64_t)eocd;
+        if (at < 20 || read_at64(f, at - 20, loc, sizeof loc) != 0 || get32(loc) != 0x07064b50 ||
+            read_at64(f, get64(loc + 8), z64, sizeof z64) != 0 || get32(z64) != 0x06064b50)
+            goto out;
+        count = get64(z64 + 32);
+        cd_size = get64(z64 + 40);
+        cd = get64(z64 + 48);
+    }
+    if (cd_size > 64u << 20 || cd > size || cd_size > size - cd) goto out;
+    cdir = malloc(cd_size ? (size_t)cd_size : 1);
+    if (!cdir || read_at64(f, cd, cdir, (size_t)cd_size) != 0) goto out;
+
+    const size_t sl = strlen(suffix);
+    int best_depth = -1;
+    size_t best_nl = 0;
+    uint64_t b_lo = 0, b_cs = 0, b_us = 0;
+    uint16_t b_method = 0;
+    for (uint64_t i = 0, p = 0; i < count && p + 46 <= cd_size; i++) {
+        const unsigned char *ch = cdir + p;
+        if (get32(ch) != 0x02014b50) break;
+        const uint16_t nl = get16(ch + 28), xl = get16(ch + 30), cl = get16(ch + 32);
+        if (p + 46 + nl + xl > cd_size) break;
+        const char *name = (const char *)ch + 46;
+        p += 46 + (uint64_t)nl + xl + cl;
+        if (nl < sl || strncasecmp(name + nl - sl, suffix, sl) != 0 || (nl > sl && name[nl - sl - 1] != '/')) continue;
+        int depth = 0;
+        for (size_t k = 0; k < nl; k++) depth += name[k] == '/';
+        if (best_depth >= 0 && (depth > best_depth || (depth == best_depth && nl >= best_nl))) continue;
+        uint64_t us = get32(ch + 24), cs = get32(ch + 20), lo = get32(ch + 42);
+        zip64_fields(ch + 46 + nl, xl, &us, &cs, &lo);
+        best_depth = depth;
+        best_nl = nl;
+        b_lo = lo;
+        b_cs = cs;
+        b_us = us;
+        b_method = get16(ch + 10);
+    }
+    unsigned char lh[30];
+    if (best_depth < 0 || b_us > max || b_cs > (uint64_t)max + 65536 || b_lo > size - 30 ||
+        read_at64(f, b_lo, lh, sizeof lh) != 0 || get32(lh) != 0x04034b50)
+        goto out;
+    const uint64_t at = b_lo + 30 + get16(lh + 26) + get16(lh + 28);
+    if (at > size || b_cs > size - at) goto out;
+    data = malloc(b_cs ? (size_t)b_cs : 1);
+    buf = malloc(b_us ? (size_t)b_us : 1);
+    if (!data || !buf || read_at64(f, at, data, (size_t)b_cs) != 0) goto out;
+    if (b_method == 0 && b_cs == b_us) {
+        memcpy(buf, data, (size_t)b_us);
+        rc = 0;
+    } else if (b_method == 8) {
+        z_stream s;
+        memset(&s, 0, sizeof s);
+        if (inflateInit2(&s, -MAX_WBITS) == Z_OK) {
+            s.next_in = data;
+            s.avail_in = (uInt)b_cs;
+            s.next_out = buf;
+            s.avail_out = (uInt)b_us;
+            const int r = inflate(&s, Z_FINISH);
+            if (r == Z_STREAM_END && s.total_out == b_us) rc = 0;
+            inflateEnd(&s);
+        }
+    }
+    if (rc == 0) {
+        *out = buf;
+        *len = (size_t)b_us;
+        buf = NULL;
+    }
+out:
+    free(tail);
+    free(cdir);
+    free(data);
+    free(buf);
+    fclose(f);
     return rc;
 }
 

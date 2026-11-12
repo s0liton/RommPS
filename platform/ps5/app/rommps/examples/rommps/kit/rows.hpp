@@ -10,6 +10,7 @@
 #include "core/input.hpp"
 #include "core/tween.hpp"
 #include "rommps_look.hpp"
+#include "rommps_words.hpp"
 #include "ui/feedback.hpp"
 #include "ui/fonts.hpp"
 #include "ui/motion.hpp"
@@ -60,6 +61,11 @@ class RowList
   public:
     static constexpr float kRowHeight = 92.0f;
 
+    // The touch screen's doing on the rows (RommDeck), before handle(): a
+    // tapped row takes the focus and the input gets its Cross (or, on a
+    // choice's left arrow, Left); a drag scrolls. What comes back is the input
+    // to use from here on.
+    hui::InputFrame touch(const hui::InputFrame &input, const std::vector<Row> &rows);
     RowEvent handle(const std::vector<Row> &rows, const hui::InputFrame &input, hui::ui::Feedback &feedback);
     void update(float dt, int count, float visible_height);
     void draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, const std::vector<Row> &rows,
@@ -71,6 +77,9 @@ class RowList
 
   private:
     int focus_ = 0;
+    // Scrolled by touch, away from the focus: the pad picks up from what's in view.
+    bool free_ = false;
+    float most_ = 0.0f, visible_ = 0.0f; // the scroll's end and the view's height, from update()
     hui::tween::Spring position_, scroll_;
     hui::ui::Pulse nudge_;
 };
@@ -82,7 +91,7 @@ struct Named
     const char *label;
 };
 inline constexpr Named kPolicies[] = {
-    {"ask", "Ask me"}, {"newest", "Keep the newest"}, {"local", "Keep this console's"}, {"server", "Keep RomM's"}};
+    {"ask", "Ask me"}, {"newest", "Keep the newest"}, {"local", "Keep this " ROMM_HERE "'s"}, {"server", "Keep RomM's"}};
 inline constexpr Named kStates[] = {{"off", "Off"}, {"upload", "Back up to RomM"}, {"sync", "Back up and restore"}};
 inline constexpr int kIntervals[] = {0, 15, 30, 60, 120, 360};
 
