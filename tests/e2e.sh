@@ -1219,12 +1219,20 @@ import json,sys; d=json.load(sys.stdin)
 print(d.get('year'), d.get('publishers'), d.get('genres'), d.get('rating'), int(d.get('main_story_s',0)/3600), d.get('status'), d.get('play_ms'), d.get('sessions'))")
 [[ "$det" == "1994 Nintendo Platform, Adventure 92.5 8 finished 5400000 2" ]] || fail "game details: $det"
 root=$(curl -sf "$API/api/fs" | python3 -c "import json,sys; print(json.load(sys.stdin)['folders'])")
-[[ "$root" == "['$T']" ]] || fail "the picker's roots: $root"
+[[ "$root" == "['$T', '/']" ]] || fail "where the picker starts: $root"
 mkdir -p "$T/mine/games" "$T/mine/saves"
 sub=$(curl -sf "$API/api/fs?path=$T/mine" | python3 -c "import json,sys; j=json.load(sys.stdin); print(j['folders'], j['parent'] == '$T')")
 [[ "$sub" == "['games', 'saves'] True" ]] || fail "listing a folder: $sub"
-curl -s "$API/api/fs?path=/etc" | grep -q error || fail "the picker must stay inside its roots"
+# Any folder the machine lets it open: hidden ones (last), links to folders, never files.
+mkdir -p "$T/pick/Zeta" "$T/pick/alpha" "$T/pick/.config"; ln -s "$T/pick/alpha" "$T/pick/link"; : > "$T/pick/file.txt"
+pk=$(curl -sf "$API/api/fs?path=$T//pick/" | python3 -c "import json,sys; j=json.load(sys.stdin); print(j['path'] == '$T/pick', j['folders'])")
+[[ "$pk" == "True ['alpha', 'link', 'Zeta', '.config']" ]] || fail "listing any folder: $pk"
+top=$(curl -sf "$API/api/fs?path=/" | python3 -c "import json,sys; j=json.load(sys.stdin); print(repr(j['parent']), 'etc' in j['folders'])")
+[[ "$top" == "'' True" ]] || fail "the whole machine from /: $top"
+up=$(curl -sf "$API/api/fs?path=/etc" | python3 -c "import json,sys; print(json.load(sys.stdin)['parent'])")
+[[ "$up" == "/" ]] || fail "up from /etc: $up"
 curl -s "$API/api/fs?path=$T/../.." | grep -q error || fail "the picker must refuse .."
+curl -s "$API/api/fs?path=$T/no-such-folder" | grep -q error || fail "a folder that isn't there"
 post /api/setup/emulators "{\"roots\":[\"$HB\"],\"custom\":[{\"slugs\":[\"psp\"],\"name\":\"PSP\",\"rom_dir\":\"$T/mine/games\",\"save_dir\":\"$T/mine/saves\"}]}" >/dev/null \
   || fail "setup with picked folders refused"
 mine=$(curl -sf "$API/api/paths" | python3 -c "import json,sys; print([(m['rom_dir'], m['save_dir']) for m in json.load(sys.stdin) if m['rom_dir'].startswith('$T/mine')])")

@@ -86,6 +86,12 @@
   </content_rating>
 
   <releases>
+    <release version="1.0.1" date="2026-11-12" type="stable">
+      <url type="details">https://github.com/s0liton/RommDeck/releases/tag/v1.0.1</url>
+      <description>
+        <p>Hotfix for manually specifying manual paths for emulators.</p>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-11-12" type="stable">
       <url type="details">https://github.com/s0liton/RommDeck/releases/tag/v1.0.0</url>
       <description>
