@@ -204,6 +204,28 @@ static int name_ci(const char *dir, const char *name, char *out, size_t n) {
     return rc;
 }
 
+/* psvita, ps4, folder: a base with {game_id} in it is the game's own folder
+ * once that's filled in, not a folder of every game's folders (bundle.h). */
+static int game_in_base(const char *base) { return strstr(base, "{game_id}") != NULL; }
+
+/* Such a base filled in with id, the folder the id names in whatever case
+ * it's there. 0 when that folder isn't there: it's the emulator's to make.
+ * A Wine prefix is a few hundred MB Wine has to set up, and a folder of ours
+ * sitting where it goes would pass for a prefix that's broken. */
+static int game_folder(const char *base, const char *id, char *out, size_t n) {
+    const char *at = strstr(base, "{game_id}"), *rest = at + strlen("{game_id}"), *start = at;
+    while (start > base && start[-1] != '/') start--;
+    const char *end = rest + strcspn(rest, "/");
+    char parent[PATH_MAX_LEN], name[256], found[256], root[PATH_MAX_LEN + 256];
+    snprintf(parent, sizeof parent, "%.*s", (int)(start - base), base);
+    snprintf(name, sizeof name, "%.*s%s%.*s", (int)(at - start), start, id, (int)(end - rest), rest);
+    if (!parent[0] || name_ci(parent, name, found, sizeof found) != 0) return 0;
+    snprintf(root, sizeof root, "%s%s", parent, found);
+    if (!dir_exists(root)) return 0;
+    snprintf(out, n, "%s%s", root, end);
+    return 1;
+}
+
 /* The game's save on a hard disk kept as folders (XPSemu 3's hdd), where
  * Partition1 is E:. Names match in any case, as the emulator matches them.
  * Listed as "<its folder's name>/...", the very entries a copy out of an
@@ -329,11 +351,13 @@ int bundle_open(bundle *b, const char *layout, const char *id, const char *also,
     }
 
     int pick = 0;
-    for (int i = 0; i < nbases; i++)
-        if (dir_exists(bases[i])) {
+    for (int i = 0; i < nbases; i++) {
+        char mine[PATH_MAX_LEN];
+        if (one_folder(layout) && game_in_base(bases[i]) ? game_folder(bases[i], id, mine, sizeof mine) : dir_exists(bases[i])) {
             pick = i;
             break;
         }
+    }
     const char *base = bases[pick];
     str_copy(b->base, sizeof b->base, base);
 
@@ -392,7 +416,13 @@ int bundle_open(bundle *b, const char *layout, const char *id, const char *also,
     } else if (one_folder(layout)) {
         /* The one folder the game's saves are in, in whatever case it's there:
          * Vita3K's ux0:user/00/savedata/<save folder> (gameid_vita), shadPS4's
-         * savedata/<title id> (its save folders in it), MAME's nvram/<set>. */
+         * savedata/<title id> (its save folders in it), MAME's nvram/<set>.
+         * Or the base itself, its id filled in: the Windows user's folder in
+         * the game's own Wine prefix. No prefix yet, no folder (dir ""). */
+        if (game_in_base(base)) {
+            if (game_folder(base, id, b->dir, sizeof b->dir)) add_tree(b, b->dir, id, 0);
+            return 0;
+        }
         DIR *d = opendir(base);
         struct dirent *de;
         snprintf(b->dir, sizeof b->dir, "%s/%s", base, id);
@@ -482,6 +512,10 @@ void bundle_free(bundle *b) {
     free(b->files);
     b->files = NULL;
     b->n = b->cap = 0;
+}
+
+int bundle_waits(const bundle *b) {
+    return !b->dir[0] && (!strcmp(b->layout, "ryujinx") || (one_folder(b->layout) && game_in_base(b->base)));
 }
 
 static int cmp_lines(const void *a, const void *b) { return strcmp(*(char *const *)a, *(char *const *)b); }
@@ -599,6 +633,48 @@ static int put_folder(const char *from, const char *to) {
     return link_or_copy(from, to);
 }
 
+/* Moves every file under from to the same place under to, over what's there,
+ * making the folders they need. Folders already there stay. */
+static int move_files(const char *from, const char *to, int depth) {
+    DIR *d = opendir(from);
+    if (!d) return -1;
+    struct dirent *de;
+    int rc = 0;
+    if (!dir_exists(to)) unlink(to); /* a file where a folder goes */
+    if (mkdir_p(to) != 0) rc = -1;
+    while (!rc && (de = readdir(d))) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        char src[PATH_MAX_LEN], dst[PATH_MAX_LEN];
+        path_join(src, sizeof src, from, de->d_name);
+        path_join(dst, sizeof dst, to, de->d_name);
+        if (dir_exists(src)) {
+            rc = depth < 16 ? move_files(src, dst, depth + 1) : -1;
+            continue;
+        }
+        if (dir_exists(dst)) remove_tree(dst); /* and a folder where a file goes */
+        if (rename(src, dst) != 0 && copy_file(src, dst) != 0) rc = -1;
+    }
+    closedir(d);
+    return rc;
+}
+
+/* Puts the folder from where over the bundle's, file by file: its files
+ * replace what's there, the bundle's files it doesn't have go, and every
+ * folder stays, empty or not. For a base with {game_id}, a Wine prefix's
+ * user folder: the PS5 can't make Documents, Saved Games or AppData again
+ * once they're gone, and a game finding them gone loses its settings every
+ * time it closes (prospero-win's docs). put_folder would wipe them all. */
+static int put_over(const bundle *b, const char *from) {
+    const size_t idl = strlen(b->game_id);
+    for (int i = 0; i < b->n; i++) {
+        const char *name = b->files[i].name;
+        char in[PATH_MAX_LEN];
+        path_join(in, sizeof in, from, !strncmp(name, b->game_id, idl) && name[idl] == '/' ? name + idl + 1 : name);
+        if (!file_exists(in)) unlink(b->files[i].path);
+    }
+    return move_files(from, b->dir, 0);
+}
+
 /* The save inside an unpacked zip, in whatever form it came. */
 static int place_unpacked(bundle *b, const char *tmp) {
     char src[PATH_MAX_LEN], hex[9];
@@ -684,6 +760,7 @@ static int place_unpacked(bundle *b, const char *tmp) {
         if (d) closedir(d);
         if (!exact && titles && entries == 1 && foreign == 1) str_copy(src, sizeof src, only);
         else if (!exact && (foreign || (!titles && entries == 1 && dirs == 1))) return -2;
+        if (game_in_base(b->base)) return b->dir[0] ? put_over(b, src) : -1;
         return put_folder(src, b->dir);
     }
     if (!strcmp(b->layout, "scummvm")) {
@@ -828,7 +905,7 @@ int bundle_replace(bundle *b, const char *zip_path, const char *tmp_dir) {
         remove_tree(tmp_dir);
     }
 
-    char id[24], base[1][PATH_MAX_LEN], layout[8], also[sizeof b->also];
+    char id[GAME_ID_MAX], base[1][PATH_MAX_LEN], layout[8], also[sizeof b->also];
     str_copy(id, sizeof id, b->game_id);
     str_copy(layout, sizeof layout, b->layout);
     str_copy(base[0], sizeof base[0], b->base);

@@ -3079,4 +3079,70 @@ pcget 990; [[ "$(files "$PG")" == "./Mina.exe " ]] || fail "keep_all_files false
 pcget 880; [[ "$(files "$P3")" == "./PS3_DISC.SFB ./PS3_GAME/PARAM.SFO ./PS3_GAME/USRDIR/EBOOT.BIN " ]] \
   || fail "keep_all_files false leaves readmes and artwork wherever they are: $(files "$P3")"
 
+echo "34. Windows games under Wine (prospero-win, #50): the user folder in the game's own prefix is its save, the rest of the prefix isn't"
+PW="$T/pwin"; PFX="$PW/prefixes/Mina the Hollower"; U="$PFX/drive_c/users/prospero"; YC="AppData/Roaming/Yacht Club Games/Mina the Hollower"
+mkdir -p "$PFX/drive_c/windows/system32" "$U/$YC" "$U/Documents" "$U/Saved Games" "$U/AppData/Local"
+printf 'WINE-DLL' > "$PFX/drive_c/windows/system32/kernel32.dll"; printf 'REGEDIT4' > "$PFX/user.reg"
+printf 'mina-1' > "$U/$YC/saveData.yc"; printf 'mina-bak-1' > "$U/$YC/saveData.bak"
+python3 - "$API" "$PC" "$PW" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, games, root = sys.argv[1:4]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+p = {"id": "pwin", "name": "prospero-win", "enabled": True, "root": root, "rom_dir": games + "/{platform}",
+     "save_dir": "{root}/prefixes", "sync_saves": True,
+     "platforms": [{"romm": ["win"], "dir": "win", "game_folders": True, "save_layout": "folder",
+                    "bundle_dirs": "{root}/prefixes/{game_id}/drive_c/users/prospero"}]}
+profiles = [x for x in cfg["profiles"] if x.get("id") not in ("pcgames", "pwin")] + [p]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+# RomM's newest save of a game: its name, then each file in its zip and what it holds.
+pwsave() { curl -skf "$SV/_admin/dump" | python3 -c "
+import io,json,re,sys,zipfile
+s = sorted((s for s in json.load(sys.stdin)['saves'] if s['rom_id'] == $1), key=lambda s: (s['updated_at'], s['id']))
+if not s: sys.exit(print('none'))
+z = zipfile.ZipFile(io.BytesIO(s[-1]['content'].encode('latin1')))
+print(re.sub(r' \[[^]]*\]', '', s[-1]['file_name']), ' '.join('%s=%s' % (n, z.read(n).decode()) for n in sorted(z.namelist())))"; }
+pwzip() { # rom_id file_name, then "name=content" pairs: another device's save on RomM
+  python3 - "$@" > "$T/admin.json" <<'PY'
+import base64, io, json, sys, zipfile
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    for pair in sys.argv[3:]:
+        name, content = pair.split("=", 1)
+        z.writestr(name, content)
+print(json.dumps({"rom_id": int(sys.argv[1]), "slot": "autosave", "file_name": sys.argv[2], "content_b64": base64.b64encode(buf.getvalue()).decode()}))
+PY
+  curl -skf -X POST "$SV/_admin/save" -d @"$T/admin.json" >/dev/null
+}
+syncnow
+want="Mina the Hollower.zip Mina the Hollower/$YC/saveData.bak=mina-bak-1 Mina the Hollower/$YC/saveData.yc=mina-1"
+[[ "$(pwsave 990)" == "$want" ]] || fail "the prefix's user folder must go up as the game's save, and nothing else of the prefix: $(pwsave 990)"
+syncnow
+[[ "$(last uploaded)" == 0 && "$(last downloaded)" == 0 ]] || fail "a prefix in step must stay put: $(last uploaded) up, $(last downloaded) down"
+echo "    RomM's newer save goes in file by file: the prefix and its empty folders stay"
+sleep 1.1
+pwzip 990 "Mina the Hollower.zip" "Mina the Hollower/$YC/saveData.yc=mina-2-from-pc" "Mina the Hollower/Documents/My Games/Mina/settings.ini=vsync=1"
+syncnow
+[[ "$(cat "$U/$YC/saveData.yc" 2>&1)" == "mina-2-from-pc" && "$(cat "$U/Documents/My Games/Mina/settings.ini" 2>&1)" == "vsync=1" ]] \
+  || fail "RomM's save must land in the prefix's user folder: $(cd "$U" && find . -type f)"
+[[ ! -e "$U/$YC/saveData.bak" ]] || fail "a file RomM's save doesn't have must go"
+[[ -d "$U/Saved Games" && -d "$U/AppData/Local" ]] || fail "the user folder's empty folders must stay: the PS5 can't make them again"
+[[ "$(cat "$PFX/drive_c/windows/system32/kernel32.dll")$(cat "$PFX/user.reg")" == "WINE-DLLREGEDIT4" ]] || fail "the rest of the prefix must be left alone"
+syncnow
+[[ "$(last uploaded)" == 0 && "$(last downloaded)" == 0 ]] || fail "RomM's save, placed, must stay put: $(last uploaded) up, $(last downloaded) down"
+echo "    a game with no prefix yet: RomM's save waits for one, and none is made for it"
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":991,"platform_id":99,"name":"Cave Story","fs_name":"Cave Story v1.2",
+  "files":[{"id":9911,"file_name":"Doukutsu.exe","content":"MZ-CAVE"}]}' >/dev/null
+pcget 991
+pwzip 991 "Cave Story v1.2.zip" "Cave Story v1.2/AppData/Roaming/CaveStory/Profile.dat=quote-1"
+syncnow
+[[ ! -e "$PW/prefixes/Cave Story v1.2" && ! -e "$PW/prefixes/Cave Story v1" ]] || fail "a prefix is prospero-win's to make, never ours: $(ls "$PW/prefixes")"
+grep -q "Cave Story.*: RomM's save waits until prospero-win has run it once" "$T/daemon.log" || fail "the wait must be said"
+mkdir -p "$PW/prefixes/cave story v1.2/drive_c/users/prospero/Documents"   # prospero-win made it, in its own case
+syncnow
+[[ "$(cat "$PW/prefixes/cave story v1.2/drive_c/users/prospero/AppData/Roaming/CaveStory/Profile.dat" 2>&1)" == quote-1 ]] \
+  || fail "once the prefix is there, RomM's save must come down into it, named after the whole folder: $(find "$PW/prefixes" -type f)"
+[[ -d "$PW/prefixes/cave story v1.2/drive_c/users/prospero/Documents" ]] || fail "the new prefix's folders must stay"
+
 echo "PASS"
