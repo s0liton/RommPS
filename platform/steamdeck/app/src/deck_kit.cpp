@@ -123,6 +123,7 @@ bool Kit::init(const std::string &assets_dir)
 
     const auto bank = sounds.load(assets + "/audio/sfx");
     load_sound_pack(assets + "/sounds");
+    recorded.load(assets + "/audio/sfx");
     const SDL_AudioSpec spec{SDL_AUDIO_S16, 2, hui::audio::kSampleRate};
     audio_ = SDL_OpenAudioDeviceStream(SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, feed_audio, &mixer);
     if (audio_)

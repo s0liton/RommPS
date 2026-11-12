@@ -54,7 +54,8 @@ class Kit
     hui::ui::Fonts fonts;
     hui::demo::Catalog catalog;
     hui::audio::Mixer mixer;
-    hui::audio::SoundBank sounds;
+    hui::audio::SoundBank sounds;   // the menu sounds, the kit's recordings in their gaps
+    hui::audio::SoundBank recorded; // the kit's sets as recorded, for Paper and Glass
     hui::audio::MusicPlayer music;
     hui::InputTracker tracker;
 

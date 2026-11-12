@@ -27,6 +27,9 @@ namespace ps5ui
 std::unique_ptr<hui::app::Concept> make_screen(hui::app::Context &context);
 }
 extern "C" void rommps_set_renderer(void *renderer);
+// The frame's cues in the interface sounds picked in Settings (rommps_look.cpp).
+extern "C" void rommps_play_sounds(hui::ui::Feedback &feedback, hui::audio::Mixer &mixer, hui::audio::SoundBank &menu,
+                                   hui::audio::SoundBank &kit, hui::audio::SoundSet design);
 
 // RommPS's test-run switch (ps5/src/main.cpp on the PS5): never one here.
 bool ps5TestRun = false;
@@ -531,6 +534,8 @@ int main(int argc, char **argv)
             context.settings_changed = false;
             kit.apply(choices);
         }
+        // The sounds picked in Settings take the cues; the kit's play is left the rumble.
+        rommps_play_sounds(feedback, kit.mixer, kit.sounds, kit.recorded, screen->info().sounds);
         kit.play(feedback, screen->info().sounds, choices.haptics);
         feedback.clear();
         kit.tick(dt);
