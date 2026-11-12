@@ -819,71 +819,111 @@ static void proxy_asset(const request *r) {
 
 static cJSON *body_json(const request *r) { return r->body_len ? cJSON_Parse(r->body) : cJSON_CreateObject(); }
 
-/* Where the folder picker may look: internal storage and the drives the
- * console mounts (ROMM_SYNC_FS_ROOTS, comma separated, replaces them in tests). */
-static int fs_roots(char roots[][PATH_MAX_LEN], int max) {
+/* Where the folder picker starts: the platform's shortcuts (ROMM_SYNC_FS_ROOTS,
+ * comma separated, replaces them in tests), then "/", for everything else. */
+static int fs_places(char places[][PATH_MAX_LEN], int max) {
     const char *env = getenv("ROMM_SYNC_FS_ROOTS");
-    char list[1024];
-    str_copy(list, sizeof list, env && *env ? env : "/data,/mnt/usb0,/mnt/usb1,/mnt/usb2,/mnt/usb3,/mnt/ext0,/mnt/ext1");
     int n = 0;
-    char *save = NULL;
-    for (char *t = strtok_r(list, ",", &save); t && n < max; t = strtok_r(NULL, ",", &save))
-        if (dir_exists(t)) str_copy(roots[n++], PATH_MAX_LEN, t);
+    if (env && *env) {
+        char list[1024], *save = NULL;
+        str_copy(list, sizeof list, env);
+        for (char *t = strtok_r(list, ",", &save); t && n < max - 1; t = strtok_r(NULL, ",", &save))
+            if (dir_exists(t)) str_copy(places[n++], PATH_MAX_LEN, t);
+    } else {
+        n = plat_fs_places(places, max - 1);
+    }
+    int root = 0;
+    for (int i = 0; i < n; i++) root |= !strcmp(places[i], "/");
+    if (!root) str_copy(places[n++], PATH_MAX_LEN, "/");
     return n;
 }
 
+/* An absolute path with no "." or ".." in it, so the one shown is the one kept. */
+static int fs_path_ok(const char *p) {
+    if (p[0] != '/') return 0;
+    for (const char *c = p; *c;) {
+        while (*c == '/') c++;
+        const char *e = c;
+        while (*e && *e != '/') e++;
+        if ((e - c == 1 && c[0] == '.') || (e - c == 2 && c[0] == '.' && c[1] == '.')) return 0;
+        c = e;
+    }
+    return 1;
+}
+
+/* Hidden folders after the rest, each lot by name. */
+static int fs_name_cmp(const void *a, const void *b) {
+    const char *x = a, *y = b;
+    if ((x[0] == '.') != (y[0] == '.')) return x[0] == '.' ? 1 : -1;
+    return strcasecmp(x, y);
+}
+
+#define FS_MAX_FOLDERS 4096
+
 /* The folders in a folder, for the setup's folder picker: {path, parent,
- * folders}. No path: the roots. Only folders, and only below a root. */
+ * folders}. No path: where to start (fs_places). Any folder the machine lets
+ * us open, hidden ones too: an emulator keeps its saves wherever it damn well
+ * pleases (~/.var/app, for one), and the picker shouldn't be the one to say no. */
 static cJSON *fs_folders(const char *path, char *err, int en) {
-    char roots[8][PATH_MAX_LEN];
-    int nroots = fs_roots(roots, 8);
     cJSON *j = cJSON_CreateObject(), *dirs = cJSON_CreateArray();
     if (!path[0]) {
+        char places[8][PATH_MAX_LEN];
+        int n = fs_places(places, 8);
         cJSON_AddStringToObject(j, "path", "");
         cJSON_AddStringToObject(j, "parent", "");
-        for (int i = 0; i < nroots; i++) cJSON_AddItemToArray(dirs, cJSON_CreateString(roots[i]));
+        for (int i = 0; i < n; i++) cJSON_AddItemToArray(dirs, cJSON_CreateString(places[i]));
         cJSON_AddItemToObject(j, "folders", dirs);
         return j;
     }
     char clean[PATH_MAX_LEN];
-    str_copy(clean, sizeof clean, path);
-    size_t l = strlen(clean);
+    size_t l = 0;
+    for (const char *c = path; *c && l + 1 < sizeof clean; c++)
+        if (*c != '/' || !l || clean[l - 1] != '/') clean[l++] = *c; /* "//" is "/" */
+    clean[l] = 0;
     while (l > 1 && clean[l - 1] == '/') clean[--l] = 0;
-    int inside = 0;
-    for (int i = 0; i < nroots; i++) {
-        size_t rl = strlen(roots[i]);
-        if (!strncmp(clean, roots[i], rl) && (clean[rl] == 0 || clean[rl] == '/')) inside = 1;
-    }
-    if (clean[0] != '/' || strstr(clean, "/..") || strstr(clean, "/./") || !inside || !dir_exists(clean)) {
+    int n = 0, cap = 256;
+    char (*names)[256] = malloc((size_t)cap * sizeof *names); /* on the heap: console threads have small stacks */
+    DIR *d = names && fs_path_ok(clean) ? opendir(clean) : NULL;
+    if (!d) {
+        free(names);
         cJSON_Delete(j);
         cJSON_Delete(dirs);
-        snprintf(err, (size_t)en, "not a folder the %s can use", plat_here());
+        snprintf(err, (size_t)en, "can't open %s", clean);
         return NULL;
     }
-    DIR *d = opendir(clean);
     struct dirent *de;
-    char (*names)[256] = malloc(512 * sizeof *names); /* on the heap: console threads have small stacks */
-    int n = 0;
-    while (names && d && (de = readdir(d)) && n < 512) {
-        if (de->d_name[0] == '.') continue;
-        char full[PATH_MAX_LEN];
-        path_join(full, sizeof full, clean, de->d_name);
-        if (dir_exists(full)) str_copy(names[n++], sizeof names[0], de->d_name);
+    while ((de = readdir(d)) && n < FS_MAX_FOLDERS) {
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
+        int is_dir = 0;
+#ifdef DT_DIR
+        if (de->d_type == DT_DIR) is_dir = 1;
+        else if (de->d_type == DT_LNK || de->d_type == DT_UNKNOWN)
+#endif
+        {
+            char full[PATH_MAX_LEN];
+            path_join(full, sizeof full, clean, de->d_name);
+            is_dir = dir_exists(full); /* a link to a folder is one */
+        }
+        if (!is_dir) continue;
+        if (n == cap) {
+            char (*more)[256] = realloc(names, (size_t)cap * 2 * sizeof *names);
+            if (!more) break;
+            names = more;
+            cap *= 2;
+        }
+        str_copy(names[n++], sizeof names[0], de->d_name);
     }
-    if (d) closedir(d);
-    if (names) {
-        qsort(names, (size_t)n, sizeof names[0], (int (*)(const void *, const void *))strcasecmp);
-        for (int i = 0; i < n; i++) cJSON_AddItemToArray(dirs, cJSON_CreateString(names[i]));
-        free(names);
-    }
-    /* Up stops at a root. */
+    closedir(d);
+    qsort(names, (size_t)n, sizeof names[0], fs_name_cmp);
+    for (int i = 0; i < n; i++) cJSON_AddItemToArray(dirs, cJSON_CreateString(names[i]));
+    free(names);
+    /* Up goes all the way to "/", and from there to where to start. */
     char parent[PATH_MAX_LEN] = "";
-    int at_root = 0;
-    for (int i = 0; i < nroots; i++) at_root |= !strcmp(clean, roots[i]);
-    if (!at_root) {
+    if (strcmp(clean, "/") != 0) {
         str_copy(parent, sizeof parent, clean);
         char *slash = strrchr(parent, '/');
-        if (slash && slash != parent) *slash = 0;
+        if (slash == parent) parent[1] = 0;
+        else if (slash) *slash = 0;
     }
     cJSON_AddStringToObject(j, "path", clean);
     cJSON_AddStringToObject(j, "parent", parent);
