@@ -167,8 +167,11 @@ struct GameList
     int total = -1;                   // games to show; unknown until the first page arrives
     std::vector<Game> games;          // RomM's whole list, by RomM's offset; id 0 isn't loaded yet
     // per page: 0 not asked, 1 asked, 2 here, 3 failed (asked again only when
-    // the user says so: App::retry)
+    // the user says so: App::retry), 4 nobody answered (asked again by itself
+    // once retry_at has come)
     std::vector<unsigned char> pages;
+    double retry_at = 0; // pages at 4 wait for this; the wait doubles, up to 15 s
+    int unanswered = 0;  // asks in a row the service didn't answer
     std::vector<std::pair<std::string, int>> letters; // first letter -> the index of its first game
     std::vector<std::pair<std::string, int>> raw_letters; // the same, by RomM's offset
     std::vector<int> hidden;          // RomM offsets of the files that aren't games, sorted
