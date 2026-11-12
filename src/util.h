@@ -72,6 +72,10 @@ void path_join(char *out, size_t n, const char *a, const char *b);
 /* "Foo (USA).sfc" -> "Foo (USA)" */
 void path_stem(char *out, size_t n, const char *file_name);
 const char *path_ext(const char *file_name);    /* ".sfc" or "" */
+/* 1 when a name from elsewhere (RomM's file names) is one plain path
+ * component: not empty, not "." or "..", no slash or backslash. Joined to a
+ * folder, it can't end up anywhere but in it. */
+int name_is_plain(const char *name);
 
 int str_ieq(const char *a, const char *b);
 int str_ends_with_ci(const char *s, const char *suffix);

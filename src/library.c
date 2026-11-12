@@ -281,6 +281,22 @@ static const char *game_subdir(const cJSON *rom, const cJSON *f) {
     return "";
 }
 
+/* The first of a game's names (its fs_name, its files' file_name) that isn't
+ * one plain file name, NULL when they all are. Each becomes part of a path
+ * here; "../../something" would put a download wherever RomM, or whoever's
+ * in the middle of a plain-http connection, says. RomM itself never sends
+ * one: it names things after files on its own disk. */
+static const char *unsafe_name(const cJSON *rom) {
+    const char *fs_name = jget_str(rom, "fs_name", "");
+    if (!name_is_plain(fs_name)) return fs_name;
+    const cJSON *f;
+    cJSON_ArrayForEach(f, cJSON_GetObjectItemCaseSensitive(rom, "files")) {
+        const char *name = jget_str(f, "file_name", "");
+        if (!name_is_plain(name)) return name;
+    }
+    return NULL;
+}
+
 /* PC platforms (RomM's slugs, and the folder names people give them): a game
  * folder there is the game's own file tree, and nobody can say which .txt or
  * .png it does without (gbe_fork's steam_settings/steam_appid.txt, for one).
@@ -911,6 +927,13 @@ static void run_switch_job(job *j, const cJSON *rom, const profile_map *maps, in
                 skipped++;
                 continue;
             }
+            if (unsafe_name(full)) {
+                LOGW("%s: its %s has a file name that would leave its folder (%s), left out", j->name,
+                     jget_str(a, "kind", ""), unsafe_name(full));
+                cJSON_Delete(full);
+                skipped++;
+                continue;
+            }
             nf += nx_plan(full, m, j->target_id, files + nf, NX_MAX_FILES - nf);
             cJSON_AddItemToArray(addons, full); /* the plan points into it */
         }
@@ -1064,6 +1087,14 @@ static void run_rom_job(job *j) {
     const char *archive = rom_archive(rom, is_switch(slug));
     if (archive) {
         job_end(j, JOB_ERROR, ARCHIVED_MSG, archive);
+        profiles_free(maps);
+        cJSON_Delete(rom);
+        return;
+    }
+    const char *unsafe = unsafe_name(rom);
+    if (unsafe) {
+        LOGE("%s: RomM's file name \"%s\" would leave the games folder: not downloaded", j->name, unsafe);
+        job_end(j, JOB_ERROR, "a file name from RomM isn't safe to use: %s", unsafe);
         profiles_free(maps);
         cJSON_Delete(rom);
         return;
