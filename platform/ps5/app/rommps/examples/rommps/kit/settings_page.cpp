@@ -59,7 +59,7 @@ std::vector<Row> SettingsPage::rows(const App &app, std::vector<int> *ids) const
     r[kSaveSync] = {RowKind::toggle, "Save sync", "", c.save_sync ? "" : "RomM is only for games",
                     c.save_sync};
     r[kLook] = {RowKind::choice, "Theme", l.name, l.family};
-    r[kSounds] = {RowKind::toggle, "Interface sounds", "", "", ui_sounds()};
+    r[kSounds] = {RowKind::choice, "Interface sounds", sounds_name(ui_sounds()), ""};
     r[kInterval] = {RowKind::choice, "Sync every", interval_label(c.sync_interval_min), ""};
     r[kOnExit] = {RowKind::toggle, "Sync when a game closes", "", "", c.sync_on_game_exit};
     r[kOnStart] = {RowKind::toggle, "Sync when a game starts", "", "",
@@ -248,8 +248,16 @@ void SettingsPage::update(App &app, const hui::InputFrame &input, float dt, hui:
         set_look((current_look() + e.step + look_count()) % look_count());
         break;
     case kSounds:
-        set_ui_sounds(!ui_sounds());
+    {
+        const int n = static_cast<int>(Sounds::count);
+        set_ui_sounds(static_cast<Sounds>((static_cast<int>(ui_sounds()) + e.step + n) % n));
+        // A taste of the new ones (played after this, so in them) instead of
+        // the step's tick. Off is its own demonstration.
+        if (!feedback.cues.empty() && feedback.cues.back().cue == hui::audio::Cue::slider)
+            feedback.cues.pop_back();
+        feedback.play(hui::audio::Cue::select);
         break;
+    }
     case kInterval:
     {
         const int minutes = step_interval(c.sync_interval_min, e.step);

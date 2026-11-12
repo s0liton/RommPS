@@ -128,7 +128,7 @@ class RommPS final : public app::Concept
         update_frame(input, dt, feedback);
         // Interface sounds turned off in Settings: what this frame asked for
         // isn't played. Rumble still is.
-        if (!rommps::ui_sounds())
+        if (rommps::ui_sounds() == rommps::Sounds::off)
             feedback.cues.clear();
     }
 
