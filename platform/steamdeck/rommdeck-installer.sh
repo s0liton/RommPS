@@ -135,7 +135,7 @@ kd() {
     busctl:label) busctl --user call "$svc" "$obj" "$i" setLabelText s "$2" ;;
     busctl:value) busctl --user set-property "$svc" "$obj" "$i" value i "$2" ;;
     busctl:close) busctl --user call "$svc" "$obj" "$i" close ;;
-    esac >>"$LOG" 2>&1 || true
+    esac >/dev/null 2>>"$LOG" || true # the replies are noise; the errors aren't
 }
 
 progress_start() {
