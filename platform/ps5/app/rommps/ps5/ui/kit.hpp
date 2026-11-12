@@ -110,6 +110,10 @@ public:
 	hui::demo::Catalog catalog;
 	hui::audio::Mixer mixer;
 	hui::audio::SoundBank sounds;
+	// The kit's sets as recorded, for a program whose sounds replaced them and
+	// that still plays them (RommPS fills it). Here, so it outlives the audio
+	// thread as sounds does.
+	hui::audio::SoundBank recorded;
 	hui::audio::MusicPlayer music;
 	hui::InputTracker tracker;
 	bool audio = false; // the console's output is playing the mixer
