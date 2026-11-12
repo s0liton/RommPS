@@ -1149,6 +1149,7 @@ void App::refresh_installed()
             game.fs_name = str(g, "fs_name");
             game.cover = str(g, "cover");
             game.size = num(g, "size");
+            game.addon = str(g, "addon");
             game.installed = true;
             ids.insert(game.id);
             list.push_back(std::move(game));
