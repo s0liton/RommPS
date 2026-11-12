@@ -123,10 +123,12 @@ kd() {
     local svc="${PROGRESS% *}" obj="${PROGRESS#* }" i=org.kde.kdialog.ProgressDialog
     [[ -n $PROGRESS ]] || return 0
     case "$DBUS:$1" in
-    dbus-send:label) dbus-send --session --dest="$svc" "$obj" "$i.setLabelText" "string:$2" ;;
-    dbus-send:value) dbus-send --session --dest="$svc" "$obj" org.freedesktop.DBus.Properties.Set \
+    # --print-reply: without it dbus-send fires and quits, and on SteamOS the
+    # call never arrives, so the window kept its first label and stayed open.
+    dbus-send:label) dbus-send --session --print-reply --dest="$svc" "$obj" "$i.setLabelText" "string:$2" ;;
+    dbus-send:value) dbus-send --session --print-reply --dest="$svc" "$obj" org.freedesktop.DBus.Properties.Set \
         "string:$i" string:value "variant:int32:$2" ;;
-    dbus-send:close) dbus-send --session --dest="$svc" "$obj" "$i.close" ;;
+    dbus-send:close) dbus-send --session --print-reply --dest="$svc" "$obj" "$i.close" ;;
     qdbus*:label) "$DBUS" "$svc" "$obj" setLabelText "$2" ;;
     qdbus*:value) "$DBUS" "$svc" "$obj" Set "" value "$2" ;;
     qdbus*:close) "$DBUS" "$svc" "$obj" close ;;
@@ -137,6 +139,7 @@ kd() {
 }
 
 progress_start() {
+    progress_end # one window at a time
     STEP="$1"
     case $UI in
     kdialog) PROGRESS="$(kdialog --title RommDeck --progressbar "$1" 100 2>>"$LOG")" || PROGRESS="" ;;
@@ -169,7 +172,9 @@ progress_end() {
         pid="${PROGRESS%% *}"
         pid="${pid##*-}"
         sleep 0.2
-        [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" != kdialog ]] || kill "$pid" 2>/dev/null || true
+        # Plasma 6 runs the window as kdialog_progress_helper ("kdialog_progres"
+        # in comm), Plasma 5 as kdialog itself.
+        [[ "$(cat "/proc/$pid/comm" 2>/dev/null)" != kdialog* ]] || kill "$pid" 2>/dev/null || true
         PROGRESS=""
         ;;
     zenity)
