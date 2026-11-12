@@ -133,16 +133,19 @@ curl -sf "$URL/" >/dev/null || fail "the fake release server didn't start"
 cp "$HERE/rommdeck-installer.sh" "$T/release/latest/download/"
 
 # publish VERSION [bad]: the AppImage as that version's (a byte longer for each
-# new one, so each checksum differs), SHA256SUMS, and the API's answer.
+# new one, so each checksum differs), its .zsync (listed first: the installer
+# must still see exactly one AppImage), SHA256SUMS of both, and the API's answer.
 publish() {
     local v="$1" name="RommDeck-$1-x86_64.AppImage" dir="$T/release/$1"
     mkdir -p "$dir"
     cp "$APP_SRC" "$dir/$name"
     printf '%s' "$v" >>"$dir/$name"
-    (cd "$dir" && sha256sum "$name" >SHA256SUMS)
+    printf 'zsync: 0.6.2\nFilename: %s\n\n' "$name" >"$dir/$name.zsync"
+    (cd "$dir" && sha256sum "$name.zsync" "$name" >SHA256SUMS)
     [[ "${2:-}" != bad ]] || printf '%064d  %s\n' 0 "$name" >"$dir/SHA256SUMS"
     cat >"$T/release/latest/api.json" <<EOF
 {"tag_name": "v$v", "draft": false, "prerelease": false, "assets": [
+ {"name": "$name.zsync", "size": $(stat -c %s "$dir/$name.zsync"), "browser_download_url": "$URL/$v/$name.zsync"},
  {"name": "$name", "size": $(stat -c %s "$dir/$name"), "browser_download_url": "$URL/$v/$name"},
  {"name": "SHA256SUMS", "size": 100, "browser_download_url": "$URL/$v/SHA256SUMS"},
  {"name": "RommDeck-Installer.desktop", "size": 1, "browser_download_url": "$URL/x"}]}
@@ -182,7 +185,8 @@ asked_all
 grep -q "ExecStart=$DEST/romm-sync" "$UNIT" || fail "the unit runs something else: $(cat "$UNIT")"
 called "systemctl [--user] [enable] [romm-sync.service]"
 called "systemctl [--user] [restart] [romm-sync.service]"
-grep -qx "Exec=\"$APPIMG\"" "$MENU" && grep -qx "Icon=$DEST/rommdeck.png" "$MENU" || fail "menu entry: $(cat "$MENU")"
+grep -qx "Exec=\"$APPIMG\"" "$MENU" && grep -qx "Icon=$DEST/rommdeck.png" "$MENU" &&
+    grep -qx "StartupWMClass=io.github.s0liton.RommDeck" "$MENU" || fail "menu entry: $(cat "$MENU")"
 [[ "$(head -c 4 "$DEST/rommdeck.png" | tail -c 3)" == PNG ]] || fail "the menu's icon isn't a PNG"
 said "[Steam needs to restart to add RommDeck.]"
 said "Downloading RommDeck 1.0.0-dev.9"

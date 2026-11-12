@@ -9,7 +9,9 @@
 #     rommdeck-vX.Y.Z is created here on the merge commit)
 #   - pushing that tag by hand: git tag rommdeck-v1.0.0 && git push origin rommdeck-v1.0.0
 #
-# Release notes go in docs/releases/rommdeck/vX.Y.Z.md, written by hand.
+# Release notes go in docs/releases/rommdeck/vX.Y.Z.md, written by hand, and
+# the version gets a <release> line in the AppStream metainfo
+# (platform/steamdeck/io.github.s0liton.RommDeck.appdata.xml).
 #
 # Needs two secrets:
 #   ROMMDECK_TOKEN       fine-grained token, s0liton/RommDeck only, Contents: read and write
@@ -84,6 +86,11 @@ jobs:
             echo "::error::docs/releases/rommdeck/$TAG.md is missing; write the release notes first"
             exit 1
           fi
+          metainfo=platform/steamdeck/io.github.s0liton.RommDeck.appdata.xml
+          if ! grep -qF "<release version=\"${TAG#v}\"" "$metainfo"; then
+            echo "::error::$metainfo has no <release version=\"${TAG#v}\">; add it, with the release's date"
+            exit 1
+          fi
 
   build:
     needs: version
@@ -131,7 +138,7 @@ jobs:
           GH_TOKEN: ${{ secrets.ROMMDECK_TOKEN }}
         run: |
           V="${TAG#v}"
-          for file in "rommdeck-$V-x86_64.tar.gz" "RommDeck-$V-x86_64.AppImage" \
+          for file in "rommdeck-$V-x86_64.tar.gz" "RommDeck-$V-x86_64.AppImage" "RommDeck-$V-x86_64.AppImage.zsync" \
                       RommDeck-Installer.desktop rommdeck-installer.sh \
                       romm-sync-steamdeck manifest-steamdeck.json manifest-steamdeck.sig; do
             [ -s "dist/$file" ] || { echo "::error::dist/$file is missing"; exit 1; }

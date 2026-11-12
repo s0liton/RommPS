@@ -3,6 +3,7 @@
 #   formatting   clang-format on the files already in the repository's style (FORMATTED below)
 #   C            cppcheck over src/ and the platform layers (tools/cppcheck-suppressions.txt)
 #   shell        shellcheck on the Deck's scripts, and on the installer's .desktop (desktop-file-validate too)
+#   AppStream    the AppImage's metainfo, through appstreamcli, offline
 #   Python       a syntax check of the Deck's tools
 #   --tidy       also clang-tidy (.clang-tidy) on the Deck app and the C core: slower, and
 #                advisory (it reports, it doesn't fail the run)
@@ -14,6 +15,7 @@ FORMATTED=(platform/steamdeck/platform.c platform/steamdeck/app/src/*.cpp platfo
 SCRIPTS=(platform/steamdeck/*.sh tools/deck-build.sh tools/lint.sh tests/steamdeck.sh tests/steamdeck_duckstation.sh
          tests/steamdeck_install.sh)
 DESKTOP=platform/steamdeck/RommDeck-Installer.desktop
+METAINFO=platform/steamdeck/io.github.s0liton.RommDeck.appdata.xml
 PYTHON=(platform/steamdeck/add-to-steam.py platform/steamdeck/tools/make-steam-art.py platform/steamdeck/tools/stage-notices.py)
 fail=0
 
@@ -39,6 +41,9 @@ if args[:2] != ["bash", "-c"] or len(args) != 3:
     sys.exit(sys.argv[1] + ": Exec is not bash -c SCRIPT")
 print(args[2])
 ' "$DESKTOP" | shellcheck -S warning -s bash - || fail=1
+
+echo "== appstream"
+appstreamcli validate --no-net "$METAINFO" || fail=1
 
 echo "== python"
 python3 -m py_compile "${PYTHON[@]}" || fail=1
