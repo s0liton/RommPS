@@ -44,6 +44,10 @@ class Kit
     void play(const hui::ui::Feedback &feedback, hui::audio::SoundSet set, bool haptics = true);
     void tick(float dt);
     void apply(const hui::Settings &settings);
+    // In the background (hidden, or behind another window on the desktop) the
+    // pad is let go: SDL polls an open one every millisecond, even while the
+    // app waits for events, and drops its presses there anyway.
+    void set_background(bool background);
 
     std::string assets;
     hui::gfx::GlRenderer renderer;
@@ -61,9 +65,11 @@ class Kit
     hui::gfx::Font faces_[6];
     SDL_Gamepad *pad_ = nullptr;
     SDL_AudioStream *audio_ = nullptr;
+    std::string pad_named_;  // the pad last logged, so coming back from the background is quiet
     std::uint32_t keys_ = 0; // pad_bits the keyboard holds
     float rumble_left_ = 0.0f;
     bool ready_ = false;
+    bool background_ = false;
 };
 
 } // namespace deck

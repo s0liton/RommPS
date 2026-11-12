@@ -65,9 +65,13 @@ file(GLOB screen_sources ${RPS}/examples/rommps/kit/*.cpp)
 set_source_files_properties(${screen_sources} PROPERTIES
 	COMPILE_OPTIONS "-include;${CMAKE_CURRENT_LIST_DIR}/src/deck_prelude.h")
 
+# The quit signal's handler calls libc through the GOT, not the PLT (deck_life.cpp)
+set_source_files_properties(src/deck_life.cpp PROPERTIES COMPILE_OPTIONS "-fno-plt")
+
 add_executable(rommdeck
 	src/main.cpp
 	src/deck_kit.cpp
+	src/deck_life.cpp
 	src/deck_touch.cpp
 	src/stb_image.cpp
 	${kit_sources}

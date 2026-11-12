@@ -3,10 +3,12 @@
 // app talks to it on 127.0.0.1, as RommPS talks to the payload on the PS5.
 //
 // Game Mode (gamescope) gets a full-screen window; Desktop Mode a window of
-// the Deck's size that can be resized, or made full screen with F11.
+// the Deck's size that can be resized, or made full screen with F11. One copy
+// runs per user; it leaves the way deck_life.hpp says.
 //
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "deck_kit.hpp"
+#include "deck_life.hpp"
 #include "deck_prelude.h"
 #include "deck_touch.hpp"
 
@@ -75,7 +77,7 @@ void park()
 }
 void quit()
 {
-    std::exit(0);
+    _exit(0); // never exit(): deck_life.hpp
 }
 } // namespace hui::sys
 
@@ -359,11 +361,54 @@ bool in_game_mode()
     return std::getenv("GAMESCOPE_WAYLAND_DISPLAY") || (desktop && !std::strcmp(desktop, "gamescope"));
 }
 
+// How hard to work. The whole frame rate while the window is seen and used;
+// on the desktop, behind another window, ten frames a second; minimized or
+// hidden, a check on the service now and then and no drawing at all. Nothing
+// waits on the app meanwhile: downloads and syncs are the service's. In Game
+// Mode gamescope says little about focus and the app is the game on screen,
+// so there it always runs flat out.
+enum class Pace
+{
+    full,
+    background,
+    hidden
+};
+
+constexpr Sint32 kBackgroundFrameMs = 100;
+constexpr Sint32 kHiddenTickMs = 500;
+
+Pace pace_of(SDL_Window *window, bool game_mode)
+{
+    if (game_mode)
+        return Pace::full;
+    const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+    if (flags & (SDL_WINDOW_HIDDEN | SDL_WINDOW_MINIMIZED | SDL_WINDOW_OCCLUDED))
+        return Pace::hidden;
+    return (flags & SDL_WINDOW_INPUT_FOCUS) ? Pace::full : Pace::background;
+}
+
+// Another launch knocked: this window comes forward instead. On X11 a
+// minimized window is an unmapped one, and showing it is how it comes back.
+// Wayland's KWin may only flash the task bar (focus stealing prevention);
+// gamescope shows the game it shows. Either way the second copy is gone.
+void come_forward(SDL_Window *window)
+{
+    say("launched again: coming forward");
+    SDL_ShowWindow(window);
+    if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED)
+        SDL_RestoreWindow(window);
+    SDL_RaiseWindow(window);
+}
+
 } // namespace
 
 int main(int argc, char **argv)
 {
-    bool fullscreen = in_game_mode();
+    deck::catch_quit_signals();
+    if (!deck::first_instance())
+        return 0;
+    const bool game_mode = in_game_mode();
+    bool fullscreen = game_mode;
     for (int i = 1; i < argc; i++)
     {
         if (!std::strcmp(argv[i], "--fullscreen"))
@@ -372,11 +417,13 @@ int main(int argc, char **argv)
             fullscreen = false;
     }
     SDL_SetAppMetadata("RommDeck", nullptr, "rommdeck");
+    SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD | SDL_INIT_AUDIO))
     {
         say("SDL: %s", SDL_GetError());
         return 1;
     }
+    deck::wake_on_knocks();
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 6);
@@ -427,20 +474,36 @@ int main(int argc, char **argv)
     std::vector<Press> presses = scripted_presses(now_seconds());
     Pointer pointer(window);
     std::vector<Stroke> strokes = scripted_touches(now_seconds());
+    const bool scripted = !shot.path.empty() || !presses.empty() || !strokes.empty(); // never slowed
 
     Uint64 last = SDL_GetTicksNS();
     float options_held = 0.0f; // holding the menu button a second closes, as on the PS5
-    for (bool running = true; running;)
+    for (;;)
     {
-        for (SDL_Event e; SDL_PollEvent(&e);)
+        // Out of sight or out of focus, the loop sleeps until something
+        // happens or the next frame is due
+        Pace pace = scripted ? Pace::full : pace_of(window, game_mode);
+        SDL_Event e;
+        bool got = pace == Pace::full
+                       ? SDL_PollEvent(&e)
+                       : SDL_WaitEventTimeout(&e, pace == Pace::hidden ? kHiddenTickMs : kBackgroundFrameMs);
+        for (; got; got = SDL_PollEvent(&e))
         {
+            // The window's close button: out, now, without waiting on the
+            // quit event SDL may or may not send after it
+            if (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED)
+                deck::leave(kit, "the window was closed");
             if (e.type == SDL_EVENT_QUIT)
-                running = false;
-            else if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F11 && !e.key.repeat)
+                deck::leave(kit, "SDL asked to quit");
+            if (e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_F11 && !e.key.repeat)
                 SDL_SetWindowFullscreen(window, !(SDL_GetWindowFlags(window) & SDL_WINDOW_FULLSCREEN));
             kit.event(e);
             pointer.event(e);
         }
+        if (deck::knocked())
+            come_forward(window);
+        pace = scripted ? Pace::full : pace_of(window, game_mode);
+        kit.set_background(pace != Pace::full);
         const Uint64 now = SDL_GetTicksNS();
         const float dt = std::min(static_cast<float>(now - last) / 1e9f, 0.05f);
         last = now;
@@ -460,7 +523,7 @@ int main(int argc, char **argv)
             }
         options_held = (input.held & hui::action_bit(hui::Action::menu)) ? options_held + dt : 0.0f;
         if (options_held >= 1.0f)
-            running = false;
+            deck::leave(kit, "the menu button was held");
         telemetry.push(dt * 1000.0f);
         screen->update(input, dt, feedback);
         if (context.settings_changed)
@@ -471,6 +534,8 @@ int main(int argc, char **argv)
         kit.play(feedback, screen->info().sounds, choices.haptics);
         feedback.clear();
         kit.tick(dt);
+        if (pace == Pace::hidden)
+            continue; // nobody to draw for
 
         frame.reset();
         frame.glass_texture = kit.renderer.glass_texture();
@@ -494,14 +559,8 @@ int main(int argc, char **argv)
         if (!shot.path.empty() && now_seconds() >= shot.at)
         {
             save_frame(shot.path, w, h);
-            running = false;
+            deck::leave(kit, "the frame is saved");
         }
         SDL_GL_SwapWindow(window);
     }
-    screen.reset();
-    kit.release();
-    SDL_GL_DestroyContext(gl);
-    SDL_DestroyWindow(window);
-    SDL_Quit();
-    return 0;
 }

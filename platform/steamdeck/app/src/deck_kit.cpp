@@ -201,17 +201,35 @@ void Kit::release()
 
 void Kit::open_first_gamepad()
 {
-    if (pad_)
+    if (pad_ || background_)
         return;
     int count = 0;
     SDL_JoystickID *ids = SDL_GetGamepads(&count);
     if (ids && count > 0)
     {
         pad_ = SDL_OpenGamepad(ids[0]);
-        if (pad_)
-            say("gamepad: %s", SDL_GetGamepadName(pad_));
+        const char *name = pad_ ? SDL_GetGamepadName(pad_) : nullptr;
+        if (name && pad_named_ != name)
+        {
+            pad_named_ = name;
+            say("gamepad: %s", name);
+        }
     }
     SDL_free(ids);
+}
+
+void Kit::set_background(bool background)
+{
+    if (background == background_)
+        return;
+    background_ = background;
+    if (!background)
+        open_first_gamepad();
+    else if (pad_)
+    {
+        SDL_CloseGamepad(pad_);
+        pad_ = nullptr;
+    }
 }
 
 void Kit::event(const SDL_Event &e)

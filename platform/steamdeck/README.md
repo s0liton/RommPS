@@ -65,7 +65,7 @@ This puts RommDeck in `~/.local/share/rommdeck`, adds it to Desktop Mode's appli
 
 ### How it runs
 
-RommDeck's background service is a systemd user service (`romm-sync.service`) that starts with your session, in Game Mode and Desktop Mode alike. RommDeck is just the window into it: close the app and syncing carries on.
+RommDeck's background service is a systemd user service (`romm-sync.service`) that starts with your session, in Game Mode and Desktop Mode alike. RommDeck is just the window into it: close the app and syncing carries on. One copy of the app opens at a time; launching it again brings that one forward.
 
 ```sh
 systemctl --user status romm-sync     # is it running?
