@@ -132,6 +132,7 @@ jobs:
         run: |
           V="${TAG#v}"
           for file in "rommdeck-$V-x86_64.tar.gz" "RommDeck-$V-x86_64.AppImage" \
+                      RommDeck-Installer.desktop rommdeck-installer.sh \
                       romm-sync-steamdeck manifest-steamdeck.json manifest-steamdeck.sig; do
             [ -s "dist/$file" ] || { echo "::error::dist/$file is missing"; exit 1; }
           done

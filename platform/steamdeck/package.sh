@@ -9,7 +9,10 @@
 #   rommdeck-<version>-x86_64.tar.gz   the app, RomM Sync and install.sh (--steam adds it to Steam)
 #   RommDeck-<version>-x86_64.AppImage one file: each launch installs or updates RomM Sync, the
 #                                      background service, then opens the app
-# Both carry licenses/ (tools/stage-notices.py): every part's licence, beside the programs.
+#   RommDeck-Installer.desktop         what most people download: double-clicked, it runs
+#   rommdeck-installer.sh              the latest release's installer, which installs, updates
+#                                      or removes the AppImage, the service and the Steam shortcut
+# The tarball and the AppImage carry licenses/ (tools/stage-notices.py): every part's licence, beside the programs.
 set -euo pipefail
 VERSION="${1:?usage: package.sh VERSION [OUT_DIR]}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -37,12 +40,12 @@ chmod 755 "$T/rommdeck" "$T/romm-sync" "$T/install.sh" "$T/install-service.sh" "
 tar -C "$WORK" -czf "$OUT/rommdeck-$VERSION-x86_64.tar.gz" rommdeck
 
 # The AppImage: the same files under usr/lib/rommdeck (the app finds assets/
-# beside itself, install-service.sh the licences), and a launcher that keeps
-# the service installed.
+# and add-to-steam.py beside itself, install-service.sh the licences), and a
+# launcher that keeps the service installed.
 A="$WORK/RommDeck.AppDir"
 mkdir -p "$A/usr/lib/rommdeck"
-cp "$B/app/rommdeck" "$B/romm-sync" "$HERE/install-service.sh" "$A/usr/lib/rommdeck/"
-cp -a "$B/app/assets" "$WORK/licenses" "$A/usr/lib/rommdeck/"
+cp "$B/app/rommdeck" "$B/romm-sync" "$HERE/install-service.sh" "$HERE/add-to-steam.py" "$A/usr/lib/rommdeck/"
+cp -a "$B/app/assets" "$WORK/licenses" "$WORK/steam-art" "$A/usr/lib/rommdeck/"
 cp "$WORK/steam-art/icon.png" "$A/rommdeck.png"
 cat > "$A/rommdeck.desktop" <<EOF
 [Desktop Entry]
@@ -59,11 +62,27 @@ cat > "$A/AppRun" <<'EOF'
 #!/bin/sh
 # RommDeck's AppImage: RomM Sync, the background service, has to outlive the
 # app, so its copy is installed (or updated) outside the AppImage first.
+#
+# rommdeck-installer.sh borrows the rest of an install from in here, so the
+# release being installed is the one that knows how:
+#   --install-service       install or update the service, and nothing else
+#   --add-to-steam ARGS...  add-to-steam.py, with this AppImage's artwork
+#   --icon                  the icon, a PNG on stdout, for the menu entry
 HERE="$(dirname "$(readlink -f "$0")")"
-bash "$HERE/usr/lib/rommdeck/install-service.sh" "$HERE/usr/lib/rommdeck/romm-sync" >&2 || \
-    echo "RommDeck: couldn't install its background service" >&2
-exec "$HERE/usr/lib/rommdeck/rommdeck" "$@"
+L="$HERE/usr/lib/rommdeck"
+case "${1:-}" in
+    --install-service) exec bash "$L/install-service.sh" "$L/romm-sync" ;;
+    --add-to-steam) shift; exec python3 "$L/add-to-steam.py" --art "$L/steam-art" "$@" ;;
+    --icon) exec cat "$L/steam-art/icon.png" ;;
+esac
+bash "$L/install-service.sh" "$L/romm-sync" >&2 || echo "RommDeck: couldn't install its background service" >&2
+exec "$L/rommdeck" "$@"
 EOF
-chmod 755 "$A/AppRun" "$A/usr/lib/rommdeck/rommdeck" "$A/usr/lib/rommdeck/romm-sync" "$A/usr/lib/rommdeck/install-service.sh"
+chmod 755 "$A/AppRun" "$A/usr/lib/rommdeck/rommdeck" "$A/usr/lib/rommdeck/romm-sync" \
+    "$A/usr/lib/rommdeck/install-service.sh" "$A/usr/lib/rommdeck/add-to-steam.py"
 ARCH=x86_64 appimagetool --no-appstream --runtime-file /opt/appimage-runtime-x86_64 "$A" "$OUT/RommDeck-$VERSION-x86_64.AppImage" >/dev/null
+
+# The installer: the same two files in every release, so a .desktop kept from
+# an old one still runs the newest installer.
+cp "$HERE/RommDeck-Installer.desktop" "$HERE/rommdeck-installer.sh" "$OUT/"
 ls -la "$OUT"

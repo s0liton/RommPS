@@ -1,0 +1,16 @@
+#!/usr/bin/env xdg-open
+# RommDeck's one-click installer, the way Decky Loader and EmuDeck ship
+# theirs: download it in Desktop Mode, double-click it, Continue. All it does
+# is fetch rommdeck-installer.sh from the latest release (never a prerelease)
+# and run it, so an old copy of this file still installs the newest RommDeck.
+#
+# Exec is one double-quoted argument with no $, backslash or % in it: the
+# Desktop Entry spec's quoting rules and KDE's agree on that much.
+[Desktop Entry]
+Type=Application
+Name=RommDeck Installer
+Comment=Install, update or uninstall RommDeck
+Icon=system-software-install
+Exec=bash -c "mkdir -p ~/.cache && if curl -fsSL --proto-redir =https --connect-timeout 30 -o ~/.cache/rommdeck-installer.sh https://github.com/s0liton/RommDeck/releases/latest/download/rommdeck-installer.sh; then bash ~/.cache/rommdeck-installer.sh; else kdialog --title RommDeck --error 'Could not download the RommDeck installer. Check your connection and try again.' || zenity --error --title RommDeck --text 'Could not download the RommDeck installer. Check your connection and try again.'; fi; rm -f ~/.cache/rommdeck-installer.sh"
+Terminal=false
+StartupNotify=false

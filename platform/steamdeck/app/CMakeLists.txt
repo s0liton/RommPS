@@ -68,6 +68,7 @@ set_source_files_properties(${screen_sources} PROPERTIES
 add_executable(rommdeck
 	src/main.cpp
 	src/deck_kit.cpp
+	src/deck_steam.cpp
 	src/deck_touch.cpp
 	src/stb_image.cpp
 	${kit_sources}

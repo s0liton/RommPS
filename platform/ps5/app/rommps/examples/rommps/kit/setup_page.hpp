@@ -243,6 +243,9 @@ class SetupPage
     // 5
     Config finish_;
     bool finish_known_ = false;
+#if defined(ROMMPS_DECK)
+    bool steam_armed_ = false; // Add to Steam pressed once: the next press restarts Steam
+#endif
 };
 
 } // namespace rommps

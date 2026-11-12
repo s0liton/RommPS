@@ -8,6 +8,9 @@
 #include "touch.hpp"
 #include "core/tween.hpp"
 #include "ui/motion.hpp"
+#if defined(ROMMPS_DECK)
+#include "deck_steam.hpp"
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -226,6 +229,9 @@ void SetupPage::enter()
     go(kServer);
     error_.clear();
     url_known_ = false;
+#if defined(ROMMPS_DECK)
+    deck::steam::look(); // known by the last step, so its row doesn't pop in under the pad
+#endif
 }
 
 void SetupPage::go(Step step)
@@ -251,6 +257,9 @@ void SetupPage::go(Step step)
     case kFinish:
         finish_known_ = false;
         error_.clear();
+#if defined(ROMMPS_DECK)
+        steam_armed_ = false;
+#endif
         break;
     default:
         break;
@@ -1457,7 +1466,8 @@ void SetupPage::update_preview(App &app, const hui::InputFrame &pad, float dt, h
 // ------------------------------------------------------------------ finish
 
 // Finish rows: 0 policy, 1 on change, 2 on exit, 3 on start, 4 notify,
-// 5 interval, 6 finish. The sync ones only with save sync on.
+// 5 interval, 6 finish, 7 add to Steam (RommDeck). The sync ones only with
+// save sync on.
 std::vector<Row> SetupPage::finish_rows(std::vector<int> *ids) const
 {
     const Config &c = finish_;
@@ -1478,6 +1488,36 @@ std::vector<Row> SetupPage::finish_rows(std::vector<int> *ids) const
     add({RowKind::toggle, "Notifications", "", "", c.notify}, 4);
     if (save_sync_)
         add({RowKind::choice, "Sync every", interval_label(c.sync_interval_min), ""}, 5);
+#if defined(ROMMPS_DECK)
+    // Not in Steam yet (an AppImage run from Downloads, say): from here, with
+    // its artwork, rather than Steam's Add a Non-Steam Game.
+    using deck::steam::Shortcut;
+    const Shortcut steam = deck::steam::state();
+    if (steam == Shortcut::missing || steam == Shortcut::adding || steam == Shortcut::added ||
+        steam == Shortcut::failed)
+    {
+        Row to_steam{RowKind::action, "Add " ROMM_APP " to Steam", "", "Steam needs to restart to add " ROMM_APP};
+        if (steam == Shortcut::adding)
+        {
+            to_steam.value = "Adding";
+            to_steam.enabled = false;
+        }
+        else if (steam == Shortcut::added)
+        {
+            to_steam.value = "Added";
+            to_steam.detail = "It's in your Steam library";
+            to_steam.enabled = false;
+        }
+        else if (steam_armed_)
+            to_steam.value = "Press again to restart Steam";
+        else if (steam == Shortcut::failed)
+        {
+            to_steam.value = "Try again";
+            to_steam.detail = "Couldn't add it: " + deck::steam::error();
+        }
+        add(to_steam, 7);
+    }
+#endif
     Row done{RowKind::action, save_sync_ ? "Finish and sync" : "Finish", "", ""};
     done.enabled = !busy_;
     add(done, 6);
@@ -1497,6 +1537,12 @@ void SetupPage::update_finish(App &app, const hui::InputFrame &pad, float dt, hu
     input = rows_.touch(input, rows);
     const RowEvent e = rows_.handle(rows, input, feedback);
     rows_.update(dt, static_cast<int>(rows.size()), kRows.h);
+#if defined(ROMMPS_DECK)
+    // Armed only while it keeps the focus.
+    const int focused = std::clamp(rows_.focus(), 0, static_cast<int>(ids.size()) - 1);
+    if (steam_armed_ && ids[static_cast<std::size_t>(focused)] != 7)
+        steam_armed_ = false;
+#endif
     if (input.is_pressed(Action::back))
     {
         feedback.play(Cue::back);
@@ -1550,6 +1596,18 @@ void SetupPage::update_finish(App &app, const hui::InputFrame &pad, float dt, hu
         });
         break;
     }
+#if defined(ROMMPS_DECK)
+    case 7:
+        // Steam closes and starts again: a second press, as Settings asks for its lasting ones.
+        if (!steam_armed_)
+        {
+            steam_armed_ = true;
+            break;
+        }
+        steam_armed_ = false;
+        deck::steam::add();
+        break;
+#endif
     default:
         break;
     }
