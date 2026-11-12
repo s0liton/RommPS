@@ -9,6 +9,7 @@
 #include "core/save_file.hpp"
 #include "ui/components/component.hpp"
 
+#include <iterator>
 #include <string>
 #include <sys/stat.h>
 #include <vector>
@@ -135,6 +136,19 @@ const std::vector<Look> &all()
 int g_current = -1; // -1: not read yet
 int g_sounds = -1;  // the same
 
+// The sounds as saved and as shown, in Sounds' order. Before there was a
+// choice the file said "on" or "off": "on" was the menu sounds, which is also
+// what anything unknown gets. Older versions hear anything but "off" as on.
+const struct
+{
+    const char *id;
+    const char *name;
+} kSounds[] = {
+    {"metal-gear", "Metal Gear Solid"}, {"paper", "Paper"}, {"glass", "Glass"}, {"tones", "Tones"}, {"off", "Off"},
+};
+constexpr int kSoundsCount = static_cast<int>(Sounds::count);
+static_assert(std::size(kSounds) == static_cast<std::size_t>(kSoundsCount), "a name for every Sounds");
+
 } // namespace
 
 int look_count()
@@ -181,24 +195,41 @@ void set_look(int index)
         loosen(kPath, 0666);
 }
 
-bool ui_sounds()
+const char *sounds_name(Sounds sounds)
+{
+    const int i = static_cast<int>(sounds);
+    return i >= 0 && i < kSoundsCount ? kSounds[i].name : "";
+}
+
+Sounds ui_sounds()
 {
     if (g_sounds < 0)
     {
-        std::string v;
-        g_sounds = ps5TestRun || !hui::save::read_file(kSoundsPath, &v, 16) || v.rfind("off", 0) != 0;
+        g_sounds = 0; // a test run hears the default, as does a file that says "on"
+        std::string id;
+        if (!ps5TestRun && hui::save::read_file(kSoundsPath, &id, 16))
+        {
+            while (!id.empty() && (id.back() == '\n' || id.back() == '\r' || id.back() == ' '))
+                id.pop_back();
+            for (int i = 0; i < kSoundsCount; ++i)
+                if (id == kSounds[i].id)
+                    g_sounds = i;
+        }
     }
-    return g_sounds != 0;
+    return static_cast<Sounds>(g_sounds);
 }
 
-void set_ui_sounds(bool on)
+void set_ui_sounds(Sounds sounds)
 {
-    g_sounds = on;
+    const int i = static_cast<int>(sounds);
+    if (i < 0 || i >= kSoundsCount)
+        return;
+    g_sounds = i;
     if (ps5TestRun)
         return;
     hui::save::ensure_directory(kFolder);
     loosen(kFolder, 0777);
-    if (hui::save::write_atomic(kSoundsPath, on ? "on\n" : "off\n").empty())
+    if (hui::save::write_atomic(kSoundsPath, std::string(kSounds[i].id) + "\n").empty())
         loosen(kSoundsPath, 0666);
 }
 
@@ -212,3 +243,29 @@ void draw_panel(hui::gfx::DrawList &list, const Look &look, const hui::gfx::Rect
 }
 
 } // namespace rommps
+
+extern "C" void rommps_play_sounds(hui::ui::Feedback &feedback, hui::audio::Mixer &mixer, hui::audio::SoundBank &menu,
+                                   hui::audio::SoundBank &kit, hui::audio::SoundSet design)
+{
+    using hui::audio::SoundSet;
+    using rommps::Sounds;
+    static hui::audio::SoundBank tones; // records nothing: every cue falls through to its tone
+    const Sounds sounds = rommps::ui_sounds();
+    for (const hui::audio::CueEvent &event : feedback.cues)
+    {
+        const SoundSet set = event.set == SoundSet::count ? design : event.set;
+        if (sounds == Sounds::metal_gear)
+            menu.play(mixer, set, event);
+        else if (sounds == Sounds::paper || sounds == Sounds::glass)
+            kit.play(mixer, sounds == Sounds::paper ? SoundSet::paper : SoundSet::glass, event);
+        else if (sounds == Sounds::tones)
+        {
+            // The tones were meant to stand in for a missing recording, not
+            // beside the sets, and sit about 12 dB over them: a quarter evens it out.
+            hui::audio::CueEvent quieter = event;
+            quieter.gain *= 0.25f;
+            tones.play(mixer, set, quieter);
+        }
+    }
+    feedback.cues.clear();
+}

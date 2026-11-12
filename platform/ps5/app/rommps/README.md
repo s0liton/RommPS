@@ -14,7 +14,7 @@ tools/ps5-app-build.sh bash -c 'cd /repo/platform/ps5/app/rommps && bash ps5/too
 tools/release-app.sh v1.2.3                                                                           # the release zip
 ```
 
-The menu sounds are in `platform/ps5/app/assets/primary-menu-sounds/`, one WAV per kit cue (`focus_01.wav`, `back_01.wav` and so on).
+The menu sounds are in `platform/ps5/app/assets/primary-menu-sounds/`, one WAV per kit cue (`focus_01.wav`, `back_01.wav` and so on). They're the default in Settings' Interface sounds; the kit's Paper and Glass sets, its Tones, and Off are the alternatives (`kit/rommps_look.cpp`).
 
 ## Licences
 
