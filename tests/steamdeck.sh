@@ -424,6 +424,20 @@ restart "$T/sdonly/home" ROMM_SYNC_MEDIA="$T/media" USER=deck
 since | grep -q "EmuDeck: games in $CARD/Emulation/roms, saves in $CARD/Emulation/saves$" \
   || fail "EmuDeck's folder on the card: $(since | grep EmuDeck)"
 
+# The folder picker, with the Deck's own starting places (1.0.0 had the PS5's
+# and found nothing): home, the card once (SteamOS links /run/media/<label> to
+# /run/media/<user>/<label>), an older SteamOS's card at /run/media/<label>,
+# then "/". Hidden folders show, a Flatpak's own above all.
+ln -s "$CARD" "$T/media/Emulation"
+mkdir -p "$T/media/mmcblk0p1" "$T/sdonly/home/.var/app/org.example.Emu"
+places=$(curl -sf "$API/api/fs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["folders"])')
+[[ "$places" == "['$T/sdonly/home', '$CARD', '$T/media/mmcblk0p1', '/']" ]] || fail "where the picker starts: $places"
+hid=$(curl -sf "$API/api/fs?path=$T/sdonly/home" | python3 -c 'import json,sys; print(json.load(sys.stdin)["folders"])')
+[[ "$hid" == "['.var']" ]] || fail "hidden folders in the picker: $hid"
+fp=$(curl -sf "$API/api/fs?path=$T/sdonly/home/.var/app" | python3 -c 'import json,sys; j=json.load(sys.stdin); print(j["folders"], j["parent"])')
+[[ "$fp" == "['org.example.Emu'] $T/sdonly/home/.var" ]] || fail "a Flatpak's folder in the picker: $fp"
+rm "$T/media/Emulation"; rm -r "$T/media/mmcblk0p1" "$T/sdonly/home/.var"
+
 # Eden as Flathub has it: no folder of the machine's to see. Its user's
 # UUID is a real Deck's (Eden made it, "Eden"); a second user after it.
 start_on() { # HOME, then more VAR=value for the service, as restart has them
