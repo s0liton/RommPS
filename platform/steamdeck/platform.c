@@ -161,6 +161,44 @@ static void media_bases(char bases[2][PATH_MAX_LEN]) {
     snprintf(bases[1], PATH_MAX_LEN, "%s/%s", media, env_or("USER", "deck"));
 }
 
+/* One of plat_fs_places', unless it's another way to a folder already there. */
+static int add_place(char (*places)[PATH_MAX_LEN], int n, int max, dev_t *devs, ino_t *inos, const char *p) {
+    struct stat st;
+    if (n >= max || stat(p, &st) || !S_ISDIR(st.st_mode)) return n;
+    for (int i = 0; i < n; i++)
+        if (devs[i] == st.st_dev && inos[i] == st.st_ino) return n;
+    devs[n] = st.st_dev;
+    inos[n] = st.st_ino;
+    str_copy(places[n], PATH_MAX_LEN, p);
+    return n + 1;
+}
+
+int plat_fs_places(char (*places)[PATH_MAX_LEN], int max) {
+    /* Home, then each card and drive mounted now, once: SteamOS mounts a card
+     * at /run/media/<user>/<label> and links /run/media/<label> to it, so the
+     * user's folder goes first and the link is skipped (older SteamOS mounts
+     * at /run/media/<label> alone, and that one stays). */
+    dev_t devs[16];
+    ino_t inos[16];
+    if (max > 16) max = 16;
+    int n = add_place(places, 0, max, devs, inos, g_home);
+    char bases[2][PATH_MAX_LEN];
+    media_bases(bases);
+    const char *user = env_or("USER", "deck");
+    for (int b = 1; b >= 0; b--) {
+        DIR *d = opendir(bases[b]);
+        struct dirent *de;
+        while (d && (de = readdir(d))) {
+            if (de->d_name[0] == '.' || (b == 0 && !strcmp(de->d_name, user))) continue;
+            char p[PATH_MAX_LEN];
+            path_join(p, sizeof p, bases[b], de->d_name);
+            n = add_place(places, n, max, devs, inos, p);
+        }
+        if (d) closedir(d);
+    }
+    return n;
+}
+
 /* ~/retrodeck, else a retrodeck folder on a mounted card or drive. */
 static void guess_rdhome(void) {
     char p[PATH_MAX_LEN];

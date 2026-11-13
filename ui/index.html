@@ -772,12 +772,19 @@ function openPicker(slug, which) {
 function browse(path) {
   api("GET", "/api/fs?path=" + encodeURIComponent(path)).then(function (r) {
     wz.pick.path = r.path; wz.pick.parent = r.parent;
-    $("pickPath").textContent = r.path || "Pick a drive";
+    $("pickPath").textContent = r.path || "Pick where to start";
     $("pickUse").disabled = !r.path; $("pickUp").disabled = !r.path;
     $("pickList").innerHTML = r.folders.map(function (f) { return '<button class="small" style="display:block;margin:4px 0" data-f="' + esc(f) + '">' + esc(f) + "</button>"; }).join("") ||
       '<p class="muted">No folders here</p>';
-    each("#pickList button[data-f]", function (b) { b.onclick = function () { browse(r.path ? r.path + "/" + b.dataset.f : b.dataset.f); }; });
-  }).catch(function () { if (path) browse(""); });
+    each("#pickList button[data-f]", function (b) { b.onclick = function () { browse(!r.path ? b.dataset.f : r.path === "/" ? "/" + b.dataset.f : r.path + "/" + b.dataset.f); }; });
+  }).catch(function () {
+    // Not there (yet) or won't open: the nearest folder above it that will, then where to start.
+    if (!path) return;
+    var up = path === "/" ? "" : path.replace(/\/[^\/]*\/?$/, "");
+    if (up === path) up = "";
+    else if (!up && path !== "/") up = "/";
+    browse(up);
+  });
 }
 $("pickUse").onclick = function () { wz.own[wz.pick.slug].folders[wz.pick.which] = wz.pick.path; $("picker").style.display = "none"; renderOwn(); };
 $("pickUp").onclick = function () { browse(wz.pick.parent || ""); };

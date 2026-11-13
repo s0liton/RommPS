@@ -777,9 +777,14 @@ void SetupPage::browse(App &app, const std::string &path)
         fs_loading_ = false;
         if (!r.ok())
         {
-            // A folder that's gone: back to the drives.
+            // A folder that isn't there (yet) or won't open: the nearest one above it that will, then where to start.
             if (!asked.empty())
-                browse(*a, "");
+            {
+                const std::size_t slash = asked.find_last_of('/');
+                browse(*a, asked == "/" || slash == std::string::npos ? std::string()
+                           : slash == 0                               ? std::string("/")
+                                                                      : asked.substr(0, slash));
+            }
             else
                 fs_error_ = r.message();
             return;
@@ -803,7 +808,7 @@ void SetupPage::update_picker(App &app, const hui::InputFrame &pad, float dt, hu
     if (!at_drives)
     {
         rows.push_back({RowKind::action, "Use this folder", "", fs_path_});
-        rows.push_back({RowKind::action, "Up", "", fs_parent_.empty() ? "The drives" : fs_parent_});
+        rows.push_back({RowKind::action, "Up", "", fs_parent_.empty() ? "Where to start" : fs_parent_});
     }
     for (const std::string &f : fs_folders_)
         rows.push_back({RowKind::action, f, "", ""});
@@ -839,7 +844,7 @@ void SetupPage::update_picker(App &app, const hui::InputFrame &pad, float dt, hu
     }
     if (i >= 0 && i < static_cast<int>(fs_folders_.size()))
         browse(app, at_drives ? fs_folders_[static_cast<std::size_t>(i)]
-                              : fs_path_ + "/" + fs_folders_[static_cast<std::size_t>(i)]);
+                              : (fs_path_ == "/" ? fs_path_ : fs_path_ + "/") + fs_folders_[static_cast<std::size_t>(i)]);
 }
 
 void SetupPage::draw_picker(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, const Look &look, float clock) const
@@ -853,12 +858,12 @@ void SetupPage::draw_picker(hui::gfx::DrawList &list, const hui::ui::Fonts &font
     char title[160];
     std::snprintf(title, sizeof title, "Choose the %s folder", kWhat[pick_which_]);
     draw_heading(list, fonts, look, title,
-                 "For " + name + (fs_path_.empty() ? ": pick a drive, then the folder." : ": " + fs_path_));
+                 "For " + name + (fs_path_.empty() ? ": pick where to start, then the folder." : ": " + fs_path_));
     std::vector<Row> rows;
     if (!fs_path_.empty())
     {
         rows.push_back({RowKind::action, "Use this folder", "", fs_path_});
-        rows.push_back({RowKind::action, "Up", "", fs_parent_.empty() ? "The drives" : fs_parent_});
+        rows.push_back({RowKind::action, "Up", "", fs_parent_.empty() ? "Where to start" : fs_parent_});
     }
     for (const std::string &f : fs_folders_)
         rows.push_back({RowKind::action, f, "", ""});

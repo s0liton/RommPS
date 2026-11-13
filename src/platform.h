@@ -152,6 +152,13 @@ void plat_mounts_set(const plat_mount *mounts, int n);
  * on the real folder: what's in it then is another folder's). */
 int plat_is_mount(const char *path);
 
+/* The folder picker's shortcuts, the places worth going straight to (home,
+ * cards, drives), each an absolute folder that's there now; the picker adds
+ * "/" for everything else. Every platform names its own: there's no shared
+ * default, because the last one was the PS5's and the Deck got it.
+ * places[i] holds PATH_MAX_LEN (1024). How many it wrote, at most max. */
+int plat_fs_places(char (*places)[1024], int max);
+
 /* plat_info()->name. */
 const char *plat_name(void);
 
