@@ -1,0 +1,52 @@
+# The end-to-end tests again, against a service built with AddressSanitizer
+# and UndefinedBehaviorSanitizer: a read past a buffer, a use after free or a
+# signed overflow that happens to work today fails here instead of on
+# someone's console. Unit tests already run sanitized (Makefile); the service
+# itself didn't.
+#
+# Its own workflow on purpose: dev.yml and the release run ci.yml, and this
+# one gates neither. It publishes nothing.
+name: Sanitizers
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sanitizers-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    env:
+      # Every report goes to a file of its own (log_path.<pid>), the daemons'
+      # included, whatever log they write. AddressSanitizer stops the process
+      # at its first report; UndefinedBehaviorSanitizer reports and goes on,
+      # so the run still ends, and the files say what went wrong.
+      # Leaks aren't checked yet: the tests end the service with a kill.
+      ASAN_OPTIONS: log_path=${{ github.workspace }}/sanitizer/asan:detect_leaks=0:abort_on_error=1
+      UBSAN_OPTIONS: log_path=${{ github.workspace }}/sanitizer/ubsan:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev zlib1g-dev
+      - run: mkdir -p sanitizer
+      - name: Build sanitized
+        run: make host tools EXTRA_CFLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g"
+      - run: tests/e2e.sh
+      - run: tests/ps2_e2e.sh
+      - run: tests/autostart.sh
+      - name: No sanitizer reports
+        if: always()
+        run: |
+          if compgen -G "sanitizer/*" >/dev/null; then
+            for f in sanitizer/*; do echo "== $f"; head -60 "$f"; done
+            echo "::error::the sanitizers reported the problems above"
+            exit 1
+          fi
+          echo "No reports."
