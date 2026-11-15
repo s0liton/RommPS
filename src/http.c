@@ -1216,8 +1216,9 @@ static const char *cert_alert(const char *errbuf) {
  * and its alert often comes when the request is already on its way: curl
  * sees only a broken pipe or a reset. With TLS 1.2 the alert ends the
  * handshake itself, so a connection like that tells what went wrong. At most
- * every 30 s per server. */
-static void cert_probe(const char *url) {
+ * every 30 s per server. after_handshake: the connection that broke got
+ * through its own (TLS 1.3) handshake first. */
+static void cert_probe(const char *url, int after_handshake) {
     char o[200];
     url_origin(url, o, sizeof o);
     pthread_mutex_lock(&g_cc_lock);
@@ -1238,6 +1239,16 @@ static void cert_probe(const char *url) {
     curl_easy_setopt(c, CURLOPT_NOBODY, 1L);
     curl_easy_setopt(c, CURLOPT_TIMEOUT, 15L);
     CURLcode rc = curl_easy_perform(c);
+    /* Servers on OpenSSL (HAProxy, Python's ssl) turn a TLS 1.2 client away
+     * with a bare "handshake failure" when it has no certificate, or one they
+     * won't take. The same server just finished a TLS 1.3 handshake with us,
+     * so it isn't the ciphers or the version: it's the certificate. */
+    if (after_handshake && rc != CURLE_OK && !cert_alert(errbuf) && strstr(errbuf, "alert handshake failure")) {
+        pthread_mutex_lock(&g_cc_lock);
+        const int have = g_cc_cert != NULL;
+        pthread_mutex_unlock(&g_cc_lock);
+        snprintf(errbuf, sizeof errbuf, "alert %s", have ? "bad certificate" : "certificate required");
+    }
     cert_note(url, rc, errbuf, 0);
     curl_slist_free_all(hdrs);
     handle_give(c);
@@ -1249,7 +1260,7 @@ static void cert_note(const char *url, CURLcode rc, const char *errbuf, int may_
         /* The connection broke without a word: perhaps a TLS 1.3 alert lost. */
         if (may_probe && !strncmp(url, "https://", 8) &&
             (rc == CURLE_SEND_ERROR || rc == CURLE_RECV_ERROR || rc == CURLE_SSL_CONNECT_ERROR))
-            cert_probe(url);
+            cert_probe(url, rc != CURLE_SSL_CONNECT_ERROR);
         return;
     }
     char o[200];
