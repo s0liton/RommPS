@@ -36,6 +36,8 @@
  *         sits ("prefixes/{game_id}/drive_c/users/prospero": a Wine prefix
  *         per game, prospero-win's). The folder the id names is the
  *         emulator's to make, never ours: without it, bundle.dir is "".
+ *         It's found in any case, and spelled the emulator's way too
+ *         ("mina-the-hollower" for "Mina the Hollower").
  *   scummvm  <target>.<number> and <target>.s<number> files in ScummVM's
  *         save folder, as themselves at the zip's top ("monkey2.000")
  *   ps2   the game's save folders on the slots' PCSX2 folder cards, or a file
