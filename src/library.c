@@ -168,6 +168,7 @@ static const struct {
     {"wii", "Nintendo Wii"},
     {"wiiu", "Nintendo Wii U"},
     {"switch", "Nintendo Switch"},
+    {"switch-2", "Nintendo Switch 2"},
     {"genesis,genesis-slash-megadrive,megadrive", "Sega Mega Drive / Genesis"},
     {"sms,mastersystem", "Sega Master System"},
     {"gamegear,gg", "Sega Game Gear"},

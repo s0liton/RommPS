@@ -835,4 +835,58 @@ twosyncs
 [[ "$(fwrecs "$REG")" == "$NCA1.nca/00 $NCA3.nca/00 $NCA2.nca/00 " && $(($(fwhits) - before)) -eq 1 ]] \
   || fail "once it comes down, only the NCA missing: $(fwrecs "$REG"), $(($(fwhits) - before)) downloads"
 
+echo "22. Lichii (Switch 2): found by its AppImage, a game RomM keeps as a folder with a .nup of no telling name comes down to roms/switch2, which goes into Lichii's list, deep; its save by the title id inside the .nup"
+stop
+L="$T/lichii/home"; LM="$L/Emulation"; LN="$L/.local/share/lichii/nand"; LQ="$L/.config/lichii/qt-config.ini"
+mkdir -p "$LM/roms" "$LM/saves" "$LM/tools/launchers" "$L/.config/EmuDeck" "$L/Applications" "$L/.config/lichii" \
+         "$LN/system/save/8000000000000010/su/avators"
+printf 'emulationPath=%s\nromsPath=%s/roms\nsavesPath=%s/saves\nstoragePath=%s/storage\n' "$LM" "$LM" "$LM" "$LM" > "$L/.config/EmuDeck/settings.sh"
+: > "$L/Applications/lichii-linux-x86_64-pgo.AppImage"
+profiles_dat "$LN/system/save/8000000000000010/su/avators/profiles.dat" $UA
+qt_config "$LQ" "$LN" 0 SDMC UserNAND SysNAND
+# The .nup as dumps are: "NUP", where its "TOC" is, and there the game's title id and its update's.
+nup=$(python3 -c "
+import base64,struct
+ids=(0x0400486024DEC000,0x0400486024DEC800)
+b=b'NUP\x01'+struct.pack('<IQ',0x10080,0x80)+bytes(0x70)+b'TOC\x01'+struct.pack('<I',len(ids))+bytes(0x28)
+print(base64.b64encode(b+b''.join(struct.pack('<Q',i)+bytes(0x38) for i in ids)).decode())")
+curl -sf -X POST "$MURL/_admin/platform" -d '{"id":48,"slug":"switch-2","name":"Nintendo Switch 2"}' >/dev/null
+printf '{"id":948,"platform_id":48,"name":"Test Zelda","fs_name":"Test Zelda","files":[{"id":9481,"file_name":"0400486024dec000_v131072.nup","content_b64":"%s"}]}' "$nup" \
+  | curl -sf -X POST "$MURL/_admin/rom" --data-binary @- >/dev/null
+start_on "$L"
+[[ "$(found Lichii 'c[0]["dirs"]["switch-2"]["rom_dir"]')" == "$LM/roms/switch2" ]] || fail "Lichii's games: $(found Lichii 'c[0]["dirs"]')"
+curl -sf "$API/api/setup/detect" | python3 -c '
+import json,sys
+print(json.dumps({"profiles": [c["profile"] for c in json.load(sys.stdin) if c["id"] == "lichii"]}))' > "$T/profiles.json"
+post /api/config "$(cat "$T/profiles.json")" >/dev/null
+[[ "$(curl -sf "$API/api/platforms" | python3 -c 'import json,sys; print([p["name"] for p in json.load(sys.stdin) if p["slug"] == "switch-2"][0])')" == "Nintendo Switch 2" ]] \
+  || fail "Switch 2 isn't named"
+post /api/download '{"rom_id":948,"name":"Test Zelda"}' >/dev/null
+wait_file "$LM/roms/switch2/Test Zelda/0400486024dec000_v131072.nup"
+for _ in $(seq 1 30); do [[ "$(ini "$LQ" UI 'Paths\gamedirs\size')" == 4 ]] && break; sleep 0.5; done
+[[ "$(ini "$LQ" UI 'Paths\gamedirs\4\path')" == "$LM/roms/switch2" && "$(ini "$LQ" UI 'Paths\gamedirs\4\deep_scan')" == true ]] \
+  || fail "Lichii's list of game folders: $(grep gamedirs "$LQ")"
+nx=$(python3 -c "import base64,io,zipfile; b=io.BytesIO(); z=zipfile.ZipFile(b,'w'); z.writestr('0400486024DEC000/save.bin','nx2-from-server'); z.close(); print(base64.b64encode(b.getvalue()).decode())")
+curl -sf -X POST "$MURL/_admin/save" -d "{\"rom_id\":948,\"slot\":\"autosave\",\"file_name\":\"0400486024DEC000.zip\",\"emulator\":\"lichii\",\"content_b64\":\"$nx\"}" >/dev/null
+post /api/sync >/dev/null
+wait_file "$LN/user/save/0000000000000000/$FA/0400486024DEC000/save.bin"
+[[ "$(cat "$LN/user/save/0000000000000000/$FA/0400486024DEC000/save.bin")" == nx2-from-server ]] || fail "RomM's Switch 2 save didn't come down whole"
+sleep 1.1; printf 'nx2-local' > "$LN/user/save/0000000000000000/$FA/0400486024DEC000/save.bin"
+post /api/sync >/dev/null
+up=""
+for _ in $(seq 1 40); do
+    up=$(curl -sf "$MURL/_admin/dump" | python3 -c "
+import json,sys,io,zipfile,urllib.request
+for s in json.load(sys.stdin)['saves']:
+    if s['rom_id'] != 948: continue
+    z = zipfile.ZipFile(io.BytesIO(urllib.request.urlopen('$MURL/_admin/save_content?id=%d' % s['id']).read()))
+    print(s['emulator'], ','.join(sorted(z.namelist())), z.read('0400486024DEC000/save.bin').decode())")
+    [[ "$up" == *"nx2-local"* ]] && break; sleep 0.5
+done
+[[ "$up" == *"lichii 0400486024DEC000/save.bin nx2-local"* ]] || fail "the save changed in Lichii didn't go up: $up"
+mkdir -p "$T/proc/4747"; echo lichii > "$T/proc/4747/comm"
+for _ in $(seq 1 20); do since | grep -q "game lichii started" && break; sleep 0.5; done
+since | grep -q "game lichii started" || fail "Lichii running wasn't seen"
+rm -rf "$T/proc/4747"
+
 echo "PASS"

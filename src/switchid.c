@@ -192,6 +192,22 @@ static int xci_secure(int fd, uint64_t *at) {
     return -1;
 }
 
+/* A Switch 2 .nup: its header says where its table of contents is ("TOC"),
+ * which lists the titles packed in it, 0x40 bytes each from 0x30 on, the
+ * title id first. A game with its update in the same file lists both
+ * (0400486024DEC000, then 0400486024DEC800). Nobody documents the format:
+ * this is what the dumps look like, and anything that looks otherwise is
+ * left alone. No keys needed. */
+static void nup_titles(scan *s) {
+    unsigned char h[16], toc[8], ent[8];
+    if (read_at(s->fd, 0, h, sizeof h) != 0) return;
+    const uint64_t at = le64(h + 8);
+    if (read_at(s->fd, at, toc, sizeof toc) != 0 || memcmp(toc, "TOC\1", 4) != 0) return;
+    const uint32_t n = le32(toc + 4);
+    for (uint32_t i = 0; i < n && i < 64; i++)
+        if (read_at(s->fd, at + 0x30 + (uint64_t)i * 0x40, ent, sizeof ent) == 0) note(s, le64(ent));
+}
+
 /* Opens a game file into s: the files of an NSP, or of an XCI's secure
  * partition, how many; -1 for an NCA or NCZ on its own, its header read
  * already, or for none of those. s->fd < 0 when it won't open. */
@@ -201,7 +217,12 @@ static int file_open(const char *path, scan *s, fs_entry **e) {
     *e = NULL;
     s->fd = open(path, O_RDONLY);
     if (s->fd < 0) return -1;
-    if (read_at(s->fd, 0, magic, sizeof magic) == 0 && !memcmp(magic, "PFS0", 4)) return fs_list(s->fd, 0, "PFS0", e);
+    const int read = read_at(s->fd, 0, magic, sizeof magic) == 0;
+    if (read && !memcmp(magic, "PFS0", 4)) return fs_list(s->fd, 0, "PFS0", e);
+    if (read && !memcmp(magic, "NUP\1", 4)) {
+        nup_titles(s);
+        return -1;
+    }
     if (xci_secure(s->fd, &at) == 0) return fs_list(s->fd, at, "HFS0", e);
     nca_header(s, 0);
     return -1;
@@ -224,7 +245,8 @@ static uint64_t file_title(const char *path, const unsigned char *key, int *lock
     free(e);
     close(s.fd);
     *locked += s.locked;
-    const uint64_t id = ticket ? ticket : s.program ? s.program : s.other;
+    const uint64_t id = ticket ? ticket : s.program ? s.program : s.other ? s.other
+                        : s.first[SWITCHID_GAME] ? s.first[SWITCHID_GAME] : s.first[SWITCHID_UPDATE]; /* (a .nup's) */
     return id & ~0xFFFULL;
 }
 
