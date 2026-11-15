@@ -6,7 +6,7 @@
 
   .appdata.xml rather than .metainfo.xml: appimagetool and AppImageHub only
   look for that one. Each release wants its <release> line here before it's
-  tagged; rommdeck-release.yml checks.
+  tagged; rommdeck-copy.yml checks.
 -->
 <component type="desktop-application">
   <id>io.github.s0liton.RommDeck</id>

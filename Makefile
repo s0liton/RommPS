@@ -168,8 +168,9 @@ format:
 run: host
 	ROMM_SYNC_DATA=$${ROMM_SYNC_DATA:-./host-data} $(HOST_BIN)
 
-include platform/ps5/ps5.mk
-include platform/ps4/ps4.mk
+# RommDeck's copy of this repository (tools/rommdeck-copy.sh) has no consoles in it.
+-include platform/ps5/ps5.mk
+-include platform/ps4/ps4.mk
 include platform/steamdeck/steamdeck.mk
 
 clean:

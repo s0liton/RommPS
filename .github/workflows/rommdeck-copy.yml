@@ -1,0 +1,206 @@
+# Keeps s0liton/RommDeck's copy of the code current, and starts its releases.
+# The code is written here, next to the core and the RommPS screens it's
+# compiled from; RommDeck gets the part it's built from (tools/rommdeck-copy.sh)
+# and builds, tests, signs and publishes it with its own workflows. RommDeck
+# has its own version numbers: RommDeck v1.2.0 has nothing to do with RommPS
+# v1.2.0.
+#
+#   - Every push to main is copied to RommDeck's main, as one commit naming the
+#     commit here. A push that changes nothing RommDeck gets makes no commit.
+#   - A release also tags that copy vX.Y.Z over there, and the tag starts
+#     RommDeck's release workflow. A release is either a merged PR into main
+#     from a branch named rommdeck/vX.Y.Z (the tag rommdeck-vX.Y.Z is created
+#     here on the merge commit), or that tag pushed by hand:
+#     git tag rommdeck-v1.0.0 && git push origin rommdeck-v1.0.0
+#
+# Release notes go in docs/releases/rommdeck/vX.Y.Z.md, written by hand, and
+# the version gets a <release> line in the AppStream metainfo
+# (platform/steamdeck/io.github.s0liton.RommDeck.appdata.xml). Both are checked
+# here, before anything is tagged.
+#
+# RommDeck's main only moves forward: a commit older than the one it was last
+# copied from, or one that isn't on main here, leaves it alone. A release of
+# such a commit gets a commit of its own over there, under its tag.
+#
+# If RommDeck's release run fails, rerun it there. If it needs a fix from here,
+# delete the tag over there first (git push --delete origin vX.Y.Z in a RommDeck
+# checkout), then release again.
+#
+# Needs one secret:
+#   ROMMDECK_TOKEN  fine-grained token, s0liton/RommDeck only, Contents: read and write
+# RommDeck holds RELEASE_SIGNING_KEY itself, the same key the PS5 releases use.
+name: RommDeck copy
+
+on:
+  push:
+    branches: [main]
+    tags: ["rommdeck-v*.*.*"]
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  DECK_REPO: s0liton/RommDeck
+
+jobs:
+  copy:
+    if: >-
+      github.event_name == 'push' ||
+      (github.event.pull_request.merged &&
+       startsWith(github.event.pull_request.head.ref, 'rommdeck/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # sha: the commit to copy. tag: the RommDeck release it is, if it is one.
+      - name: Resolve what to copy
+        id: what
+        env:
+          GH_TOKEN: ${{ secrets.ROMMDECK_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::ROMMDECK_TOKEN secret is not set; can't push to $DECK_REPO."
+            exit 1
+          fi
+          tag=""
+          sha="$GITHUB_SHA"
+          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
+            # The push to main this merge made copies the code; this run is for the tag.
+            tag=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' <<< "$HEAD_REF" | head -n1 || true)
+            sha="$MERGE_SHA"
+            if [ -z "$tag" ]; then
+              echo "Branch '$HEAD_REF' has no vX.Y.Z version; no release."
+              exit 0
+            fi
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag="${GITHUB_REF_NAME#rommdeck-}"
+          fi
+          if [ -n "$tag" ]; then
+            if gh release view "$tag" --repo "$DECK_REPO" >/dev/null 2>&1; then
+              echo "RommDeck $tag is already out; nothing to do."
+              exit 0
+            fi
+            if gh api "repos/$DECK_REPO/git/ref/tags/$tag" >/dev/null 2>&1; then
+              echo "::error::$DECK_REPO already has the tag $tag but no release: rerun its release run, or delete the tag there to release again."
+              exit 1
+            fi
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      # All of the history: the copy step asks which of two commits is the older.
+      - uses: actions/checkout@v4
+        if: steps.what.outputs.sha
+        with:
+          ref: ${{ steps.what.outputs.sha }}
+          path: rommps
+          fetch-depth: 0
+
+      # Fail here, not after RommDeck has a tag and a build running.
+      - name: Check the release notes and the metainfo
+        if: steps.what.outputs.tag
+        env:
+          TAG: ${{ steps.what.outputs.tag }}
+        working-directory: rommps
+        run: |
+          if [ ! -s "docs/releases/rommdeck/$TAG.md" ]; then
+            echo "::error::docs/releases/rommdeck/$TAG.md is missing; write the release notes first"
+            exit 1
+          fi
+          metainfo=platform/steamdeck/io.github.s0liton.RommDeck.appdata.xml
+          if ! grep -qF "<release version=\"${TAG#v}\"" "$metainfo"; then
+            echo "::error::$metainfo has no <release version=\"${TAG#v}\">; add it, with the release's date"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.what.outputs.sha
+        with:
+          repository: ${{ env.DECK_REPO }}
+          token: ${{ secrets.ROMMDECK_TOKEN }}
+          ref: main
+          path: rommdeck
+
+      - name: Copy
+        if: steps.what.outputs.sha
+        env:
+          SHA: ${{ steps.what.outputs.sha }}
+          TAG: ${{ steps.what.outputs.tag }}
+        working-directory: rommdeck
+        run: |
+          short="${SHA:0:7}"
+          git config user.name "$(git -C ../rommps log -1 --format=%an "$SHA")"
+          git config user.email "$(git -C ../rommps log -1 --format=%ae "$SHA")"
+
+          # Puts the copy of $SHA in place of what's checked out; false when
+          # that's what was there already (SOURCE.txt, which names the commit, aside).
+          stage() {
+            ../rommps/tools/rommdeck-copy.sh . "$SHA" || exit 1
+            git add -A
+            if git diff --cached --quiet -- . ':(exclude)SOURCE.txt'; then
+              git reset -q --hard
+              return 1
+            fi
+          }
+          commit() {
+            git commit -q -m "Copy of RommPS at $short" -m "https://github.com/$GITHUB_REPOSITORY/commit/$SHA"
+          }
+
+          # main. Two runs can get here at once (a release's merge starts two),
+          # so a refused push starts over from what the other one pushed.
+          for try in 1 2 3; do
+            if ! git -C ../rommps merge-base --is-ancestor "$SHA" origin/main; then
+              echo "$short isn't on main here: RommDeck's main stays as it is."
+              break
+            fi
+            have=$(sed -n 's/^commit //p' SOURCE.txt 2>/dev/null || true)
+            if [ -n "$have" ]; then
+              if ! git -C ../rommps cat-file -e "$have^{commit}" 2>/dev/null; then
+                echo "::error::RommDeck's SOURCE.txt names $have, which isn't a commit here"
+                exit 1
+              fi
+              if ! git -C ../rommps merge-base --is-ancestor "$have" "$SHA"; then
+                echo "RommDeck's main is a copy of ${have:0:7}, which is newer than $short: it stays as it is."
+                break
+              fi
+            fi
+            if ! stage; then
+              echo "RommDeck's main already has everything $short has for it."
+              break
+            fi
+            commit
+            if git push -q origin HEAD:main; then
+              echo "RommDeck's main is now a copy of $short."
+              break
+            fi
+            if [ "$try" = 3 ]; then
+              echo "::error::couldn't push to $DECK_REPO's main"
+              exit 1
+            fi
+            git fetch -q origin main
+            git reset -q --hard origin/main
+          done
+
+          # The release: the tag goes on main's commit when that is this
+          # commit's copy, and on a commit of its own otherwise.
+          if [ -n "$TAG" ]; then
+            if stage; then
+              commit
+            fi
+            git tag "$TAG"
+            git push -q origin "refs/tags/$TAG"
+            echo "Tagged $TAG; the release is RommDeck's to build: https://github.com/$DECK_REPO/actions"
+          fi
+
+      # A merged branch has no tag here yet; a pushed one already does.
+      - name: Tag the source
+        if: steps.what.outputs.tag && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.what.outputs.tag }}
+          SHA: ${{ steps.what.outputs.sha }}
+        run: gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/rommdeck-$TAG" -f sha="$SHA"
