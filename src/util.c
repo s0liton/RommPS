@@ -368,6 +368,11 @@ const char *path_ext(const char *file_name) {
     return (dot && dot != base) ? dot : "";
 }
 
+int name_is_plain(const char *name) {
+    return name && name[0] && strcmp(name, ".") != 0 && strcmp(name, "..") != 0 && !strchr(name, '/') &&
+           !strchr(name, '\\');
+}
+
 
 int str_ieq(const char *a, const char *b) { return strcasecmp(a, b) == 0; }
 
