@@ -193,7 +193,10 @@ tools/deck-build.sh platform/steamdeck/package.sh 1.0.0   # the tarball and the 
 tools/deck-build.sh tests/steamdeck.sh                # the service against a RetroDECK layout and a mock RomM
 tools/deck-build.sh tests/steamdeck_install.sh        # the installer, with that AppImage, against a fake release
 make deploy-deck DECK_HOST=<deck-ip>                  # swap the service on a Deck over SSH
+tools/deck-ci.sh 1.0.0                                # build, test and package in one go, as CI and every release do
 ```
+
+The [RommDeck repository](https://github.com/s0liton/RommDeck) gets a copy of what the Deck is built from (`tools/rommdeck-copy.sh`) with every push to main, and builds its releases from that. Pull requests go to RommPS; the copy is replaced each time.
 
 ## Watch Development Progress
 

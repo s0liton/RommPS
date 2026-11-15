@@ -12,8 +12,8 @@ set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 FORMATTED=(platform/steamdeck/platform.c platform/steamdeck/app/src/*.cpp platform/steamdeck/app/src/*.hpp
            platform/steamdeck/app/src/*.h)
-SCRIPTS=(platform/steamdeck/*.sh tools/deck-build.sh tools/lint.sh tests/steamdeck.sh tests/steamdeck_duckstation.sh
-         tests/steamdeck_install.sh)
+SCRIPTS=(platform/steamdeck/*.sh tools/deck-build.sh tools/deck-ci.sh tools/rommdeck-copy.sh tools/lint.sh
+         tests/steamdeck.sh tests/steamdeck_duckstation.sh tests/steamdeck_install.sh)
 DESKTOP=platform/steamdeck/RommDeck-Installer.desktop
 METAINFO=platform/steamdeck/io.github.s0liton.RommDeck.appdata.xml
 PYTHON=(platform/steamdeck/add-to-steam.py platform/steamdeck/tools/make-steam-art.py platform/steamdeck/tools/stage-notices.py)

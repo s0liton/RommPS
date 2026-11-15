@@ -27,7 +27,8 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       # The same image and cache steamdeck.yml uses; keep the tag in step
-      # with tools/deck-build.sh. The cache only saves time.
+      # with tools/deck-build.sh (steamdeck.yml reads it from there). The
+      # cache only saves time.
       - uses: docker/build-push-action@v6
         with:
           context: platform/steamdeck/app/docker
