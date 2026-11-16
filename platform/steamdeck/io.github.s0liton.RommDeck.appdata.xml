@@ -86,6 +86,12 @@
   </content_rating>
 
   <releases>
+    <release version="1.0.2" date="2026-11-23" type="stable">
+      <url type="details">https://github.com/s0liton/RommDeck/releases/tag/v1.0.2</url>
+      <description>
+        <p>Nintendo Switch 2 with the Lichii emulator, a build for ARM handhelds, faster syncs with very large libraries, and a few fixes.</p>
+      </description>
+    </release>
     <release version="1.0.1" date="2026-11-12" type="stable">
       <url type="details">https://github.com/s0liton/RommDeck/releases/tag/v1.0.1</url>
       <description>
