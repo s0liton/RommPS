@@ -1301,7 +1301,8 @@ int profiles_expand(const cJSON *profiles, profile_map **out) {
             str_copy(m->core_name, sizeof m->core_name, jstr(p, e, "core_name", ""));
             str_copy(m->save_layout, sizeof m->save_layout, card_str(p, e, "save_layout", ""));
             /* The rest of its variables ({switch_user}, {save_path}...) are filled in at sync. */
-            const char *bvars[] = {"user_dir", sys_dir, NULL};
+            /* {game_slug} is {game_id}: the folder is found however it's spelled (bundle.h). */
+            const char *bvars[] = {"user_dir", sys_dir, "game_slug", "{game_id}", NULL};
             str_template(m->bundle_dirs, sizeof m->bundle_dirs, jstr(p, e, "bundle_dirs", ""), bvars);
 
             str_copy(m->save_exts, sizeof m->save_exts, jstr(p, e, "save_exts", ".srm,.sav"));

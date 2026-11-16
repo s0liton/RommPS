@@ -204,12 +204,42 @@ static int name_ci(const char *dir, const char *name, char *out, size_t n) {
     return rc;
 }
 
+/* A name's letters and digits, lowercased: what's left of "Mina the
+ * Hollower", "mina-the-hollower" and "mina_the_hollower" alike. */
+static void name_key(const char *name, char *out, size_t n) {
+    size_t o = 0;
+    for (; *name && o + 1 < n; name++)
+        if (isalnum((unsigned char)*name)) out[o++] = (char)tolower((unsigned char)*name);
+    out[o] = 0;
+}
+
+/* The one folder of dir that's name but for its case, spaces and
+ * punctuation: prospero-win takes prefix names of a-z, 0-9, - and _ only,
+ * so the prefix of the game in "Mina the Hollower" is "mina-the-hollower",
+ * or however its owner spelled it. 0 when found; two that fit are nobody's. */
+static int name_loose(const char *dir, const char *name, char *out, size_t n) {
+    char want[256], have[256];
+    name_key(name, want, sizeof want);
+    DIR *d = want[0] ? opendir(dir) : NULL;
+    struct dirent *de;
+    int hits = 0;
+    while (d && (de = readdir(d))) {
+        if (de->d_name[0] == '.') continue;
+        name_key(de->d_name, have, sizeof have);
+        if (strcmp(have, want) != 0) continue;
+        if (!hits++) str_copy(out, n, de->d_name);
+    }
+    if (d) closedir(d);
+    return hits == 1 ? 0 : -1;
+}
+
 /* psvita, ps4, folder: a base with {game_id} in it is the game's own folder
  * once that's filled in, not a folder of every game's folders (bundle.h). */
 static int game_in_base(const char *base) { return strstr(base, "{game_id}") != NULL; }
 
 /* Such a base filled in with id, the folder the id names in whatever case
- * it's there. 0 when that folder isn't there: it's the emulator's to make.
+ * it's there, else the one spelled its own way (name_loose). 0 when that
+ * folder isn't there: it's the emulator's to make.
  * A Wine prefix is a few hundred MB Wine has to set up, and a folder of ours
  * sitting where it goes would pass for a prefix that's broken. */
 static int game_folder(const char *base, const char *id, char *out, size_t n) {
@@ -219,7 +249,7 @@ static int game_folder(const char *base, const char *id, char *out, size_t n) {
     char parent[PATH_MAX_LEN], name[256], found[256], root[PATH_MAX_LEN + 256];
     snprintf(parent, sizeof parent, "%.*s", (int)(start - base), base);
     snprintf(name, sizeof name, "%.*s%s%.*s", (int)(at - start), start, id, (int)(end - rest), rest);
-    if (!parent[0] || name_ci(parent, name, found, sizeof found) != 0) return 0;
+    if (!parent[0] || (name_ci(parent, name, found, sizeof found) != 0 && name_loose(parent, name, found, sizeof found) != 0)) return 0;
     snprintf(root, sizeof root, "%s%s", parent, found);
     if (!dir_exists(root)) return 0;
     snprintf(out, n, "%s%s", root, end);

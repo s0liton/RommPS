@@ -3187,4 +3187,41 @@ syncnow
   || fail "once the prefix is there, RomM's save must come down into it, named after the whole folder: $(find "$PW/prefixes" -type f)"
 [[ -d "$PW/prefixes/cave story v1.2/drive_c/users/prospero/Documents" ]] || fail "the new prefix's folders must stay"
 
+echo "    its saves deleted on the console (the game's folders gone, the prefix still there): RomM's come back"
+rm -rf "$U/AppData/Roaming/Yacht Club Games" "$U/Documents/My Games"
+syncnow
+[[ "$(cat "$U/$YC/saveData.yc" 2>&1)" == "mina-2-from-pc" ]] \
+  || fail "saves deleted from a prefix must come back from RomM: $(last uploaded) up, $(last downloaded) down; $(cd "$U" && find . | tr '\n' ' '); $(grep -i 'mina' "$T/daemon.log" | tail -6)"
+
+echo "    a prefix named as prospero-win wants them (a-z, 0-9, - and _): the game's, however its folder is spelled; two that fit are nobody's"
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":992,"platform_id":99,"name":"Shovel Knight Dig","fs_name":"Shovel Knight Dig",
+  "files":[{"id":9921,"file_name":"dig.exe","content":"MZ-DIG"}]}' >/dev/null
+pcget 992
+SK="$PW/prefixes/shovel-knight-dig/drive_c/users/prospero"
+mkdir -p "$SK/Saved Games/Dig"; printf 'dig-1' > "$SK/Saved Games/Dig/slot0.sav"
+syncnow
+[[ "$(pwsave 992)" == "Shovel Knight Dig.zip Shovel Knight Dig/Saved Games/Dig/slot0.sav=dig-1" ]] \
+  || fail "a prefix spelled prospero-win's way must be the game's, its save named after the game's folder: $(pwsave 992)"
+mkdir -p "$PW/prefixes/shovel_knight_dig/drive_c/users/prospero"
+sleep 1.1; printf 'dig-2' > "$SK/Saved Games/Dig/slot0.sav"
+syncnow
+[[ "$(pwsave 992)" == *"slot0.sav=dig-1" ]] || fail "with two prefixes that fit, neither is the game's: $(pwsave 992)"
+rm -rf "$PW/prefixes/shovel_knight_dig"
+syncnow
+[[ "$(pwsave 992)" == *"slot0.sav=dig-2" ]] || fail "one prefix again: its save must go up: $(pwsave 992)"
+
+echo "    {game_slug} in the path means the same as {game_id}"
+python3 - "$API" <<'PY' >/dev/null
+import json, sys, urllib.request
+api = sys.argv[1]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+for p in cfg["profiles"]:
+    if p.get("id") == "pwin": p["platforms"][0]["bundle_dirs"] = "{root}/prefixes/{game_slug}/drive_c/users/prospero"
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": cfg["profiles"]}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+sleep 1.1; printf 'dig-3' > "$SK/Saved Games/Dig/slot0.sav"
+syncnow
+[[ "$(pwsave 992)" == *"slot0.sav=dig-3" ]] || fail "{game_slug} must find the game's prefix: $(pwsave 992); $(grep -i 'shovel' "$T/daemon.log" | tail -4)"
+
 echo "PASS"
