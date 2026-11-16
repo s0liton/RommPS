@@ -161,6 +161,7 @@ Note: RommPS relies on your emulator **NOT** being sandboxed. Some emulators req
 | Seedee5 | Philips CD-i | Full Support | Saves and states | Each game's NVRAM is its save |
 | [ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden) | Switch | Full Support | Saves | One Switch user's saves (the first PS5 user's, unless set otherwise). Steps aside when ProsperoEden's own RomM sync is set up |
 | EglantinePS5 | Switch 2 | Full Support | Saves | Early days, for the emulator and for us. `.nup` games, which need no keys or firmware, land straight in `/data/eglantineps5/roms`. One user's saves (its first, unless set otherwise), the same ones Lichii keeps on the Steam Deck. Tested with one whole game, so temper expectations |
+| [prospero-win](https://github.com/mpereiraesaa/prospero-win) | Windows | Manual setup | With a profile you write by hand | No built-in profile yet. Add Windows as a system and pick its games folder yourself; saves sync from each game's own Wine prefix once a profile says where (`{game_id}` or `{game_slug}` in `bundle_dirs`) |
 | Mednafen | PS1, NES, SNES, Game Boy, Game Boy Color, Game Boy Advance, Genesis/Mega Drive, Master System, Game Gear, PC Engine, Neo Geo Pocket, WonderSwan, Virtual Boy, Lynx | Full Support | Full Support | Built-in profile, off until you turn it on |
 | PS2 ISOs (for PS2 FPKG tools) | PS2 | Full Support | Not synced | Downloads PS2 ISOs to a USB drive (`/mnt/usb0/ps2`) for PS2 FPKG tools. Off until you turn it on |
 
