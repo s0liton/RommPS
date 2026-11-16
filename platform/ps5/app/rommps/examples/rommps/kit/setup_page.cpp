@@ -122,6 +122,7 @@ std::string system_name(const std::string &key)
         {"sufami-turbo", "Bandai SuFami Turbo"},
         {"supergrafx", "NEC SuperGrafx"},
         {"switch", "Nintendo Switch"},
+        {"switch-2", "Nintendo Switch 2"},
         {"tg16", "NEC PC Engine / TurboGrafx-16"},
         {"turbografx-cd", "NEC PC Engine CD / TurboGrafx-CD"},
         {"virtualboy", "Nintendo Virtual Boy"},

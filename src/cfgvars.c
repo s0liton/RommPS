@@ -284,16 +284,23 @@ static int find_key(const char *text, size_t from, size_t to, const char *key, s
     return 0;
 }
 
-/* Two values the same, quotes and spaces off; paths compared normalized. */
+/* Two values the same, quotes and spaces off; paths compared normalized,
+ * then by where they lead: SteamOS links /run/media/<card> to
+ * /run/media/deck/<card>, and a folder the user put in an emulator's list by
+ * one name is the folder we'd add by the other. */
 static int same_value(const char *a, size_t al, const char *b) {
     char x[4096], y[4096];
     copy_value(a, al, x, sizeof x);
     copy_value(b, strlen(b), y, sizeof y);
-    if (x[0] == '/' && y[0] == '/') {
-        cfgvars_normalize(x);
-        cfgvars_normalize(y);
-    }
-    return !strcmp(x, y);
+    if (x[0] != '/' || y[0] != '/') return !strcmp(x, y);
+    cfgvars_normalize(x);
+    cfgvars_normalize(y);
+    if (!strcmp(x, y)) return 1;
+    char *rx = realpath(x, NULL), *ry = realpath(y, NULL);
+    const int same = rx && ry && !strcmp(rx, ry);
+    free(rx);
+    free(ry);
+    return same;
 }
 
 /* text with [from, to) replaced by ins: a new string. */

@@ -424,6 +424,59 @@ static void test_keys(void) {
     CHECK(switchid_header_key(at("missing.keys"), key) == -1);
 }
 
+/* A Switch 2 .nup, as the dumps are: "NUP", where its "TOC" is, and in that
+ * the titles it packs, 0x40 bytes each. */
+static blob nup(const uint64_t *ids, int n) {
+    blob b = {0};
+    unsigned char h[0x80] = {0}, toc[0x30] = {0};
+    memcpy(h, "NUP\1", 4);
+    put64(h + 8, sizeof h);
+    memcpy(toc, "TOC\1", 4);
+    put32(toc + 4, (uint32_t)n);
+    add(&b, h, sizeof h);
+    add(&b, toc, sizeof toc);
+    for (int i = 0; i < n; i++) {
+        unsigned char ent[0x40] = {0};
+        put64(ent, ids[i]);
+        add(&b, ent, sizeof ent);
+    }
+    return b;
+}
+
+static void test_nup(void) {
+    const uint64_t both[] = {0x0400486024DEC000ULL, 0x0400486024DEC800ULL}, update[] = {0x0400A3A01EE4C800ULL};
+    char id[32] = "";
+    uint64_t t = 0;
+    blob b = nup(both, 2);
+    write_to(at("0400486024dec000_v131072.nup"), b.p, b.len);
+    free(b.p);
+    CHECK(switchid_from_file(at("0400486024dec000_v131072.nup"), NULL, id, sizeof id) == 0 && !strcmp(id, "0400486024DEC000"));
+    CHECK(switchid_title(at("0400486024dec000_v131072.nup"), NULL, &t) == 0 && t == 0x0400486024DEC000ULL);
+    /* An update alone names its game for the save folder, and says it's an update. */
+    b = nup(update, 1);
+    write_to(at("Some Game Update.nup"), b.p, b.len);
+    free(b.p);
+    CHECK(switchid_from_file(at("Some Game Update.nup"), NULL, id, sizeof id) == 0 && !strcmp(id, "0400A3A01EE4C000"));
+    CHECK(switchid_title(at("Some Game Update.nup"), NULL, &t) == 0 && t == 0x0400A3A01EE4C800ULL);
+    /* As RomM keeps them: a folder with the one file. */
+    char dir[PATH_MAX_LEN];
+    str_copy(dir, sizeof dir, at("Zelda"));
+    CHECK(mkdir(dir, 0755) == 0);
+    b = nup(both, 2);
+    char in[PATH_MAX_LEN];
+    path_join(in, sizeof in, dir, "game.nup");
+    write_to(in, b.p, b.len);
+    id[0] = 0;
+    CHECK(switchid_from_file(dir, NULL, id, sizeof id) == 0 && !strcmp(id, "0400486024DEC000"));
+    /* Cut short, or pointing nowhere: no id, no crash. */
+    write_to(at("short.nup"), b.p, 0x90);
+    CHECK(switchid_from_file(at("short.nup"), NULL, id, sizeof id) == -1);
+    put64(b.p + 8, 1ULL << 40);
+    write_to(at("lost.nup"), b.p, b.len);
+    CHECK(switchid_from_file(at("lost.nup"), NULL, id, sizeof id) == -1);
+    free(b.p);
+}
+
 int main(void) {
     snprintf(g_dir, sizeof g_dir, "%s/switchid.XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
     if (!mkdtemp(g_dir)) {
@@ -434,6 +487,7 @@ int main(void) {
     test_keys();
     test_files();
     test_titles();
+    test_nup();
     remove_tree(g_dir);
     if (failures) {
         fprintf(stderr, "%d failed\n", failures);

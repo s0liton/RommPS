@@ -1,6 +1,6 @@
 {
   "format": 2,
-  "version": "2026.11.06.15",
+  "version": "2026.11.15.1",
   "console": "steamdeck",
   "emulators": [
     {
@@ -841,6 +841,100 @@
                 "match": "path",
                 "add": {
                   "path": "{update_dir}"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "lichii",
+      "name": "Lichii",
+      "title_ids": [
+        "lichii"
+      ],
+      "detect": [
+        "{home}/.local/share/lichii",
+        "{home}/.config/lichii/qt-config.ini",
+        "{home}/Applications/lichii*.AppImage"
+      ],
+      "note": "Switch 2 games (.nup) and the saves of Lichii's current user, in the folders its settings name. It has no games folder of its own: they go in roms/switch2, which goes into Lichii's settings while it's closed, once it has started once.",
+      "vars": {
+        "data_dir": {
+          "path": "{home}/.local/share/lichii"
+        },
+        "cfg": {
+          "path": "{home}/.config/lichii"
+        },
+        "nand": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "nand_directory",
+          "default": "{data_dir}/nand"
+        },
+        "saves": {
+          "file": "{cfg}/qt-config.ini",
+          "format": "ini",
+          "section": "Data Storage",
+          "key": "save_directory",
+          "default": "{nand}"
+        },
+        "games": {
+          "path": "{roms}/switch2",
+          "default": "{roms}/switch2"
+        }
+      },
+      "profile": {
+        "root": "{data_dir}",
+        "rom_dir": "{games}",
+        "bios_dir": "{data_dir}",
+        "state_exts": "",
+        "firmware": {
+          "by_ext": {
+            ".keys": "keys",
+            ".nca": "{nand}/system/Contents/registered"
+          }
+        },
+        "platforms": [
+          {
+            "romm": [
+              "switch-2"
+            ],
+            "dir": "switch2",
+            "emulator": "lichii",
+            "save_layout": "switch",
+            "bundle_dirs": "{saves}/user/save/0000000000000000/{switch_user}",
+            "switch_users": "{nand}/system/save/8000000000000010/su/avators/profiles.dat",
+            "switch_user_index": "{cfg}/qt-config.ini",
+            "config_writes": [
+              {
+                "file": "{cfg}/qt-config.ini",
+                "section": "UI",
+                "array": "Paths\\gamedirs",
+                "match": "path",
+                "seed": [
+                  {
+                    "path": "SDMC",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  },
+                  {
+                    "path": "UserNAND",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  },
+                  {
+                    "path": "SysNAND",
+                    "deep_scan": "false",
+                    "expanded": "true"
+                  }
+                ],
+                "add": {
+                  "path": "{rom_dir}",
+                  "deep_scan": "true",
+                  "expanded": "true"
                 }
               }
             ]

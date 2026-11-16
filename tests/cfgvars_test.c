@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "cfgvars.h"
 
@@ -125,6 +127,24 @@ int main(void) {
     const cfgvars_row add2 = {slash, 1};
     CHECK(w && !cfgvars_array_add(w, "UI", "Paths\\gamedirs", "path", seed, 3, &add2)); /* the same folder */
     free(w);
+    /* A folder the user listed by another name for it (SteamOS links
+     * /run/media/<card> to /run/media/deck/<card>) is there already. */
+    char tmp[64], real[128], link[128], cfg[512];
+    snprintf(tmp, sizeof tmp, "%s/cfgvars.XXXXXX", getenv("TMPDIR") ? getenv("TMPDIR") : "/tmp");
+    CHECK(mkdtemp(tmp) != NULL);
+    snprintf(real, sizeof real, "%s/deck", tmp);
+    snprintf(link, sizeof link, "%s/card", tmp);
+    CHECK(mkdir(real, 0755) == 0 && symlink(real, link) == 0);
+    snprintf(cfg, sizeof cfg, "[UI]\nPaths\\gamedirs\\size=1\nPaths\\gamedirs\\1\\path=%s\n", link);
+    const cfgvars_kv linked[] = {{"path", real}};
+    const cfgvars_row add_linked = {linked, 1};
+    CHECK(!cfgvars_array_add(cfg, "UI", "Paths\\gamedirs", "path", NULL, 0, &add_linked));
+    const cfgvars_kv other[] = {{"path", tmp}};
+    const cfgvars_row add_other = {other, 1};
+    w = cfgvars_array_add(cfg, "UI", "Paths\\gamedirs", "path", NULL, 0, &add_other);
+    CHECK(w && GOT(w, "ini", "UI", "Paths\\gamedirs\\size", "2")); /* another folder still goes in */
+    free(w);
+    unlink(link), rmdir(real), rmdir(tmp);
     /* No list yet: what the emulator puts in an empty one, then ours. */
     w = cfgvars_array_add("[UI]\ntheme=default\n", "UI", "Paths\\gamedirs", "path", seed, 3, &add);
     CHECK(w && GOT(w, "ini", "UI", "Paths\\gamedirs\\size", "4") && GOT(w, "ini", "UI", "Paths\\gamedirs\\3\\path", "SysNAND"));

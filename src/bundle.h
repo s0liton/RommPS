@@ -21,6 +21,8 @@
  *         forks: Eden, Citron), as "<title id>/...", and the game's device
  *         save under the all-zero user as "device/<title id>/..."
  *         (argosy-sigil's yuzu unit). Its base is the user's folder.
+ *         Switch 2 saves (Lichii, a yuzu fork too) are the same unit:
+ *         sigil has none for them yet, and Lichii is the one emulator.
  *   ryujinx  bis/user/save/<save id>/0/ (Ryujinx, Ryubing), the same unit:
  *         which folder is the user's save and which the device's, the save
  *         index says (bis/system/save/8000000000000000/0/imkvdb.arc). Its base
