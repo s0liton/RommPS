@@ -256,7 +256,7 @@ static int entry_to_file(const unsigned char *z, const zip_entry *e, const char 
     char tmp[PATH_MAX_LEN];
     snprintf(tmp, sizeof tmp, "%s.tmp", dest);
     mkdir_parent(dest);
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = fopen_new(tmp);
     if (!f) return -1;
     int ok = 1;
     if (e->method == 0) {
@@ -288,7 +288,7 @@ static int entry_to_file(const unsigned char *z, const zip_entry *e, const char 
     }
     if (ok && (fflush(f) != 0 || fsync(fileno(f)) != 0)) ok = 0;
     if (fclose(f) != 0) ok = 0;
-    if (!ok || rename(tmp, dest) != 0) {
+    if (!ok || rename_over(tmp, dest) != 0) {
         unlink(tmp);
         return -1;
     }

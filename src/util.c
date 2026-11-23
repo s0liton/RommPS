@@ -158,6 +158,17 @@ char *log_recent(void) {
 }
 
 
+static int refused(void);
+
+/* One folder, there already or made now; in a folder that refuses, once
+ * that one is opened up (dir_share, below). */
+static int mkdir_shared(const char *dir) {
+    if (mkdir(dir, 0777) == 0 || errno == EEXIST) return 0;
+    if (!refused()) return -1;
+    parent_share(dir);
+    return mkdir(dir, 0777) == 0 || errno == EEXIST ? 0 : -1;
+}
+
 int mkdir_p(const char *path) {
     char tmp[PATH_MAX_LEN];
     str_copy(tmp, sizeof tmp, path);
@@ -167,12 +178,11 @@ int mkdir_p(const char *path) {
     for (char *p = tmp + 1; *p; p++) {
         if (*p == '/') {
             *p = 0;
-            if (mkdir(tmp, 0777) != 0 && errno != EEXIST) return -1;
+            if (mkdir_shared(tmp) != 0) return -1;
             *p = '/';
         }
     }
-    if (mkdir(tmp, 0777) != 0 && errno != EEXIST) return -1;
-    return 0;
+    return mkdir_shared(tmp);
 }
 
 int mkdir_parent(const char *file_path) {
@@ -241,11 +251,57 @@ char *read_file(const char *path, size_t *len) {
     return buf;
 }
 
+/* Emulators make their folders for themselves (0755) and don't always run as
+ * the payload's user, so a save folder PSP5 made is one we can read and not
+ * change. Ours are open to everyone (mkdir_p), theirs get opened the same way
+ * the first time something in them is refused, and the caller tries again. */
+static int refused(void) { return errno == EACCES || errno == EPERM; }
+
+void dir_share(const char *dir) {
+    struct stat st;
+    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode) || (st.st_mode & 0777) == 0777) return;
+    const int saved = errno;
+    if (chmod(dir, 0777) == 0) LOGI("opened %s to every user (it was %03o)", dir, (unsigned)(st.st_mode & 0777));
+    else LOGW("%s is %03o and can't be opened up: %s", dir, (unsigned)(st.st_mode & 0777), strerror(errno));
+    errno = saved;
+}
+
+void parent_share(const char *path) {
+    char dir[PATH_MAX_LEN];
+    str_copy(dir, sizeof dir, path);
+    char *slash = strrchr(dir, '/');
+    if (!slash || slash == dir) return;
+    *slash = 0;
+    dir_share(dir);
+}
+
+FILE *fopen_new(const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (f || !refused()) return f;
+    parent_share(path);
+    return fopen(path, "wb");
+}
+
+int rename_over(const char *from, const char *to) {
+    if (rename(from, to) == 0) return 0;
+    if (!refused()) return -1;
+    parent_share(from);
+    parent_share(to);
+    return rename(from, to);
+}
+
+int remove_file(const char *path) {
+    if (unlink(path) == 0 || errno == ENOENT) return 0;
+    if (!refused()) return -1;
+    parent_share(path);
+    return unlink(path);
+}
+
 int write_file_atomic(const char *path, const void *data, size_t len) {
     char tmp[PATH_MAX_LEN];
     snprintf(tmp, sizeof tmp, "%s.tmp", path);
     mkdir_parent(path);
-    FILE *f = fopen(tmp, "wb");
+    FILE *f = fopen_new(tmp);
     if (!f) return -1;
     if (fwrite(data, 1, len, f) != len) {
         fclose(f);
@@ -255,7 +311,7 @@ int write_file_atomic(const char *path, const void *data, size_t len) {
     fflush(f);
     fsync(fileno(f));
     fclose(f);
-    return rename(tmp, path);
+    return rename_over(tmp, path);
 }
 
 int copy_file_progress(const char *src, const char *dst, copy_progress_fn cb, void *ud) {
@@ -270,7 +326,7 @@ int copy_file_progress(const char *src, const char *dst, copy_progress_fn cb, vo
     }
     snprintf(tmp, sizeof tmp, "%s.tmp", dst);
     mkdir_parent(dst);
-    FILE *out = fopen(tmp, "wb");
+    FILE *out = fopen_new(tmp);
     if (!out) {
         fclose(in);
         free(buf);
@@ -294,7 +350,7 @@ int copy_file_progress(const char *src, const char *dst, copy_progress_fn cb, vo
     fflush(out);
     fsync(fileno(out));
     fclose(out);
-    if (rc == 0) rc = rename(tmp, dst);
+    if (rc == 0) rc = rename_over(tmp, dst);
     if (rc != 0) unlink(tmp);
     return rc;
 }
@@ -319,7 +375,7 @@ void payload_version(const void *elf, size_t len, char *out, size_t n) {
 
 int move_file(const char *src, const char *dst) {
     mkdir_parent(dst);
-    if (rename(src, dst) == 0) return 0;
+    if (rename_over(src, dst) == 0) return 0;
     /* Across drives, e.g. /data to /mnt/usb0. */
     if (copy_file(src, dst) != 0) return -1;
     unlink(src);
@@ -328,7 +384,7 @@ int move_file(const char *src, const char *dst) {
 
 void remove_tree(const char *path) {
     if (!dir_exists(path)) {
-        unlink(path);
+        remove_file(path);
         return;
     }
     DIR *d = opendir(path);
@@ -340,7 +396,10 @@ void remove_tree(const char *path) {
         remove_tree(p);
     }
     if (d) closedir(d);
-    rmdir(path);
+    if (rmdir(path) != 0 && refused()) {
+        parent_share(path);
+        rmdir(path);
+    }
 }
 
 const char *path_basename(const char *path) {
