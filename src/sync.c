@@ -3678,6 +3678,11 @@ static int rom_key_cmp(const void *a, const void *b) {
     return (x->idx > y->idx) - (x->idx < y->idx);
 }
 
+static int int_cmp(const void *a, const void *b) {
+    const int x = *(const int *)a, y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
 /* roms by RomM id, then by place in roms: a game's copies (the same game in
  * several emulators) side by side, in their order in roms, so finding them
  * doesn't mean looking through every game for each one (with 25,000 games a
@@ -3718,9 +3723,20 @@ static int fetch_slotless_saves(scan_ctx *c, int only_rom) {
     rom_key *keys = NULL;
     int *pos = NULL;
     if (st == 200) rom_groups(c, &keys, &pos); /* (without: the slow way) */
+    /* The games RomM has a save for at all. In a big library that's a few of
+     * thousands, and every other game would read RomM's whole list below just
+     * to find nothing of its own. */
+    int nhave = 0;
+    int *have = st == 200 ? malloc(sizeof *have * (size_t)(cJSON_GetArraySize(all) + 1)) : NULL;
+    const cJSON *sv;
+    if (have) {
+        cJSON_ArrayForEach(sv, all) have[nhave++] = (int)jget_num(sv, "rom_id", 0);
+        qsort(have, (size_t)nhave, sizeof *have, int_cmp);
+    }
     for (int i = 0; st == 200 && i < c->nroms; i++) {
         const local_rom *r = &c->roms[i];
         if (!r->rules.sync_saves || r->map->save_layout[0] || (only_rom && r->rom_id != only_rom) ||
+            (have && !bsearch(&r->rom_id, have, (size_t)nhave, sizeof *have, int_cmp)) ||
             find_save(c, r->rom_id, c->slot))
             continue;
         /* Another emulator's copy of the game, earlier in roms, took it. */
@@ -3773,6 +3789,7 @@ static int fetch_slotless_saves(scan_ctx *c, int only_rom) {
     cJSON_Delete(all);
     free(keys);
     free(pos);
+    free(have);
     return n;
 }
 
