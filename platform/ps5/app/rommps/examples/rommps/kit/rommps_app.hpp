@@ -291,6 +291,7 @@ struct Update
     bool known = false;
     std::string state, message, error, current, latest;
     bool available = false, autostart = false;
+    bool autostart_loader = true; // false: no HEN here to start the service with the console
     // false: RomM Sync doesn't update itself; a new RommPS brings it (PS5).
     bool self_update = true;
     double done = 0, total = 0;
@@ -316,7 +317,7 @@ class App
 #ifdef ROMMPS_PAYLOAD_VERSION
     static constexpr const char *kMinPayload = ROMMPS_PAYLOAD_VERSION;
 #else
-    static constexpr const char *kMinPayload = "1.4.3";
+    static constexpr const char *kMinPayload = "1.4.4";
 #endif
     bool payload_too_old() const;
     void start_payload(); // sends the payload to the HEN's loader

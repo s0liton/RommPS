@@ -4,13 +4,14 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 
 #include "version.h" /* version_cmp, version_valid */
 
 #define APP_NAME    "romm-sync"
 #ifndef APP_VERSION /* make VERSION=; a dev build's is "1.4.3-dev.12" (src/version.h) */
-#define APP_VERSION "1.4.3"
+#define APP_VERSION "1.4.4"
 #endif
 #ifndef APP_BUILD /* git describe of the build, from the Makefile */
 #define APP_BUILD "unknown"
@@ -67,11 +68,24 @@ int link_or_copy(const char *src, const char *dst); /* hard link, a copy across 
 int link_or_copy_progress(const char *src, const char *dst, copy_progress_fn cb, void *ud);
 int move_file(const char *src, const char *dst); /* rename, falls back to copy+unlink */
 void remove_tree(const char *path);              /* rm -rf */
+/* A folder an emulator made for itself (0755, not always as our user) opened
+ * to everyone, like the ones we make; parent_share for the folder a path is
+ * in. The three below do it by themselves, once, when they're refused, so
+ * nothing is opened up that didn't have to be. */
+void dir_share(const char *dir);
+void parent_share(const char *path);
+FILE *fopen_new(const char *path);                /* fopen(path, "wb") */
+int rename_over(const char *from, const char *to);
+int remove_file(const char *path);                /* unlink; a file that's gone already is fine */
 const char *path_basename(const char *path);
 void path_join(char *out, size_t n, const char *a, const char *b);
 /* "Foo (USA).sfc" -> "Foo (USA)" */
 void path_stem(char *out, size_t n, const char *file_name);
 const char *path_ext(const char *file_name);    /* ".sfc" or "" */
+/* 1 when a name from elsewhere (RomM's file names) is one plain path
+ * component: not empty, not "." or "..", no slash or backslash. Joined to a
+ * folder, it can't end up anywhere but in it. */
+int name_is_plain(const char *name);
 
 int str_ieq(const char *a, const char *b);
 int str_ends_with_ci(const char *s, const char *suffix);
@@ -91,6 +105,8 @@ time_t iso8601_parse(const char *s);             /* 0 on failure */
 int md5_file_hex(const char *path, char out[33]);
 /* FNV-1a 64 of a file, 16 lower-case hex digits (PS5N64 names saves by it). */
 int fnv1a64_file_hex(const char *path, char out[17]);
+/* FNV-1a of a string, for hash tables. */
+size_t str_hash(const char *s);
 void md5_hex(const void *data, size_t len, char out[33]);
 void random_uuid(char out[37]);
 

@@ -486,6 +486,28 @@ syncnow
 [[ -f "$SD/ULUS10336GAMEDATA/BIG.BIN" ]] || fail "game data folder must be left alone"
 [[ -f "$SD/ULUS10336INSTALL/SLOT.DAT" ]] || fail "what the game installed must be left alone"
 ls "$T/data/backups/30/" | grep -q "ULUS10336.zip" || fail "no backup of the PSP save"
+# The emulator made the save's folders for itself (PSP5 does: 0755, as another
+# user). A newer save from RomM replaces them all the same (#58).
+python3 - "$SD" > "$T/new.zip.b64" <<'PY'
+import base64, io, sys, zipfile
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("ULUS10336DATA00/DATA.BIN", "psp-save-3\n")
+    z.writestr("ULUS10336DATA00/PARAM.SFO", open(sys.argv[1] + "/ULUS10336DATA00/PARAM.SFO", "rb").read())
+    z.writestr("ULUS10336DATA01/DATA.BIN", "psp-slot-2\n")
+    z.writestr("ULUS10336DATA01/PARAM.SFO", open(sys.argv[1] + "/ULUS10336DATA00/PARAM.SFO", "rb").read())
+print(base64.b64encode(buf.getvalue()).decode())
+PY
+sleep 1.1
+curl -sf -X POST "http://127.0.0.1:$MOCK_PORT/_admin/save" -d "{\"rom_id\":30,\"slot\":\"autosave\",\"file_name\":\"ULUS10336.zip\",\"content_b64\":\"$(cat "$T/new.zip.b64")\"}" >/dev/null
+chmod 555 "$SD/ULUS10336DATA00" "$SD"
+syncnow
+modes="$(stat -c %a "$SD")"; chmod -R u+rwx "$SD"
+[[ "$(last failed)" == 0 ]] || fail "a save folder the emulator made (0555) wasn't replaced: $(grep -a 'could not\|not a usable' "$T/daemon.log" | tail -3)"
+[[ "$(cat "$SD/ULUS10336DATA00/DATA.BIN")" == "psp-save-3" ]] || fail "PSP save not replaced in a folder the emulator made"
+[[ "$(cat "$SD/ULUS10336DATA01/DATA.BIN")" == "psp-slot-2" ]] || fail "a new PSP save folder not made in a SAVEDATA the emulator made"
+[[ "$modes" == "777" ]] || fail "SAVEDATA wasn't left open to the emulator and us (got $modes)"
+[[ -f "$SD/ULUS10336GAMEDATA/BIG.BIN" ]] || fail "game data folder must be left alone"
 
 echo "12b. GameCube saves stay in the form RomM has them: one .gci, or a whole memory card"
 GC="python3 $ROOT/tests/gccard.py"
@@ -3023,6 +3045,40 @@ syncnow
 [[ "$(last conflicts)" == 0 && "$(last uploaded)" == 0 ]] || fail "the conflict came back: $(last conflicts) conflicts, $(last uploaded) up"
 [[ "$(head -c 4 "$B6/saves/Boot Kart (U).srm")$(eep)" == S2BBS2BB ]] || fail "RomM's save must stay: $(head -c 4 "$B6/saves/Boot Kart (U).srm") $(eep)"
 
+echo "32b. names from RomM that would leave their folder: the game doesn't download, a save or state stays in its folder"
+# RomM itself never sends these (it names things after files on its own disk); a hostile server or a
+# plain-http connection someone's in the middle of could.
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":958,"platform_id":1,"name":"Escape One","fs_name":"../Escape One (USA).sfc"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":959,"platform_id":1,"name":"Escape Two","fs_name":"Escape Two (USA)",
+  "files":[{"id":9591,"file_name":"Escape Two (USA).sfc","content":"ROM"},{"id":9592,"file_name":"../../escaped-two.txt","content":"OUT"}]}' >/dev/null
+post /api/download '{"rom_id":958}' >/dev/null; post /api/download '{"rom_id":959}' >/dev/null
+s1=$(waitjob 958 error); s2=$(waitjob 959 error)
+[[ "$s1" == error*"isn't safe to use: ../Escape One (USA).sfc" && "$s2" == error*"isn't safe to use: ../../escaped-two.txt" ]] \
+  || fail "a game with a file name that leaves its folder must not download: $s1 / $s2"
+# A game of its own, so nothing earlier decides which emulator takes its save and state.
+NM="$T/names"; mkdir -p "$NM/nes"; printf 'ROM:names' > "$NM/nes/Name Test (USA).nes"
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":86,"slug":"nes","name":"NES"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":957,"platform_id":86,"name":"Name Test","fs_name":"Name Test (USA).nes"}' >/dev/null
+python3 - "$API" "$NM" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, root = sys.argv[1:3]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+p = {"id": "names", "name": "Names", "enabled": True, "root": root, "rom_dir": "{root}/{platform}", "save_dir": "{root}/saves",
+     "state_dir": "{root}/states", "save_exts": ".sav", "sync_saves": True,
+     "platforms": [{"romm": ["nes"], "dir": "nes", "emulator": "nestopia", "state_cores": "nestopia"}]}
+profiles = [x for x in cfg["profiles"] if x.get("id") != "names"] + [p]
+urllib.request.urlopen(urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"}))
+PY
+curl -skf -X POST "$SV/_admin/state" -d '{"rom_id":957,"emulator":"nestopia","file_name":"Name Test (USA).state7/../../../escaped-state.state7","content":"state-out"}' >/dev/null
+curl -skf -X POST "$SV/_admin/save" -d '{"rom_id":957,"slot":"autosave-x/../../../escaped-save","emulator":"nestopia","file_name":"Name Test (USA).sav","content":"save-out"}' >/dev/null
+syncnow
+out=$(find "$T" \( -name 'escaped*' -o -name 'Escape*' \) -not -path "$T/data/*")
+[[ -z "$out" ]] || fail "a name from RomM put something outside its folder: $out"
+[[ "$(cat "$NM/states/Name Test (USA).state7" 2>&1)" == state-out ]] \
+  || fail "the state must still come down, into the states folder, under the game's name: $(find "$NM" -type f)"
+[[ "$(cat "$NM/saves/Name Test (USA).x_.._.._.._escaped-save" 2>&1)" == save-out ]] \
+  || fail "a save in a slot named past its folder must land in the save folder: $(find "$NM" -type f)"
+
 echo "33. a PC game comes down whole; elsewhere loose readmes and RomM's manuals stay on RomM, a folder's files don't; keep_all_files decides either way"
 PC="$T/pcgames"; PG="$PC/win/Mina the Hollower"; SG="$PC/saturn/Disc Quest (USA)"; P3="$PC/ps3/Sky Quest [BLUS00001]"
 curl -skf -X POST "$SV/_admin/platform" -d '{"id":99,"slug":"win","name":"Windows"}' >/dev/null
@@ -3086,5 +3142,142 @@ for g in 990 880; do post /api/delete "{\"rom_id\":$g}" >/dev/null || fail "remo
 pcget 990; [[ "$(files "$PG")" == "./Mina.exe " ]] || fail "keep_all_files false on a PC game leaves the extras on RomM: $(files "$PG")"
 pcget 880; [[ "$(files "$P3")" == "./PS3_DISC.SFB ./PS3_GAME/PARAM.SFO ./PS3_GAME/USRDIR/EBOOT.BIN " ]] \
   || fail "keep_all_files false leaves readmes and artwork wherever they are: $(files "$P3")"
+
+echo "34. Windows games under Wine (prospero-win, #50): the user folder in the game's own prefix is its save, the rest of the prefix isn't"
+PW="$T/pwin"; PFX="$PW/prefixes/Mina the Hollower"; U="$PFX/drive_c/users/prospero"; YC="AppData/Roaming/Yacht Club Games/Mina the Hollower"
+mkdir -p "$PFX/drive_c/windows/system32" "$U/$YC" "$U/Documents" "$U/Saved Games" "$U/AppData/Local"
+printf 'WINE-DLL' > "$PFX/drive_c/windows/system32/kernel32.dll"; printf 'REGEDIT4' > "$PFX/user.reg"
+printf 'mina-1' > "$U/$YC/saveData.yc"; printf 'mina-bak-1' > "$U/$YC/saveData.bak"
+python3 - "$API" "$PC" "$PW" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, games, root = sys.argv[1:4]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+p = {"id": "pwin", "name": "prospero-win", "enabled": True, "root": root, "rom_dir": games + "/{platform}",
+     "save_dir": "{root}/prefixes", "sync_saves": True,
+     "platforms": [{"romm": ["win"], "dir": "win", "game_folders": True, "save_layout": "folder",
+                    "bundle_dirs": "{root}/prefixes/{game_id}/drive_c/users/prospero"}]}
+profiles = [x for x in cfg["profiles"] if x.get("id") not in ("pcgames", "pwin")] + [p]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+# RomM's newest save of a game: its name, then each file in its zip and what it holds.
+pwsave() { curl -skf "$SV/_admin/dump" | python3 -c "
+import io,json,re,sys,zipfile
+s = sorted((s for s in json.load(sys.stdin)['saves'] if s['rom_id'] == $1), key=lambda s: (s['updated_at'], s['id']))
+if not s: sys.exit(print('none'))
+z = zipfile.ZipFile(io.BytesIO(s[-1]['content'].encode('latin1')))
+print(re.sub(r' \[[^]]*\]', '', s[-1]['file_name']), ' '.join('%s=%s' % (n, z.read(n).decode()) for n in sorted(z.namelist())))"; }
+pwzip() { # rom_id file_name, then "name=content" pairs: another device's save on RomM
+  python3 - "$@" > "$T/admin.json" <<'PY'
+import base64, io, json, sys, zipfile
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w") as z:
+    for pair in sys.argv[3:]:
+        name, content = pair.split("=", 1)
+        z.writestr(name, content)
+print(json.dumps({"rom_id": int(sys.argv[1]), "slot": "autosave", "file_name": sys.argv[2], "content_b64": base64.b64encode(buf.getvalue()).decode()}))
+PY
+  curl -skf -X POST "$SV/_admin/save" -d @"$T/admin.json" >/dev/null
+}
+syncnow
+want="Mina the Hollower.zip Mina the Hollower/$YC/saveData.bak=mina-bak-1 Mina the Hollower/$YC/saveData.yc=mina-1"
+[[ "$(pwsave 990)" == "$want" ]] || fail "the prefix's user folder must go up as the game's save, and nothing else of the prefix: $(pwsave 990)"
+syncnow
+[[ "$(last uploaded)" == 0 && "$(last downloaded)" == 0 ]] || fail "a prefix in step must stay put: $(last uploaded) up, $(last downloaded) down"
+echo "    RomM's newer save goes in file by file: the prefix and its empty folders stay"
+sleep 1.1
+pwzip 990 "Mina the Hollower.zip" "Mina the Hollower/$YC/saveData.yc=mina-2-from-pc" "Mina the Hollower/Documents/My Games/Mina/settings.ini=vsync=1"
+syncnow
+[[ "$(cat "$U/$YC/saveData.yc" 2>&1)" == "mina-2-from-pc" && "$(cat "$U/Documents/My Games/Mina/settings.ini" 2>&1)" == "vsync=1" ]] \
+  || fail "RomM's save must land in the prefix's user folder: $(cd "$U" && find . -type f)"
+[[ ! -e "$U/$YC/saveData.bak" ]] || fail "a file RomM's save doesn't have must go"
+[[ -d "$U/Saved Games" && -d "$U/AppData/Local" ]] || fail "the user folder's empty folders must stay: the PS5 can't make them again"
+[[ "$(cat "$PFX/drive_c/windows/system32/kernel32.dll")$(cat "$PFX/user.reg")" == "WINE-DLLREGEDIT4" ]] || fail "the rest of the prefix must be left alone"
+syncnow
+[[ "$(last uploaded)" == 0 && "$(last downloaded)" == 0 ]] || fail "RomM's save, placed, must stay put: $(last uploaded) up, $(last downloaded) down"
+echo "    a game with no prefix yet: RomM's save waits for one, and none is made for it"
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":991,"platform_id":99,"name":"Cave Story","fs_name":"Cave Story v1.2",
+  "files":[{"id":9911,"file_name":"Doukutsu.exe","content":"MZ-CAVE"}]}' >/dev/null
+pcget 991
+pwzip 991 "Cave Story v1.2.zip" "Cave Story v1.2/AppData/Roaming/CaveStory/Profile.dat=quote-1"
+syncnow
+[[ ! -e "$PW/prefixes/Cave Story v1.2" && ! -e "$PW/prefixes/Cave Story v1" ]] || fail "a prefix is prospero-win's to make, never ours: $(ls "$PW/prefixes")"
+grep -q "Cave Story.*: RomM's save waits until prospero-win has run it once" "$T/daemon.log" || fail "the wait must be said"
+mkdir -p "$PW/prefixes/cave story v1.2/drive_c/users/prospero/Documents"   # prospero-win made it, in its own case
+syncnow
+[[ "$(cat "$PW/prefixes/cave story v1.2/drive_c/users/prospero/AppData/Roaming/CaveStory/Profile.dat" 2>&1)" == quote-1 ]] \
+  || fail "once the prefix is there, RomM's save must come down into it, named after the whole folder: $(find "$PW/prefixes" -type f)"
+[[ -d "$PW/prefixes/cave story v1.2/drive_c/users/prospero/Documents" ]] || fail "the new prefix's folders must stay"
+
+echo "    its saves deleted on the console (the game's folders gone, the prefix still there): RomM's come back"
+rm -rf "$U/AppData/Roaming/Yacht Club Games" "$U/Documents/My Games"
+syncnow
+[[ "$(cat "$U/$YC/saveData.yc" 2>&1)" == "mina-2-from-pc" ]] \
+  || fail "saves deleted from a prefix must come back from RomM: $(last uploaded) up, $(last downloaded) down; $(cd "$U" && find . | tr '\n' ' '); $(grep -i 'mina' "$T/daemon.log" | tail -6)"
+
+echo "    a prefix named as prospero-win wants them (a-z, 0-9, - and _): the game's, however its folder is spelled; two that fit are nobody's"
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":992,"platform_id":99,"name":"Shovel Knight Dig","fs_name":"Shovel Knight Dig",
+  "files":[{"id":9921,"file_name":"dig.exe","content":"MZ-DIG"}]}' >/dev/null
+pcget 992
+SK="$PW/prefixes/shovel-knight-dig/drive_c/users/prospero"
+mkdir -p "$SK/Saved Games/Dig"; printf 'dig-1' > "$SK/Saved Games/Dig/slot0.sav"
+syncnow
+[[ "$(pwsave 992)" == "Shovel Knight Dig.zip Shovel Knight Dig/Saved Games/Dig/slot0.sav=dig-1" ]] \
+  || fail "a prefix spelled prospero-win's way must be the game's, its save named after the game's folder: $(pwsave 992)"
+mkdir -p "$PW/prefixes/shovel_knight_dig/drive_c/users/prospero"
+sleep 1.1; printf 'dig-2' > "$SK/Saved Games/Dig/slot0.sav"
+syncnow
+[[ "$(pwsave 992)" == *"slot0.sav=dig-1" ]] || fail "with two prefixes that fit, neither is the game's: $(pwsave 992)"
+rm -rf "$PW/prefixes/shovel_knight_dig"
+syncnow
+[[ "$(pwsave 992)" == *"slot0.sav=dig-2" ]] || fail "one prefix again: its save must go up: $(pwsave 992)"
+
+echo "    {game_slug} in the path means the same as {game_id}"
+python3 - "$API" <<'PY' >/dev/null
+import json, sys, urllib.request
+api = sys.argv[1]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+for p in cfg["profiles"]:
+    if p.get("id") == "pwin": p["platforms"][0]["bundle_dirs"] = "{root}/prefixes/{game_slug}/drive_c/users/prospero"
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": cfg["profiles"]}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+sleep 1.1; printf 'dig-3' > "$SK/Saved Games/Dig/slot0.sav"
+syncnow
+[[ "$(pwsave 992)" == *"slot0.sav=dig-3" ]] || fail "{game_slug} must find the game's prefix: $(pwsave 992); $(grep -i 'shovel' "$T/daemon.log" | tail -4)"
+
+echo "35. flat_games (EglantinePS5): a folder game with one file comes down as that file, straight in the games folder"
+EG="$T/eglantine"; mkdir -p "$EG/roms"
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":48,"slug":"switch-2","name":"Nintendo Switch 2"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":948,"platform_id":48,"name":"Flat Game","fs_name":"Flat Game",
+  "files":[{"id":9481,"file_name":"Flat Game + Update 2.0.1.nup","content":"NUP-flat"}]}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":949,"platform_id":48,"name":"Two Files","fs_name":"Two Files",
+  "files":[{"id":9491,"file_name":"Two Files.nup","content":"NUP-a"},{"id":9492,"file_name":"Two Files Update.nup","content":"NUP-b"}]}' >/dev/null
+python3 - "$API" "$EG" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, root = sys.argv[1:3]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+p = {"id": "egl", "name": "EglantinePS5", "enabled": True, "root": root, "rom_dir": "{root}/roms",
+     "platforms": [{"romm": ["switch-2"], "dir": "switch2", "flat_games": True}]}
+profiles = [x for x in cfg["profiles"] if x.get("id") != "egl"] + [p]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+post /api/download '{"rom_id":948}' >/dev/null
+dl_wait "$EG/roms/Flat Game + Update 2.0.1.nup"
+[[ "$(cat "$EG/roms/Flat Game + Update 2.0.1.nup")" == "NUP-flat" && ! -e "$EG/roms/Flat Game" ]] || fail "the one file must land in roms/, with no folder: $(ls "$EG/roms")"
+for _ in $(seq 1 20); do [[ "$(onc 948)" == True ]] && break; sleep 0.25; done
+[[ "$(onc 948)" == True ]] || fail "the flat game must count as on the console"
+post /api/rescan >/dev/null 2>&1 || true; syncnow
+[[ "$(onc 948)" == True && -f "$EG/roms/Flat Game + Update 2.0.1.nup" ]] || fail "the flat game must still be here after a sync"
+# Asked for again (or put there by hand): the file that's whole already is kept, not fetched twice.
+before=$(stat -c %Y "$EG/roms/Flat Game + Update 2.0.1.nup"); sleep 1.1
+post /api/download '{"rom_id":948}' >/dev/null; sleep 1.5
+[[ "$(stat -c %Y "$EG/roms/Flat Game + Update 2.0.1.nup")" == "$before" ]] || fail "a flat game already here was downloaded again"
+post /api/download '{"rom_id":949}' >/dev/null
+dl_wait "$EG/roms/Two Files/Two Files Update.nup"
+[[ -f "$EG/roms/Two Files/Two Files.nup" ]] || fail "a folder game with several files stays a folder: $(ls -R "$EG/roms")"
+post /api/delete '{"rom_id":948}' >/dev/null || fail "deleting the flat game refused"
+[[ ! -e "$EG/roms/Flat Game + Update 2.0.1.nup" && -f "$EG/roms/Two Files/Two Files.nup" ]] || fail "deleting the flat game must remove its file and nothing else: $(ls -R "$EG/roms")"
 
 echo "PASS"

@@ -16,7 +16,7 @@ elf() { if [[ -n "$1" ]]; then printf '\177ELF payload ROMM_SYNC_VERSION=%s\n' "
 ver() { [[ -f "$1" ]] && { grep -ao 'ROMM_SYNC_VERSION=[0-9A-Za-z.+-]*' "$1" | cut -d= -f2 || echo untagged; } || echo none; }
 on()  { [[ -f "$1/romm-sync.elf.auto_start" ]] && echo on || echo off; }
 start() {
-  ROMM_SYNC_APP_INSTALLED="${APP_INSTALLED:-0}" ROMM_SYNC_APP_VERSION="${APP_VERSION:-}" ROMM_SYNC_SELF_UPDATE="${SELF_UPDATE:-1}" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_HOMEBREW="$T/none" ROMM_SYNC_AUTOSTART="$ETA,$ONION" \
+  ROMM_SYNC_APP_INSTALLED="${APP_INSTALLED:-0}" ROMM_SYNC_APP_VERSION="${APP_VERSION:-}" ROMM_SYNC_SELF_UPDATE="${SELF_UPDATE:-1}" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_HOMEBREW="$T/none" ROMM_SYNC_AUTOSTART="${AUTOSTART:-$ETA,$ONION}" \
     ROMM_SYNC_PAYLOAD_COPIES="$PLD,$T/elsewhere/romm-sync.elf" "$ROOT/build/host/romm-sync" >>"$T/daemon.log" 2>&1 &
   for _ in $(seq 1 40); do curl -sf "$API/api/autostart" >/dev/null 2>&1 && return 0; sleep 0.25; done
   fail "the daemon didn't start"
@@ -128,5 +128,23 @@ expect "a dev build of a release that's out" "$(ver "$ETA/romm-sync.elf")" 1.4.3
 stop; elf 1.4.4-dev.9 > "$ETA/romm-sync.elf"; elf 1.4.4-dev.10 > "$ONION/romm-sync.elf"; start
 for d in "$ETA" "$ONION"; do expect "$d at startup" "$(ver "$d/romm-sync.elf")" 1.4.4-dev.10; done
 expect "pldmgr at startup" "$(ver "$PLD")" 1.4.4-dev.10
+
+echo "13. no HEN on the console (#61): nothing to set up, and a payload manager's copy is still kept current"
+stop; NOHEN="$T/nohen"
+field() { curl -sf "$API/api/$1" | python3 -c "import json,sys; print(json.load(sys.stdin)['$2'])"; }
+AUTOSTART="$NOHEN/etaHEN/payloads,$NOHEN/OnionHEN/payloads" start
+expect "supported" "$(field autostart supported)" True
+expect "loader_found" "$(field autostart loader_found)" False
+expect "enabled" "$(field autostart enabled)" False
+expect "the app's Settings row knows" "$(field update autostart_loader)" False
+elf 1.4.4 > "$T/up.elf"
+expect "an upload with a copy to update" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/api/autostart/upload" --data-binary @"$T/up.elf")" 200
+expect "pldmgr with no HEN" "$(ver "$PLD")" 1.4.4
+rm "$PLD"
+expect "an upload with nowhere to go" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/api/autostart/upload" --data-binary @"$T/up.elf")" 400
+[[ ! -e "$NOHEN" ]] || fail "a HEN folder was made on a console without one"
+[[ ! -e "$PLD" ]] || fail "a payload manager's copy was made where there was none"
+stop; start
+expect "with a HEN again" "$(field update autostart_loader)" True
 
 echo PASS

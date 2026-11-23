@@ -107,6 +107,7 @@ unit: build/host/gcmem_test build/host/jsonlean_cli build/host/ps2card_test buil
 	build/host/switchid_test
 	python3 tests/jsonlean_test.py build/host/jsonlean_cli
 	build/host/zip_test
+	build/host/state_test
 
 build/host/jsonlean_cli: tests/jsonlean_cli.c src/jsonlean.c src/jsonlean.h
 	@mkdir -p $(dir $@)
@@ -145,6 +146,12 @@ unit: build/host/zip_test
 build/host/zip_test: tests/zip_test.c src/zip.c src/zip.h src/util.c
 	@mkdir -p $(dir $@)
 	$(HOST_CC) $(filter-out -O2,$(COMMON_CFLAGS)) -g -fsanitize=address,undefined -o $@ $(filter %.c,$^) third_party/md5.c -lz -lpthread
+
+# The state's index answers as the state does, through removals, moves and other threads.
+unit: build/host/state_test
+build/host/state_test: tests/state_test.c src/state.c src/state.h src/util.c
+	@mkdir -p $(dir $@)
+	$(HOST_CC) $(filter-out -O2,$(COMMON_CFLAGS)) -g -fsanitize=address,undefined -o $@ $(filter %.c,$^) third_party/cJSON.c third_party/md5.c -lpthread
 
 # Switch title ids, from made-up files under a made-up key: no Nintendo data here.
 build/host/switchid_test: tests/switchid_test.c src/switchid.c src/switchid.h src/util.c

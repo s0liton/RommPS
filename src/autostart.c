@@ -86,6 +86,14 @@ static int copies(char list[][PATH_MAX_LEN], int max) {
     return kept;
 }
 
+/* The first place whose loader is installed, -1 if none is: a console
+ * jailbroken without a HEN, where a payload manager starts us or nobody does. */
+static int first_present(const place *p, int n) {
+    for (int i = 0; i < n; i++)
+        if (p[i].present) return i;
+    return -1;
+}
+
 static int enabled_at(const place *p) { return file_exists(p->elf) && (!p->flag[0] || file_exists(p->flag)); }
 
 /* The version of the payload at path, "" if none or too old to say. Read
@@ -133,7 +141,7 @@ cJSON *autostart_status(void) {
     cJSON_AddStringToObject(j, "loader", plat_info()->loader);
     cJSON_AddStringToObject(j, "payload", plat_info()->payload);
     if (plat_info()->autostart_hint) cJSON_AddStringToObject(j, "hint", plat_info()->autostart_hint);
-    cJSON_AddBoolToObject(j, "loader_found", n && p[0].present);
+    cJSON_AddBoolToObject(j, "loader_found", first_present(p, n) >= 0);
     cJSON_AddBoolToObject(j, "installed", n && file_exists(p[0].elf));
     cJSON_AddBoolToObject(j, "enabled",
                           plat_info()->autostart_enabled ? plat_info()->autostart_enabled() : n && enabled_at(&p[0]));
@@ -219,25 +227,37 @@ int autostart_enable(const void *data, size_t len, char *err, int en) {
         snprintf(err, (size_t)en, "%s can't start payloads with the %s", plat_info()->loader, plat_here());
         return -1;
     }
-    if (!p[0].present) {
+    const int f = first_present(p, n);
+    if (f < 0) {
+        /* No loader to set anything up in. Copies a payload manager keeps
+         * still get the payload, so its autoload starts this version. */
+        if (data && len) {
+            if (check_elf(data, len, err, en)) return -1;
+            const int r = put_everywhere(data, len, 0);
+            if (r > 0) return 0;
+            if (r < 0) {
+                snprintf(err, (size_t)en, "cannot write the payload to its copies");
+                return -1;
+            }
+        }
         snprintf(err, (size_t)en, "%s folder not found (%s)", plat_info()->loader, p[0].elf);
         return -1;
     }
     if (data && len) {
         if (check_elf(data, len, err, en)) return -1;
         if (put_everywhere(data, len, 0) < 0) {
-            snprintf(err, (size_t)en, "cannot write %s", p[0].elf);
+            snprintf(err, (size_t)en, "cannot write %s", p[f].elf);
             return -1;
         }
     }
-    if (!file_exists(p[0].elf)) {
+    if (!file_exists(p[f].elf)) {
         snprintf(err, (size_t)en, "upload %s first", plat_info()->payload);
         return -1;
     }
-    /* A loader that's installed but has no copy yet gets the running
-     * loader's, so the payload starts whichever one runs. */
-    for (int i = 1; i < n; i++)
-        if (p[i].present && !file_exists(p[i].elf) && copy_file(p[0].elf, p[i].elf) == 0) chmod(p[i].elf, 0777);
+    /* A loader that's installed but has no copy yet gets the first one's, so
+     * the payload starts whichever one runs. */
+    for (int i = 0; i < n; i++)
+        if (p[i].present && !file_exists(p[i].elf) && copy_file(p[f].elf, p[i].elf) == 0) chmod(p[i].elf, 0777);
     return enable_all(err, en);
 }
 

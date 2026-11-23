@@ -31,6 +31,18 @@ cJSON *state_section(const char *name);           /* object, created on demand *
 cJSON *state_entry(const char *section, const char *key); /* NULL if missing */
 cJSON *state_entry_ensure(const char *section, const char *key);
 void state_entry_remove(const char *section, const char *key);
+/* For many lookups in one section (scan_rom_dir looks up every game): the
+ * records by a hash of their keys, so a lookup doesn't walk the whole section
+ * as state_entry() does (25,000 games made each sync take ten minutes on a
+ * PS5). Use it under state_lock(), like state_entry(). It builds itself again
+ * when another thread took state_lock() since, or a record was removed or
+ * moved here; a key it doesn't have is looked up the slow way (a record added
+ * since). Records removed other than through these functions, on the same
+ * thread, aren't noticed: don't keep an index across such code. */
+typedef struct state_index state_index;
+state_index *state_index_new(const char *section); /* NULL: out of memory */
+cJSON *state_index_get(state_index *ix, const char *key); /* ix not NULL; NULL if missing */
+void state_index_free(state_index *ix);
 /* Records under from (games, saves, states, conflicts) follow it to to: a
  * folder that moved. How many moved; take state_lock around it. */
 int state_rekey(const char *from, const char *to);

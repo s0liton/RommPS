@@ -4,7 +4,11 @@
  * It's always on. The payload goes into every installed loader's payload
  * folder, so it starts whichever loader the console runs, and copies other
  * tools keep (a payload manager's) are kept up to date. A copy is never
- * replaced by an older one. */
+ * replaced by an older one.
+ *
+ * A console with no loader installed (jailbroken some other way, with a
+ * payload manager doing the starting) has nowhere to set autostart up:
+ * loader_found is false, enabling fails, and only those copies are kept. */
 #ifndef ROMM_AUTOSTART_H
 #define ROMM_AUTOSTART_H
 

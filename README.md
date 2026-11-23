@@ -80,7 +80,7 @@ The app only installs the payload and shows the web UI; the payload does the syn
 
 ### How it runs
 
-RommPS starts with your HEN, and setup turns this on for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, and RommPS puts both in every HEN's folder on the console (`/data/etaHEN/payloads` and `/data/OnionHEN/payloads`), so switching HENs keeps working. If a payload manager like pldmgr has its own copy, that copy is kept up to date too. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
+RommPS starts with your HEN, and setup turns this on for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, and RommPS puts both in every HEN's folder on the console (`/data/etaHEN/payloads` and `/data/OnionHEN/payloads`), so switching HENs keeps working. If a payload manager like pldmgr has its own copy, that copy is kept up to date too. On a console with neither HEN, RommPS sets nothing up: have your payload loader's autoload start `romm-sync.elf`. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
 
 ## Updates
 
@@ -160,6 +160,8 @@ Note: RommPS relies on your emulator **NOT** being sandboxed. Some emulators req
 | [PS5X360](https://github.com/BrinooTk/PS5X360) | Xbox 360 | Full Support | Saves | The first signed-in player's saves; games go in `/data/xbox360`, a folder each |
 | Seedee5 | Philips CD-i | Full Support | Saves and states | Each game's NVRAM is its save |
 | [ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden) | Switch | Full Support | Saves | One Switch user's saves (the first PS5 user's, unless set otherwise). Steps aside when ProsperoEden's own RomM sync is set up |
+| EglantinePS5 | Switch 2 | Full Support | Saves | Early days, for the emulator and for us. `.nup` games, which need no keys or firmware, land straight in `/data/eglantineps5/roms`. One user's saves (its first, unless set otherwise), the same ones Lichii keeps on the Steam Deck. Tested with one whole game, so temper expectations |
+| [prospero-win](https://github.com/mpereiraesaa/prospero-win) | Windows | Manual setup | With a profile you write by hand | No built-in profile yet. Add Windows as a system and pick its games folder yourself; saves sync from each game's own Wine prefix once a profile says where (`{game_id}` or `{game_slug}` in `bundle_dirs`) |
 | Mednafen | PS1, NES, SNES, Game Boy, Game Boy Color, Game Boy Advance, Genesis/Mega Drive, Master System, Game Gear, PC Engine, Neo Geo Pocket, WonderSwan, Virtual Boy, Lynx | Full Support | Full Support | Built-in profile, off until you turn it on |
 | PS2 ISOs (for PS2 FPKG tools) | PS2 | Full Support | Not synced | Downloads PS2 ISOs to a USB drive (`/mnt/usb0/ps2`) for PS2 FPKG tools. Off until you turn it on |
 

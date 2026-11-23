@@ -89,7 +89,8 @@ sed "s|^pref-path: .*|pref-path: $EM/storage/Vita3K/|" "$ROOT/tests/fixtures/vit
 
 python3 "$ROOT/tests/mock_romm.py" $MOCK_PORT 2>"$T/mock.log" & MOCK=$!
 start "$E"
-post /api/pair/start "{\"server_url\":\"$MURL\"}" >/dev/null
+# The mock RomM may still be starting: ask until it answers.
+for _ in $(seq 1 20); do post /api/pair/start "{\"server_url\":\"$MURL\"}" >/dev/null && break; sleep 0.5; done
 paired=0
 for _ in $(seq 1 60); do curl -sf "$API/api/status" | grep -q '"paired":true' && { paired=1; break; }; sleep 0.5; done
 [[ $paired == 1 ]] || fail "pairing with the mock RomM didn't finish"

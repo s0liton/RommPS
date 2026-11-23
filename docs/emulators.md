@@ -198,6 +198,14 @@ Games (with their updates and DLC), keys and saves: one Switch user's, its first
 |---|---|---|---|---|---|---|---|
 | switch | `{root}/roms` | `{rom_dir}` | a zip per game (switch), from `{root}/user/nand/user/save/0000000000000000/{switch_user}` |  | `{rom_dir}` | `.state*` |  |
 
+### EglantinePS5
+
+Switch 2 games (.nup), keys and saves: one user's, its first unless you pick another. An early emulator: its folders are ProsperoEden's under another name, and that's all we know of it so far.
+
+| System | Games | Saves | Save files | Saved as | States | State files | Memory cards |
+|---|---|---|---|---|---|---|---|
+| switch-2 | `{root}/roms` | `{rom_dir}` | a zip per game (switch), from `{root}/user/nand/user/save/0000000000000000/{switch_user}` |  | `{rom_dir}` | `.state*` |  |
+
 ## PS4
 
 ### pSNES

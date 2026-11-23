@@ -1,0 +1,74 @@
+# Code scanning. CodeQL reads the C core (src/, built as the host build
+# builds it) for the bugs C is famous for and we'd rather not ship: buffer
+# overflows, file paths made from what a zip, a disc image or RomM hands us,
+# format strings, integer games. Findings show up in the Security tab and on
+# the pull request that brings them.
+#
+# It builds nothing anyone downloads and publishes nothing: no release, no
+# dev build. The console builds (the PS5 and PS4 SDKs) and the two native
+# apps aren't in it; the host build compiles the same src/ they run.
+name: CodeQL
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  # Weekly too: new checks find old bugs.
+  schedule:
+    - cron: "23 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev zlib1g-dev libssl-dev
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: c-cpp
+          build-mode: manual
+          # Which checks, and the two left out: .github/codeql/codeql-config.yml.
+          config-file: ./.github/codeql/codeql-config.yml
+      - run: make host
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:c-cpp
+          upload: never
+          output: sarif
+      # third_party/ is vendored code we don't change (cJSON, libchdr, sigil,
+      # monocypher): its findings are its authors' business, and 52 of them
+      # would bury ours. The host build compiles it in the same command as our
+      # own code, so CodeQL can't leave it out by itself; its results go here.
+      - name: Leave out third_party/
+        run: |
+          python3 - sarif/*.sarif <<'PY'
+          import json, sys
+          def ours(result):
+              loc = (result.get("locations") or [{}])[0]
+              uri = loc.get("physicalLocation", {}).get("artifactLocation", {}).get("uri", "")
+              return not uri.startswith(("third_party/", "build/"))
+          for path in sys.argv[1:]:
+              with open(path) as f:
+                  sarif = json.load(f)
+              for run in sarif["runs"]:
+                  before = len(run.get("results", []))
+                  run["results"] = [r for r in run.get("results", []) if ours(r)]
+                  print(f"{path}: {len(run['results'])} findings, {before - len(run['results'])} in third_party/ left out")
+              with open(path, "w") as f:
+                  json.dump(sarif, f)
+          PY
+      - uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: sarif
+          category: /language:c-cpp

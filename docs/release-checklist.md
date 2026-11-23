@@ -30,6 +30,7 @@ For each one, start from the old version actually installed and set up, then upd
 | previous RommPS + payload | payload's own update first, RommPS later | "RommPS is out of date" notice |
 | any, autostart off or its flag renamed to `.off` | update, reboot | autostart is back on in every HEN folder, no `.off` left |
 | any, old copy in pldmgr's autoload | update | the pldmgr copy is updated, its autoload list untouched |
+| any, no HEN folder at all (a payload manager starts it) | update, open RommPS | no "Couldn't set up the autostart" notice, no HEN folder made, the payload manager's copy is the new version |
 | a dev build, RommPS and payload | store update of RommPS, open it | payload swapped once idle, no dev copy left in any HEN folder |
 
 ## Boot and rest mode

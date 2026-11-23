@@ -168,6 +168,7 @@ static const struct {
     {"wii", "Nintendo Wii"},
     {"wiiu", "Nintendo Wii U"},
     {"switch", "Nintendo Switch"},
+    {"switch-2", "Nintendo Switch 2"},
     {"genesis,genesis-slash-megadrive,megadrive", "Sega Mega Drive / Genesis"},
     {"sms,mastersystem", "Sega Master System"},
     {"gamegear,gg", "Sega Game Gear"},
@@ -279,6 +280,22 @@ static const char *game_subdir(const cJSON *rom, const cJSON *f) {
     if (!strncmp(fp, top, tl) && fp[tl] == '/' && fp[tl + 1] && !strstr(fp + tl, "/../") && !str_ends_with_ci(fp, "/.."))
         return fp + tl + 1;
     return "";
+}
+
+/* The first of a game's names (its fs_name, its files' file_name) that isn't
+ * one plain file name, NULL when they all are. Each becomes part of a path
+ * here; "../../something" would put a download wherever RomM, or whoever's
+ * in the middle of a plain-http connection, says. RomM itself never sends
+ * one: it names things after files on its own disk. */
+static const char *unsafe_name(const cJSON *rom) {
+    const char *fs_name = jget_str(rom, "fs_name", "");
+    if (!name_is_plain(fs_name)) return fs_name;
+    const cJSON *f;
+    cJSON_ArrayForEach(f, cJSON_GetObjectItemCaseSensitive(rom, "files")) {
+        const char *name = jget_str(f, "file_name", "");
+        if (!name_is_plain(name)) return name;
+    }
+    return NULL;
 }
 
 /* PC platforms (RomM's slugs, and the folder names people give them): a game
@@ -615,8 +632,10 @@ static void discard_partial(const char *dest, int multi) {
     unlink(part);
 }
 
-static void record_rom(job *j, const cJSON *rom, const profile_map *m, const char *dest, int multi) {
-    const char *fs_name = jget_str(rom, "fs_name", "");
+/* as: the name the game goes by here when it isn't RomM's fs_name (the one
+ * file of a folder game, flat_games), else NULL. */
+static void record_rom(job *j, const cJSON *rom, const profile_map *m, const char *dest, int multi, const char *as) {
+    const char *fs_name = as ? as : jget_str(rom, "fs_name", "");
     const cJSON *files = cJSON_GetObjectItemCaseSensitive(rom, "files");
     char stem[256];
     cJSON *stems = cJSON_CreateArray();
@@ -911,6 +930,13 @@ static void run_switch_job(job *j, const cJSON *rom, const profile_map *maps, in
                 skipped++;
                 continue;
             }
+            if (unsafe_name(full)) {
+                LOGW("%s: its %s has a file name that would leave its folder (%s), left out", j->name,
+                     jget_str(a, "kind", ""), unsafe_name(full));
+                cJSON_Delete(full);
+                skipped++;
+                continue;
+            }
             nf += nx_plan(full, m, j->target_id, files + nf, NX_MAX_FILES - nf);
             cJSON_AddItemToArray(addons, full); /* the plan points into it */
         }
@@ -1068,6 +1094,14 @@ static void run_rom_job(job *j) {
         cJSON_Delete(rom);
         return;
     }
+    const char *unsafe = unsafe_name(rom);
+    if (unsafe) {
+        LOGE("%s: RomM's file name \"%s\" would leave the games folder: not downloaded", j->name, unsafe);
+        job_end(j, JOB_ERROR, "a file name from RomM isn't safe to use: %s", unsafe);
+        profiles_free(maps);
+        cJSON_Delete(rom);
+        return;
+    }
     if (is_switch(slug)) {
         run_switch_job(j, rom, maps, n, m);
         profiles_free(maps);
@@ -1082,6 +1116,25 @@ static void run_rom_job(job *j) {
         pthread_mutex_lock(&g_q_lock);
         if (skipped < j->total) j->total -= skipped;
         pthread_mutex_unlock(&g_q_lock);
+    }
+    /* flat_games: a game RomM keeps as a folder that brings one file is that
+     * file, straight in the games folder (EglantinePS5 lists what's directly
+     * in roms/ and takes a folder there for an extracted game). With more
+     * files it stays the folder it is on RomM. */
+    const cJSON *lone = NULL;
+    if (multi && m->flat_games) {
+        const cJSON *f;
+        int count = 0;
+        cJSON_ArrayForEach(f, files) {
+            if (left_out(&lr, rom, f) || other_disc(j, f)) continue;
+            count++;
+            lone = f;
+        }
+        if (count != 1 || game_subdir(rom, lone)[0]) lone = NULL;
+    }
+    if (lone) {
+        fs_name = jget_str(lone, "file_name", "");
+        multi = 0;
     }
     /* The game is dest, or with game_folders a folder of its own holding it. */
     char game[PATH_MAX_LEN], stem[256], into[PATH_MAX_LEN];
@@ -1100,7 +1153,15 @@ static void run_rom_job(job *j) {
     const int had = file_exists(dest) || dir_exists(dest);
     int ok = 1;
     http_resp r;
-    if (!multi) {
+    if (lone) {
+        /* Already here whole (moved up by hand, or a download asked again): kept. */
+        if (file_size(dest) != (int64_t)jget_num(lone, "file_size_bytes", -1)) {
+            char *q = http_escape(fs_name);
+            snprintf(path, sizeof path, "/api/roms/%d/files/content/%s", (int)jget_num(lone, "id", 0), q);
+            free(q);
+            ok = romm_download(path, dest, progress_cb, j, &r) == 0;
+        }
+    } else if (!multi) {
         char *q = http_escape(fs_name);
         snprintf(path, sizeof path, "/api/roms/%d/content/%s", j->target_id, q);
         free(q);
@@ -1141,7 +1202,7 @@ static void run_rom_job(job *j) {
     }
 
     if (ok && !cancelled(j)) {
-        record_rom(j, rom, m, game, multi);
+        record_rom(j, rom, m, game, multi, lone ? fs_name : NULL);
         LOGI("downloaded %s to %s", j->name, game);
         /* The extra emulators for this system get the same game: a hard link
          * where they share a drive, a copy where they don't. */
@@ -1162,7 +1223,7 @@ static void run_rom_job(job *j) {
             j->sample_t = 0;
             pthread_mutex_unlock(&g_q_lock);
             if (link_or_copy_progress(game, other, progress_cb, j) == 0) {
-                record_rom(j, rom, x, other, multi);
+                record_rom(j, rom, x, other, multi, lone ? fs_name : NULL);
                 LOGI("also for %s: %s", x->profile_name, other);
             } else {
                 LOGW("could not put %s in %s", j->name, x->rom_dir);

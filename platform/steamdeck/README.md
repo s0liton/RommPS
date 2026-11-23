@@ -12,7 +12,7 @@ So here's RommPS for the Steam Deck. I guess we'll call it... **RommDeck**. Yeah
   - Save states only come down to an emulator that can load them (see [Save states](#save-states)).
   - Optional: turn save sync off in setup or Settings to use RomM just for games.
 - **RetroDECK, EmuDeck and standalone emulators, not just RetroArch**
-  - 40-odd built-in profiles, from PS1 to Switch, Xbox 360, PS Vita and PS4, each synced in the format the emulator actually reads: PS2 memory cards, GameCube GCI folders, Wii NAND saves, Switch user saves, the works. See [Emulators](#emulators).
+  - 40-odd built-in profiles, from PS1 to Switch and Switch 2, Xbox 360, PS Vita and PS4, each synced in the format the emulator actually reads: PS2 memory cards, GameCube GCI folders, Wii NAND saves, Switch user saves, the works. See [Emulators](#emulators).
   - Saves in the same shape Argosy and RommPS use, so a save made on the Deck loads on your other devices and the other way round.
 - **See what synced**
   - An activity log and every save and state kept in sync, by platform, in the app and the Web UI. Settle conflicts and restore older versions from either.
@@ -33,7 +33,7 @@ So here's RommPS for the Steam Deck. I guess we'll call it... **RommDeck**. Yeah
 
 ## Requirements
 
-- A Steam Deck (or any x86_64 Linux machine) with your emulators, however you got them:
+- A Steam Deck (or any x86_64 Linux machine; ARM ones get a [bonus build](#arm-handhelds)) with your emulators, however you got them:
   - [RetroDECK](https://retrodeck.net) 0.10 or newer, set up at least once
   - [EmuDeck](https://www.emudeck.com), RetroArch and the standalone emulators
   - or plain Flathub Flatpaks and AppImages you installed yourself
@@ -69,6 +69,12 @@ To get it into Game Mode, pick **Add RommDeck to Steam** in the setup wizard's l
    ```
 
 This puts RommDeck in `~/.local/share/rommdeck`, adds it to Desktop Mode's application menu and, with `--steam`, to your Steam library with artwork. Steam closes for a moment while the shortcut is written; it's the only way Steam lets anyone touch that file.
+
+### ARM handhelds
+
+Every release also carries an `aarch64` build (`RommDeck-<version>-aarch64.AppImage`, and the tarball to match), for ARM handhelds running a desktop Linux. The installer picks it by itself on such a machine, and its background service updates from its own files, never the Deck's.
+
+Consider it a bonus. It's built and tested by a machine, but I don't own an ARM handheld, so nobody here has actually held one running it. It was first shown to work on an AYN Odin 3 (thanks, [kiequoo](https://github.com/kiequoo)). The app wants desktop OpenGL, which on those usually means Mesa's Zink. If it breaks, tell me what broke and on what, and bring your own emulator profiles: the built-in ones assume the Deck's usual suspects.
 
 ### How it runs
 
@@ -106,7 +112,7 @@ RommDeck doesn't care how an emulator got onto your Deck. It finds RetroDECK thr
 Two things it does for you, so you don't have to go fiddling:
 
 - **Flatpaks that can't see your ROMs.** A Flathub Flatpak often has no access to your files beyond its own folder (Eden's doesn't). RommDeck keeps that emulator's games inside its own folder instead, so it works out of the box, no `flatpak override` needed. Grant it access yourself and RommDeck uses your ROMs folder again. EmuDeck's Flatpaks already have access.
-- **Game folders.** Where an emulator keeps a list of game folders (Eden, Citron, Ryujinx, DuckStation, RMG, Snes9x, melonDS), RommDeck adds its folder to that list, only while the emulator is closed, since they all rewrite their settings on exit.
+- **Game folders.** Where an emulator keeps a list of game folders (Eden, Citron, Lichii, Ryujinx, DuckStation, RMG, Snes9x, melonDS), RommDeck adds its folder to that list, only while the emulator is closed, since they all rewrite their settings on exit.
 
 > These are the built-in profiles. You can still set the folders for any emulator or platform by hand, in the app or the Web UI, and use whatever emulator you like.
 
@@ -134,6 +140,7 @@ RetroDECK's, the Flathub Flatpak (EmuDeck's), and a native install, side by side
 | Cemu | Wii U | ✓ | ✓ | Each game's saves from `mlc01` | - |
 | Eden, Citron | Switch | | ✓ | Your current Switch user's saves, and the device's | Games with their updates and DLC, keys and firmware. Open Eden once so it makes its user |
 | Ryujinx | Switch | | ✓ | Your last-used user's saves, and the device's | Games with their updates and DLC, keys and firmware. Start each game once in Ryujinx before its save can come down (RommDeck tells you) |
+| Lichii | Switch 2 | | ✓ | Your current user's saves, and the device's | `.nup` games, which go in `roms/switch2`. RommDeck adds that folder to Lichii's game folders. Open Lichii once first, so it has settings to add it to |
 | xemu | Xbox | ✓ | ✓ | From xemu's hard disk image | - |
 | Xenia | Xbox 360 | | ✓ | The signed-in player's saves | EmuDeck's Proton build and the native Linux build. Sign in to a profile in Xenia first. Very much experimental on the Deck, through no fault of ours |
 | Flycast | Dreamcast | | ✓ | Each game's VMU | - |
