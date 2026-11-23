@@ -51,7 +51,8 @@ for _ in $(seq 1 80); do curl -sf "$API/api/status" >/dev/null && { up=1; break;
 [[ $up == 1 ]] || fail "the service didn't start"
 
 echo "1. RetroDECK not set up yet: nothing found"
-post /api/pair/start "{\"server_url\":\"http://127.0.0.1:$MOCK_PORT\"}" >/dev/null
+# The mock RomM may still be starting: ask until it answers.
+for _ in $(seq 1 20); do post /api/pair/start "{\"server_url\":\"http://127.0.0.1:$MOCK_PORT\"}" >/dev/null && break; sleep 0.5; done
 paired=0
 for _ in $(seq 1 60); do curl -sf "$API/api/status" | grep -q '"paired":true' && { paired=1; break; }; sleep 0.5; done
 [[ $paired == 1 ]] || fail "pairing with the mock RomM didn't finish"
