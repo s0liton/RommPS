@@ -1,6 +1,6 @@
 {
   "format": 1,
-  "version": "2026.11.11.1",
+  "version": "2026.11.22.1",
   "console": "ps5",
   "emulators": [
   {
@@ -348,6 +348,20 @@
         "platforms": [{"romm": ["switch"], "dir": "switch", "emulator": "prosperoeden",
           "save_layout": "switch", "bundle_dirs": "{root}/user/nand/user/save/0000000000000000/{switch_user}",
           "switch_users": "{root}/config/prosperoeden.json", "switch_sync": "{root}/config/remote/save-sync.json"}]
+      }
+    },
+    {
+      "id": "eglantineps5", "name": "EglantinePS5",
+      "title_ids": ["PPSA98515"],
+      "detect": ["/data/eglantineps5", "/data/homebrew/PPSA98515"],
+      "note": "Switch 2 games (.nup), keys and saves: one user's, its first unless you pick another. An early emulator: its folders are ProsperoEden's under another name, and that's all we know of it so far.",
+      "profile": {
+        "root": "/data/eglantineps5", "rom_dir": "{root}/roms", "update_dir": "{root}/updates", "dlc_dir": "{root}/updates",
+        "bios_dir": "{root}",
+        "firmware": {"by_ext": {".keys": "keys", ".nca": "firmware"}},
+        "platforms": [{"romm": ["switch-2"], "dir": "switch2", "emulator": "eglantineps5", "flat_games": true,
+          "save_layout": "switch", "bundle_dirs": "{root}/user/nand/user/save/0000000000000000/{switch_user}",
+          "switch_users": "{root}/config/eglantineps5.json", "switch_sync": "{root}/config/remote/save-sync.json"}]
       }
     }
   ]

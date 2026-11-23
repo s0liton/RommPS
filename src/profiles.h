@@ -171,6 +171,9 @@ typedef struct {
     /* Lists each game as a folder of its own ("game_folders": PS5X360): a
      * download of one file goes in <rom_dir>/<its name>/. */
     int game_folders;
+    /* The other way round ("flat_games": EglantinePS5): a game RomM keeps as
+     * a folder that brings one file is that file, straight in rom_dir. */
+    int flat_games;
     /* "keep_all_files": 1 brings every file of a game RomM keeps as a folder,
      * 0 leaves its readmes, artwork, checksums and manuals on RomM, -1 (not
      * set) leaves that to library.c's leave_rules (PC games come down whole,
