@@ -75,7 +75,8 @@ HOME="$H" ROMM_SYNC_DATA="$T/data" ROMM_SYNC_PROC="$T/proc" ROMM_SYNC_NO_NOTIFY=
 up=0
 for _ in $(seq 1 80); do curl -sf "$API/api/status" >/dev/null && { up=1; break; }; sleep 0.25; done
 [[ $up == 1 ]] || fail "the service didn't start"
-post /api/pair/start "{\"server_url\":\"$MURL\"}" >/dev/null
+# The mock RomM may still be starting: ask until it answers.
+for _ in $(seq 1 20); do post /api/pair/start "{\"server_url\":\"$MURL\"}" >/dev/null && break; sleep 0.5; done
 paired=0
 for _ in $(seq 1 60); do curl -sf "$API/api/status" | grep -q '"paired":true' && { paired=1; break; }; sleep 0.5; done
 [[ $paired == 1 ]] || fail "pairing with the mock RomM didn't finish"
