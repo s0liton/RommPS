@@ -3095,6 +3095,10 @@ static int do_download_bundle(const scan_ctx *c, int save_id, const local_rom *r
         LOGE("save %d is not a usable zip", save_id);
         goto out;
     }
+    if (replaced == -3) {
+        LOGE("save %d could not be put in place in %s; the save there is in the backups", save_id, b.dir);
+        goto out;
+    }
     if (b.n == 0 || replaced == -2) {
         /* Unpacked, and still none of it counts as the game's: synced as is,
          * it'd come down again as "missing" on every sync. Forever. */

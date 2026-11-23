@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -655,12 +656,24 @@ static int find_dir(const char *dir, const char *name, const char *parent, int d
     return found ? 0 : -1;
 }
 
+/* -3: the zip was fine and the save couldn't be put where it goes. Says why,
+ * so the log doesn't blame the zip for a folder we may not write to. */
+static int not_placed(const char *path) {
+    LOGE("could not replace %s: %s", path, strerror(errno));
+    return -3;
+}
+
 /* Puts the folder from where to (replacing to), across drives too. */
 static int put_folder(const char *from, const char *to) {
+    struct stat st;
     remove_tree(to);
-    if (mkdir_parent(to) != 0) return -1;
-    if (rename(from, to) == 0) return 0;
-    return link_or_copy(from, to);
+    if (lstat(to, &st) == 0) {
+        errno = EACCES; /* what's left of it is someone else's */
+        return not_placed(to);
+    }
+    if (mkdir_parent(to) != 0) return not_placed(to);
+    if (rename_over(from, to) == 0) return 0;
+    return link_or_copy(from, to) == 0 ? 0 : not_placed(to);
 }
 
 /* Moves every file under from to the same place under to, over what's there,
@@ -670,8 +683,8 @@ static int move_files(const char *from, const char *to, int depth) {
     if (!d) return -1;
     struct dirent *de;
     int rc = 0;
-    if (!dir_exists(to)) unlink(to); /* a file where a folder goes */
-    if (mkdir_p(to) != 0) rc = -1;
+    if (!dir_exists(to)) remove_file(to); /* a file where a folder goes */
+    if (mkdir_p(to) != 0) rc = not_placed(to);
     while (!rc && (de = readdir(d))) {
         if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
         char src[PATH_MAX_LEN], dst[PATH_MAX_LEN];
@@ -682,7 +695,7 @@ static int move_files(const char *from, const char *to, int depth) {
             continue;
         }
         if (dir_exists(dst)) remove_tree(dst); /* and a folder where a file goes */
-        if (rename(src, dst) != 0 && copy_file(src, dst) != 0) rc = -1;
+        if (rename_over(src, dst) != 0 && copy_file(src, dst) != 0) rc = not_placed(dst);
     }
     closedir(d);
     return rc;
@@ -700,7 +713,7 @@ static int put_over(const bundle *b, const char *from) {
         const char *name = b->files[i].name;
         char in[PATH_MAX_LEN];
         path_join(in, sizeof in, from, !strncmp(name, b->game_id, idl) && name[idl] == '/' ? name + idl + 1 : name);
-        if (!file_exists(in)) unlink(b->files[i].path);
+        if (!file_exists(in) && remove_file(b->files[i].path) != 0) return not_placed(b->files[i].path);
     }
     return move_files(from, b->dir, 0);
 }
@@ -814,11 +827,12 @@ static int place_unpacked(bundle *b, const char *tmp) {
         while (d && (de = readdir(d))) {
             if (!scummvm_save(de->d_name, b->game_id)) continue;
             if (!got++)
-                for (int i = 0; i < b->n; i++) unlink(b->files[i].path);
+                for (int i = 0; i < b->n; i++)
+                    if (remove_file(b->files[i].path) != 0) rc = not_placed(b->files[i].path);
             char in[PATH_MAX_LEN], to[PATH_MAX_LEN];
             path_join(in, sizeof in, from, de->d_name);
             path_join(to, sizeof to, b->dir, de->d_name);
-            if (mkdir_parent(to) != 0 || (rename(in, to) != 0 && link_or_copy(in, to) != 0)) rc = -1;
+            if (mkdir_parent(to) != 0 || (rename_over(in, to) != 0 && link_or_copy(in, to) != 0)) rc = not_placed(to);
         }
         if (d) closedir(d);
         return got ? rc : -2;
@@ -850,10 +864,11 @@ static int place_unpacked(bundle *b, const char *tmp) {
         char meta[PATH_MAX_LEN + 16], local_meta[PATH_MAX_LEN + 16];
         snprintf(meta, sizeof meta, "%s.metadata", src);
         snprintf(local_meta, sizeof local_meta, "%s.metadata", b->dir);
-        if (put_folder(src, b->dir) != 0) return -1;
+        const int put = put_folder(src, b->dir);
+        if (put != 0) return put;
         if (file_exists(meta)) {
-            unlink(local_meta);
-            if (rename(meta, local_meta) != 0) link_or_copy(meta, local_meta);
+            remove_file(local_meta);
+            if (rename_over(meta, local_meta) != 0) link_or_copy(meta, local_meta);
         }
         return 0;
     }
@@ -907,7 +922,7 @@ int bundle_replace(bundle *b, const char *zip_path, const char *tmp_dir) {
         remove_tree(tmp_dir);
         return -1;
     }
-    int rc;
+    int rc = 0;
     if (!strcmp(b->layout, "psp") || !strcmp(b->layout, "ps3") || !strcmp(b->layout, "gci")) {
         if (strcmp(b->layout, "gci") != 0) {
             /* The save folders the zip brings replace theirs, whole. The
@@ -920,16 +935,24 @@ int bundle_replace(bundle *b, const char *zip_path, const char *tmp_dir) {
                 path_join(in, sizeof in, tmp_dir, de->d_name);
                 if (de->d_name[0] == '.' || !dir_exists(in)) continue;
                 path_join(path, sizeof path, b->dir, de->d_name);
+                struct stat st;
                 remove_tree(path);
+                if (lstat(path, &st) == 0) {
+                    /* Unpacked over what's left it'd be half theirs, half
+                     * RomM's: a save no game wrote. */
+                    errno = EACCES;
+                    rc = not_placed(path);
+                }
             }
             if (d) closedir(d);
             remove_tree(tmp_dir);
         } else {
             remove_tree(tmp_dir);
-            for (int i = 0; i < b->n; i++) unlink(b->files[i].path);
+            for (int i = 0; i < b->n; i++)
+                if (remove_file(b->files[i].path) != 0) rc = not_placed(b->files[i].path);
         }
-        mkdir_p(b->dir);
-        rc = zip_extract_all(zip_path, b->dir) < 0 ? -1 : 0;
+        /* It unpacked once already (above), so a failure now is the folder's. */
+        if (!rc && (mkdir_p(b->dir) != 0 || zip_extract_all(zip_path, b->dir) < 0)) rc = not_placed(b->dir);
     } else {
         rc = place_unpacked(b, tmp_dir);
         remove_tree(tmp_dir);

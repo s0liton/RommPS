@@ -486,6 +486,28 @@ syncnow
 [[ -f "$SD/ULUS10336GAMEDATA/BIG.BIN" ]] || fail "game data folder must be left alone"
 [[ -f "$SD/ULUS10336INSTALL/SLOT.DAT" ]] || fail "what the game installed must be left alone"
 ls "$T/data/backups/30/" | grep -q "ULUS10336.zip" || fail "no backup of the PSP save"
+# The emulator made the save's folders for itself (PSP5 does: 0755, as another
+# user). A newer save from RomM replaces them all the same (#58).
+python3 - "$SD" > "$T/new.zip.b64" <<'PY'
+import base64, io, sys, zipfile
+buf = io.BytesIO()
+with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+    z.writestr("ULUS10336DATA00/DATA.BIN", "psp-save-3\n")
+    z.writestr("ULUS10336DATA00/PARAM.SFO", open(sys.argv[1] + "/ULUS10336DATA00/PARAM.SFO", "rb").read())
+    z.writestr("ULUS10336DATA01/DATA.BIN", "psp-slot-2\n")
+    z.writestr("ULUS10336DATA01/PARAM.SFO", open(sys.argv[1] + "/ULUS10336DATA00/PARAM.SFO", "rb").read())
+print(base64.b64encode(buf.getvalue()).decode())
+PY
+sleep 1.1
+curl -sf -X POST "http://127.0.0.1:$MOCK_PORT/_admin/save" -d "{\"rom_id\":30,\"slot\":\"autosave\",\"file_name\":\"ULUS10336.zip\",\"content_b64\":\"$(cat "$T/new.zip.b64")\"}" >/dev/null
+chmod 555 "$SD/ULUS10336DATA00" "$SD"
+syncnow
+modes="$(stat -c %a "$SD")"; chmod -R u+rwx "$SD"
+[[ "$(last failed)" == 0 ]] || fail "a save folder the emulator made (0555) wasn't replaced: $(grep -a 'could not\|not a usable' "$T/daemon.log" | tail -3)"
+[[ "$(cat "$SD/ULUS10336DATA00/DATA.BIN")" == "psp-save-3" ]] || fail "PSP save not replaced in a folder the emulator made"
+[[ "$(cat "$SD/ULUS10336DATA01/DATA.BIN")" == "psp-slot-2" ]] || fail "a new PSP save folder not made in a SAVEDATA the emulator made"
+[[ "$modes" == "777" ]] || fail "SAVEDATA wasn't left open to the emulator and us (got $modes)"
+[[ -f "$SD/ULUS10336GAMEDATA/BIG.BIN" ]] || fail "game data folder must be left alone"
 
 echo "12b. GameCube saves stay in the form RomM has them: one .gci, or a whole memory card"
 GC="python3 $ROOT/tests/gccard.py"

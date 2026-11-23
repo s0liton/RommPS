@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <time.h>
 
 #include "version.h" /* version_cmp, version_valid */
@@ -67,6 +68,15 @@ int link_or_copy(const char *src, const char *dst); /* hard link, a copy across 
 int link_or_copy_progress(const char *src, const char *dst, copy_progress_fn cb, void *ud);
 int move_file(const char *src, const char *dst); /* rename, falls back to copy+unlink */
 void remove_tree(const char *path);              /* rm -rf */
+/* A folder an emulator made for itself (0755, not always as our user) opened
+ * to everyone, like the ones we make; parent_share for the folder a path is
+ * in. The three below do it by themselves, once, when they're refused, so
+ * nothing is opened up that didn't have to be. */
+void dir_share(const char *dir);
+void parent_share(const char *path);
+FILE *fopen_new(const char *path);                /* fopen(path, "wb") */
+int rename_over(const char *from, const char *to);
+int remove_file(const char *path);                /* unlink; a file that's gone already is fine */
 const char *path_basename(const char *path);
 void path_join(char *out, size_t n, const char *a, const char *b);
 /* "Foo (USA).sfc" -> "Foo (USA)" */

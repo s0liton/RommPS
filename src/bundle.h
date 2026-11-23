@@ -111,7 +111,9 @@ int bundle_zip_has_user(const bundle *b, const char *zip_path, const char *tmp_d
 int bundle_zip(const bundle *b, const char *zip_path);
 /* Replaces the bundle's files with the zip's contents. -1 for a zip it
  * can't use, -2 for one holding none of the game's saves (psvita, ps4,
- * folder: other games' folders; scummvm: no file of the target's), with nothing replaced either way. */
+ * folder: other games' folders; scummvm: no file of the target's), with
+ * nothing replaced either way; -3 when the zip was fine and the save's folder
+ * wouldn't take it (logged with the reason). */
 int bundle_replace(bundle *b, const char *zip_path, const char *tmp_dir);
 /* psp, ps3: the title ids of the save folders in a zip that aren't the
  * bundle's (its game id or also), comma-separated into out ("" for none).
