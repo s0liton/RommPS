@@ -258,11 +258,16 @@ char *read_file(const char *path, size_t *len) {
 static int refused(void) { return errno == EACCES || errno == EPERM; }
 
 void dir_share(const char *dir) {
-    struct stat st;
-    if (stat(dir, &st) != 0 || !S_ISDIR(st.st_mode) || (st.st_mode & 0777) == 0777) return;
+    /* Looked at and changed through one open folder, so it's the same folder
+     * both times whatever happens to the name in between. */
     const int saved = errno;
-    if (chmod(dir, 0777) == 0) LOGI("opened %s to every user (it was %03o)", dir, (unsigned)(st.st_mode & 0777));
-    else LOGW("%s is %03o and can't be opened up: %s", dir, (unsigned)(st.st_mode & 0777), strerror(errno));
+    const int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    struct stat st;
+    if (fd >= 0 && fstat(fd, &st) == 0 && (st.st_mode & 0777) != 0777) {
+        if (fchmod(fd, 0777) == 0) LOGI("opened %s to every user (it was %03o)", dir, (unsigned)(st.st_mode & 0777));
+        else LOGW("%s is %03o and can't be opened up: %s", dir, (unsigned)(st.st_mode & 0777), strerror(errno));
+    }
+    if (fd >= 0) close(fd);
     errno = saved;
 }
 
