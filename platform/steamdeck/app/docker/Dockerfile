@@ -28,12 +28,15 @@ ENV CMAKE_PREFIX_PATH=/opt/sdl3
 # appimagetool and the AppImage runtime, pinned and unpacked, so packaging
 # runs without FUSE and downloads nothing. appimagetool brings its own
 # zsyncmake for the .zsync, and checks the metainfo with appstreamcli (above).
-ARG APPIMAGETOOL_URL=https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
-ARG RUNTIME_URL=https://github.com/AppImage/type2-runtime/releases/download/20251108/runtime-x86_64
-RUN curl -fsSL -o /tmp/appimagetool "$APPIMAGETOOL_URL" \
+# Both come for the machine the image is built for (x86_64, or aarch64 for the
+# ARM build), so the same Dockerfile makes either.
+ARG APPIMAGETOOL_TAG=1.9.1
+ARG RUNTIME_TAG=20251108
+RUN arch="$(uname -m)" \
+    && curl -fsSL -o /tmp/appimagetool "https://github.com/AppImage/appimagetool/releases/download/$APPIMAGETOOL_TAG/appimagetool-$arch.AppImage" \
     && chmod +x /tmp/appimagetool \
     && cd /opt && /tmp/appimagetool --appimage-extract >/dev/null \
     && mv /opt/squashfs-root /opt/appimagetool \
     && ln -s /opt/appimagetool/AppRun /usr/local/bin/appimagetool \
     && rm /tmp/appimagetool \
-    && curl -fsSL -o /opt/appimage-runtime-x86_64 "$RUNTIME_URL"
+    && curl -fsSL -o /opt/appimage-runtime "https://github.com/AppImage/type2-runtime/releases/download/$RUNTIME_TAG/runtime-$arch"

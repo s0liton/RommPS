@@ -33,7 +33,7 @@ So here's RommPS for the Steam Deck. I guess we'll call it... **RommDeck**. Yeah
 
 ## Requirements
 
-- A Steam Deck (or any x86_64 Linux machine) with your emulators, however you got them:
+- A Steam Deck (or any x86_64 Linux machine; ARM ones get a [bonus build](#arm-handhelds)) with your emulators, however you got them:
   - [RetroDECK](https://retrodeck.net) 0.10 or newer, set up at least once
   - [EmuDeck](https://www.emudeck.com), RetroArch and the standalone emulators
   - or plain Flathub Flatpaks and AppImages you installed yourself
@@ -69,6 +69,12 @@ To get it into Game Mode, pick **Add RommDeck to Steam** in the setup wizard's l
    ```
 
 This puts RommDeck in `~/.local/share/rommdeck`, adds it to Desktop Mode's application menu and, with `--steam`, to your Steam library with artwork. Steam closes for a moment while the shortcut is written; it's the only way Steam lets anyone touch that file.
+
+### ARM handhelds
+
+Every release also carries an `aarch64` build (`RommDeck-<version>-aarch64.AppImage`, and the tarball to match), for ARM handhelds running a desktop Linux. The installer picks it by itself on such a machine, and its background service updates from its own files, never the Deck's.
+
+Consider it a bonus. It's built and tested by a machine, but I don't own an ARM handheld, so nobody here has actually held one running it. It was first shown to work on an AYN Odin 3 (thanks, [kiequoo](https://github.com/kiequoo)). The app wants desktop OpenGL, which on those usually means Mesa's Zink. If it breaks, tell me what broke and on what, and bring your own emulator profiles: the built-in ones assume the Deck's usual suspects.
 
 ### How it runs
 

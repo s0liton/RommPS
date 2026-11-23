@@ -6,10 +6,10 @@
 #   platform/steamdeck/package.sh 1.5.0 [OUT_DIR]
 #
 # Writes to OUT_DIR (build/steamdeck/release by default):
-#   rommdeck-<version>-x86_64.tar.gz   the app, RomM Sync and install.sh (--steam adds it to Steam)
-#   RommDeck-<version>-x86_64.AppImage one file: each launch installs or updates RomM Sync, the
+#   rommdeck-<version>-<arch>.tar.gz   the app, RomM Sync and install.sh (--steam adds it to Steam)
+#   RommDeck-<version>-<arch>.AppImage one file: each launch installs or updates RomM Sync, the
 #                                      background service, then opens the app
-#   RommDeck-<version>-x86_64.AppImage.zsync
+#   RommDeck-<version>-<arch>.AppImage.zsync
 #                                      for AppImageUpdate and Gear Lever, which find it through the
 #                                      update information in the AppImage (UPDATE below)
 #   RommDeck-Installer.desktop         what most people download: double-clicked, it runs
@@ -24,9 +24,13 @@ B="$ROOT/build/steamdeck"
 HERE="$ROOT/platform/steamdeck"
 # The AppStream id: the metainfo's, the .desktop's, the icon's and the window's (main.cpp).
 ID=io.github.s0liton.RommDeck
-APPIMAGE="RommDeck-$VERSION-x86_64.AppImage"
-# Where an AppImage looks for its successor: the .zsync of the latest release (never a prerelease).
-UPDATE="gh-releases-zsync|s0liton|RommDeck|latest|RommDeck-*-x86_64.AppImage.zsync"
+# What it was built for, which is the machine this runs on (the build image's):
+# x86_64 for the Deck, aarch64 for the ARM build.
+ARCH="$(uname -m)"
+APPIMAGE="RommDeck-$VERSION-$ARCH.AppImage"
+# Where an AppImage looks for its successor: the .zsync of the latest release
+# (never a prerelease), for its own kind of machine.
+UPDATE="gh-releases-zsync|s0liton|RommDeck|latest|RommDeck-*-$ARCH.AppImage.zsync"
 
 for f in "$B/romm-sync" "$B/app/rommdeck" "$B/app/assets"; do
     [[ -e "$f" ]] || { echo "package.sh: $f isn't built" >&2; exit 1; }
@@ -45,7 +49,7 @@ cp "$B/app/rommdeck" "$B/romm-sync" "$T/"
 cp -a "$B/app/assets" "$WORK/steam-art" "$WORK/licenses" "$T/"
 cp "$HERE/install.sh" "$HERE/install-service.sh" "$HERE/add-to-steam.py" "$T/"
 chmod 755 "$T/rommdeck" "$T/romm-sync" "$T/install.sh" "$T/install-service.sh" "$T/add-to-steam.py"
-tar -C "$WORK" -czf "$OUT/rommdeck-$VERSION-x86_64.tar.gz" rommdeck
+tar -C "$WORK" -czf "$OUT/rommdeck-$VERSION-$ARCH.tar.gz" rommdeck
 
 # The AppImage: the same files under usr/lib/rommdeck (the app finds assets/
 # and add-to-steam.py beside itself, install-service.sh the licences), and a
@@ -99,8 +103,8 @@ chmod 755 "$A/AppRun" "$A/usr/lib/rommdeck/rommdeck" "$A/usr/lib/rommdeck/romm-s
 # appimagetool checks the .desktop and the metainfo (offline: a link that's down
 # today is no reason to fail a build), embeds UPDATE, and has zsyncmake write
 # the .zsync where it runs, pointing at the AppImage beside it.
-(cd "$OUT" && ARCH=x86_64 AS_VALIDATE_NONET=1 appimagetool -u "$UPDATE" \
-    --runtime-file /opt/appimage-runtime-x86_64 "$A" "$APPIMAGE" >/dev/null)
+(cd "$OUT" && ARCH="$ARCH" AS_VALIDATE_NONET=1 appimagetool -u "$UPDATE" \
+    --runtime-file /opt/appimage-runtime "$A" "$APPIMAGE" >/dev/null)
 [[ -s "$OUT/$APPIMAGE.zsync" ]] || { echo "package.sh: appimagetool made no $APPIMAGE.zsync" >&2; exit 1; }
 
 # The installer: the same two files in every release, so a .desktop kept from

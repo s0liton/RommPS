@@ -6,7 +6,8 @@
  *
  * A release carries a payload, manifest and signature for each console, named in
  * plat_info(): romm-sync.elf, manifest.json and manifest.sig for the PS5,
- * romm-sync-ps4.elf, manifest-ps4.json and manifest-ps4.sig for the PS4. The
+ * romm-sync-ps4.elf, manifest-ps4.json and manifest-ps4.sig for the PS4
+ * (RommDeck's releases the same for the Deck, and again with -aarch64). The
  * manifest is {version, file, size, sha512} and the signature is Ed25519 by one
  * of the keys in update_keys.h. The payload is only installed if all of that
  * checks out, including the manifest naming this console's payload.

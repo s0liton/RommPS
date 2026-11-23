@@ -71,14 +71,23 @@ static int retroarch_label(const char *root, char *label, size_t ln, char *name,
 static int refresh(void);
 static int autostart_enabled(void);
 
+/* A release carries the service once for each kind of machine: the Deck's
+ * (x86_64) under the names it always had, the ARM build's with -aarch64. Each
+ * updates itself from its own, so an ARM handheld never fetches the Deck's. */
+#if defined(__aarch64__)
+#define RELEASE_KIND "-aarch64"
+#else
+#define RELEASE_KIND ""
+#endif
+
 static plat_info_t INFO = {
     .name = "steamdeck",
     .console = "Steam Deck",
     .client = "romm-sync-steamdeck",
     .loader = "systemd",
-    .payload = "romm-sync-steamdeck",
-    .manifest = "manifest-steamdeck.json",
-    .manifest_sig = "manifest-steamdeck.sig",
+    .payload = "romm-sync-steamdeck" RELEASE_KIND,
+    .manifest = "manifest-steamdeck" RELEASE_KIND ".json",
+    .manifest_sig = "manifest-steamdeck" RELEASE_KIND ".sig",
     .homebrew_dirs = HOMEBREW_DIRS,
     .emulator_dirs = EMULATOR_DIRS,
     .retroarch_root = "",

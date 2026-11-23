@@ -14,7 +14,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REL="${1:-$ROOT/build/steamdeck/release}"
-apps=("$REL"/RommDeck-*-x86_64.AppImage)
+ARCH="$(uname -m)" # the kind of machine the packages were built for: this one
+apps=("$REL"/RommDeck-*-"$ARCH".AppImage)
 APP_SRC="${apps[0]}"
 [[ -f $APP_SRC ]] || { echo "tests/steamdeck_install.sh: no AppImage in $REL (run package.sh first)" >&2; exit 1; }
 HERE="$ROOT/platform/steamdeck"
@@ -136,7 +137,7 @@ cp "$HERE/rommdeck-installer.sh" "$T/release/latest/download/"
 # new one, so each checksum differs), its .zsync (listed first: the installer
 # must still see exactly one AppImage), SHA256SUMS of both, and the API's answer.
 publish() {
-    local v="$1" name="RommDeck-$1-x86_64.AppImage" dir="$T/release/$1"
+    local v="$1" name="RommDeck-$1-$ARCH.AppImage" dir="$T/release/$1"
     mkdir -p "$dir"
     cp "$APP_SRC" "$dir/$name"
     printf '%s' "$v" >>"$dir/$name"
@@ -313,7 +314,7 @@ installer DISPLAY=:99 bash -c "${script//"$gh"/"$URL/latest/download/"}" || fail
 said "[Could not download the RommDeck installer. Check your connection and try again.]"
 
 echo "9. from the tarball (install.sh --steam): the installer takes over, and its copy of the app goes"
-tarballs=("$REL"/rommdeck-*-x86_64.tar.gz)
+tarballs=("$REL"/rommdeck-*-"$ARCH".tar.gz)
 [[ -f ${tarballs[0]} ]] || fail "no tarball in $REL"
 rm -rf "$APPIMG" "$DEST" "$UNIT" "$MENU"
 vdf write "$STEAMCFG/shortcuts.vdf" "[$OTHER]"
