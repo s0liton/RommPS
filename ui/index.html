@@ -953,7 +953,8 @@ function loadAutostart() {
     if (a.loader === "systemd") h = a.enabled ? '<p class="ok">Starts with the ' + esc(HERE) + ", in Game Mode and Desktop Mode.</p>"
       : '<p class="warn">' + esc(SERVICE) + "'s background service isn't set to start with the " + esc(HERE) + ". Run install.sh again, or in Desktop Mode: <code>systemctl --user enable romm-sync</code></p>";
     else if (!a.supported) h = '<p class="muted">' + ld + " can't start payloads with the console. Send " + pl + " again after each boot.</p>";
-    else if (!a.loader_found) h = '<p class="muted">' + ld + " not found. Load the payload after each boot.</p>";
+    else if (!a.loader_found) h = '<p class="muted">' + ld + " not found. " + (a.copies && a.copies.length ? "Your payload manager's copy (<code>" + esc(a.copies[0].path) + "</code>) is kept up to date: have it start that one with the console."
+      : "Have your payload loader start " + pl + " with the console, or load it after each boot.") + "</p>";
     else if (a.enabled && a.hint) h = '<p class="ok">Copied to <code>' + esc(a.path) + "</code>.</p><p>" + esc(a.hint) + "</p>";
     else if (a.enabled) h = '<p class="ok">Starts with ' + ld + ".</p>";
     else if (a.installed) h = '<p class="muted">Installed at <code>' + esc(a.path) + '</code></p><button class="primary" id="asOn">Start with the ' + esc(HERE) + "</button>";

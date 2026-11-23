@@ -661,8 +661,11 @@ void App::repair_autostart()
         if (!r.ok() || !j || !flag(j.get(), "supported"))
             return;
         // RommPS needs RomM Sync running, so it starts with the console, from
-        // a copy no older than the one RommPS carries.
-        bool old = !flag(j.get(), "enabled");
+        // a copy no older than the one RommPS carries. With no HEN installed
+        // there's nowhere to turn that on: whatever started RomM Sync (a
+        // payload manager's autoload) keeps doing it, and only its copy is
+        // kept current.
+        bool old = flag(j.get(), "loader_found") && !flag(j.get(), "enabled");
         const cJSON *c;
         cJSON_ArrayForEach(c, cJSON_GetObjectItemCaseSensitive(j.get(), "copies"))
             old |= version_cmp(str(c, "version"), kMinPayload) < 0;
@@ -1509,6 +1512,7 @@ void App::refresh_update()
         u.latest = str(j.get(), "latest");
         u.available = flag(j.get(), "available");
         u.autostart = flag(j.get(), "autostart");
+        u.autostart_loader = flag(j.get(), "autostart_loader") || !flag(j.get(), "autostart_supported");
         // Payloads before 1.1.1 don't say: they update themselves.
         const cJSON *su = cJSON_GetObjectItemCaseSensitive(j.get(), "self_update");
         u.self_update = !cJSON_IsBool(su) || cJSON_IsTrue(su);

@@ -291,6 +291,7 @@ struct Update
     bool known = false;
     std::string state, message, error, current, latest;
     bool available = false, autostart = false;
+    bool autostart_loader = true; // false: no HEN here to start the service with the console
     // false: RomM Sync doesn't update itself; a new RommPS brings it (PS5).
     bool self_update = true;
     double done = 0, total = 0;

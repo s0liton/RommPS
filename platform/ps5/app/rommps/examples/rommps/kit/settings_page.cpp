@@ -383,7 +383,8 @@ void SettingsPage::draw(hui::gfx::DrawList &list, const hui::ui::Fonts &fonts, c
     std::snprintf(web, sizeof web, "http://%s:%d", s.ip.c_str(), s.port);
     item("ALSO ON YOUR PHONE OR COMPUTER", s.ip.empty() ? "" : web);
     const Update &u = app.update();
-    item("STARTS WITH THE " ROMM_HERE_UPPER, !u.known ? "" : u.autostart ? "Yes" : "No: reopen " ROMM_APP " to set it up");
+    item("STARTS WITH THE " ROMM_HERE_UPPER,
+         !u.known ? "" : u.autostart ? "Yes" : !u.autostart_loader ? "Up to your payload loader (no HEN found)" : "No: reopen " ROMM_APP " to set it up");
     list.line(panel.x + 36, panel.y + panel.h - 196, panel.x + panel.w - 36, panel.y + panel.h - 196, 1.5f, look.outline);
     draw_credits(list, fonts, look, {x, panel.y + panel.h - 168, panel.w - 72, 136}, on_credits_, clock);
     touch::zone(list, {x - 12, panel.y + panel.h - 180, 380, 160}, &on_credits_, 0, touch::kButton); // the portrait
