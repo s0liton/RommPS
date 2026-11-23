@@ -364,6 +364,8 @@ cJSON *update_status(void) {
     /* On, not just installed: what "starts with the console" means. */
     cJSON_AddBoolToObject(j, "autostart", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(as, "enabled")));
     cJSON_AddBoolToObject(j, "autostart_supported", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(as, "supported")));
+    /* false: no loader here to start it, so that's someone else's job. */
+    cJSON_AddBoolToObject(j, "autostart_loader", cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(as, "loader_found")));
     cJSON_Delete(as);
     return j;
 }

@@ -70,8 +70,11 @@ static const char *const EMULATOR_DIRS[] = {NULL};
  * starts with either, and switching HENs never brings back an old copy. */
 static const char *const ETAHEN_ALSO[] = {"/data/OnionHEN/payloads", NULL};
 static const char *const ONIONHEN_ALSO[] = {"/data/etaHEN/payloads", NULL};
-/* pldmgr's autoload starts the copies it keeps here. */
-static const char *const PAYLOAD_COPIES[] = {"/data/pldmgr/payloads/romm-sync/romm-sync.elf", NULL};
+/* pldmgr's autoload starts the copies it keeps here (0.6.3 was seen keeping
+ * its own under local/). On a console with neither HEN, that's the only
+ * autostart there is. */
+static const char *const PAYLOAD_COPIES[] = {"/data/pldmgr/payloads/romm-sync/romm-sync.elf",
+                                             "/data/pldmgr/payloads/local/romm-sync/romm-sync.elf", NULL};
 
 static plat_info_t INFO = {
     .name = "ps5",

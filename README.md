@@ -80,7 +80,7 @@ The app only installs the payload and shows the web UI; the payload does the syn
 
 ### How it runs
 
-RommPS starts with your HEN, and setup turns this on for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, and RommPS puts both in every HEN's folder on the console (`/data/etaHEN/payloads` and `/data/OnionHEN/payloads`), so switching HENs keeps working. If a payload manager like pldmgr has its own copy, that copy is kept up to date too. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
+RommPS starts with your HEN, and setup turns this on for you. Both HENs start `payloads/romm-sync.elf` when `romm-sync.elf.auto_start` sits next to it, and RommPS puts both in every HEN's folder on the console (`/data/etaHEN/payloads` and `/data/OnionHEN/payloads`), so switching HENs keeps working. If a payload manager like pldmgr has its own copy, that copy is kept up to date too. On a console with neither HEN, RommPS sets nothing up: have your payload loader's autoload start `romm-sync.elf`. If you build it yourself, `make install PS5_HOST=<ps5-ip>` copies it over FTP (add `PS5_FTP=ftp://<ps5-ip>:1337 PS5_HEN_DIR=/data/OnionHEN` for onionHEN's FTP plugin).
 
 ## Updates
 
