@@ -621,6 +621,12 @@ int link_or_copy(const char *src, const char *dst) {
     return link_or_copy_progress(src, dst, NULL, NULL);
 }
 
+size_t str_hash(const char *s) {
+    size_t h = 2166136261u;
+    while (*s) h = (h ^ (unsigned char)*s++) * 16777619u;
+    return h;
+}
+
 int fnv1a64_file_hex(const char *path, char out[17]) {
     FILE *f = fopen(path, "rb");
     if (!f) return -1;
