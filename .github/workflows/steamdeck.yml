@@ -4,8 +4,13 @@
 # releases from that copy, so a change that breaks it there, or a file the copy
 # leaves out, fails here first. Linting is lint.yml's job.
 #
-# The packages end up as the artifact "steamdeck"; this workflow never touches
-# a release. ci.yml runs it on pushes and pull requests.
+# Twice: for the Deck (x86_64), and for ARM handhelds (aarch64) on GitHub's ARM
+# machines, so nothing is emulated. The ARM build is a bonus: nobody here has
+# such a device, so it may fail without failing the rest.
+#
+# The packages end up as the artifacts "steamdeck" and "steamdeck-aarch64";
+# this workflow never touches a release. ci.yml runs it on pushes and pull
+# requests.
 name: RommDeck
 
 on:
@@ -25,7 +30,21 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+            artifact: steamdeck
+            bonus: false
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+            artifact: steamdeck-aarch64
+            bonus: true
+    name: build (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.bonus }}
     timeout-minutes: 60
     env:
       COPY: ${{ github.workspace }}/rommdeck
@@ -52,8 +71,9 @@ jobs:
           context: rommdeck/platform/steamdeck/app/docker
           tags: ${{ steps.copy.outputs.image }}
           load: true
-          cache-from: type=gha,scope=steamdeck
-          cache-to: type=gha,mode=max,scope=steamdeck,ignore-error=true
+          # The x86_64 image shares lint.yml's cache; the ARM one has its own.
+          cache-from: type=gha,scope=${{ matrix.artifact }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.artifact }},ignore-error=true
 
       - name: Build, test and package
         env:
@@ -63,6 +83,6 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: steamdeck
+          name: ${{ matrix.artifact }}
           path: rommdeck/build/steamdeck/release/
           if-no-files-found: error

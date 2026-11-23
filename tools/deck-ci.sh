@@ -7,10 +7,11 @@
 #   tools/deck-ci.sh VERSION      1.5.0 (a leading v is dropped), or ci
 #
 #   tests/steamdeck*.sh  the sync service on RetroDECK, EmuDeck and standalone layouts, against the mock RomM
-#   package.sh           rommdeck-<version>-x86_64.tar.gz and RommDeck-<version>-x86_64.AppImage
+#   package.sh           rommdeck-<version>-<arch>.tar.gz and RommDeck-<version>-<arch>.AppImage
 #                        (with its .zsync, for AppImageUpdate and Gear Lever),
 #                        RommDeck-Installer.desktop and rommdeck-installer.sh, plus
-#                        romm-sync-steamdeck (the service alone, for in-app updates)
+#                        romm-sync-steamdeck (the service alone, for in-app updates;
+#                        romm-sync-steamdeck-aarch64 from the ARM build)
 #   tests/steamdeck_install.sh  the installer, with that AppImage, against a fake release
 #
 # Everything a release publishes ends up in build/steamdeck/release.
@@ -40,8 +41,15 @@ done
 step "Package"
 rm -rf "$OUT"
 tools/deck-build.sh platform/steamdeck/package.sh "$VERSION" "$OUT"
-# The service on its own too, for its in-app updates (src/update.c).
-cp build/steamdeck/romm-sync "$OUT/romm-sync-steamdeck"
+# The service on its own too, for its in-app updates (src/update.c), under the
+# name the service of that kind of machine asks for (platform.c).
+arch="$(tools/deck-build.sh uname -m | tr -d '\r')"
+case "$arch" in
+    x86_64) service=romm-sync-steamdeck ;;
+    aarch64) service=romm-sync-steamdeck-aarch64 ;;
+    *) echo "deck-ci: no release name for a $arch service" >&2; exit 1 ;;
+esac
+cp build/steamdeck/romm-sync "$OUT/$service"
 
 # Install, update and uninstall with the AppImage just packaged, served as a fake release.
 step "Test: the installer"
