@@ -160,6 +160,7 @@ Note: RommPS relies on your emulator **NOT** being sandboxed. Some emulators req
 | [PS5X360](https://github.com/BrinooTk/PS5X360) | Xbox 360 | Full Support | Saves | The first signed-in player's saves; games go in `/data/xbox360`, a folder each |
 | Seedee5 | Philips CD-i | Full Support | Saves and states | Each game's NVRAM is its save |
 | [ProsperoEden](https://github.com/blackbearreloaded/ProsperoEden) | Switch | Full Support | Saves | One Switch user's saves (the first PS5 user's, unless set otherwise). Steps aside when ProsperoEden's own RomM sync is set up |
+| EglantinePS5 | Switch 2 | Full Support | Saves | Early days, for the emulator and for us. `.nup` games, which need no keys or firmware, land straight in `/data/eglantineps5/roms`. One user's saves (its first, unless set otherwise), the same ones Lichii keeps on the Steam Deck. Tested with one whole game, so temper expectations |
 | Mednafen | PS1, NES, SNES, Game Boy, Game Boy Color, Game Boy Advance, Genesis/Mega Drive, Master System, Game Gear, PC Engine, Neo Geo Pocket, WonderSwan, Virtual Boy, Lynx | Full Support | Full Support | Built-in profile, off until you turn it on |
 | PS2 ISOs (for PS2 FPKG tools) | PS2 | Full Support | Not synced | Downloads PS2 ISOs to a USB drive (`/mnt/usb0/ps2`) for PS2 FPKG tools. Off until you turn it on |
 

@@ -3246,4 +3246,38 @@ sleep 1.1; printf 'dig-3' > "$SK/Saved Games/Dig/slot0.sav"
 syncnow
 [[ "$(pwsave 992)" == *"slot0.sav=dig-3" ]] || fail "{game_slug} must find the game's prefix: $(pwsave 992); $(grep -i 'shovel' "$T/daemon.log" | tail -4)"
 
+echo "35. flat_games (EglantinePS5): a folder game with one file comes down as that file, straight in the games folder"
+EG="$T/eglantine"; mkdir -p "$EG/roms"
+curl -skf -X POST "$SV/_admin/platform" -d '{"id":48,"slug":"switch-2","name":"Nintendo Switch 2"}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":948,"platform_id":48,"name":"Flat Game","fs_name":"Flat Game",
+  "files":[{"id":9481,"file_name":"Flat Game + Update 2.0.1.nup","content":"NUP-flat"}]}' >/dev/null
+curl -skf -X POST "$SV/_admin/rom" -d '{"id":949,"platform_id":48,"name":"Two Files","fs_name":"Two Files",
+  "files":[{"id":9491,"file_name":"Two Files.nup","content":"NUP-a"},{"id":9492,"file_name":"Two Files Update.nup","content":"NUP-b"}]}' >/dev/null
+python3 - "$API" "$EG" <<'PY' >/dev/null
+import json, sys, urllib.request
+api, root = sys.argv[1:3]
+cfg = json.load(urllib.request.urlopen(api + "/api/config"))
+p = {"id": "egl", "name": "EglantinePS5", "enabled": True, "root": root, "rom_dir": "{root}/roms",
+     "platforms": [{"romm": ["switch-2"], "dir": "switch2", "flat_games": True}]}
+profiles = [x for x in cfg["profiles"] if x.get("id") != "egl"] + [p]
+req = urllib.request.Request(api + "/api/config", json.dumps({"profiles": profiles}).encode(), {"Content-Type": "application/json"})
+urllib.request.urlopen(req)
+PY
+post /api/download '{"rom_id":948}' >/dev/null
+dl_wait "$EG/roms/Flat Game + Update 2.0.1.nup"
+[[ "$(cat "$EG/roms/Flat Game + Update 2.0.1.nup")" == "NUP-flat" && ! -e "$EG/roms/Flat Game" ]] || fail "the one file must land in roms/, with no folder: $(ls "$EG/roms")"
+for _ in $(seq 1 20); do [[ "$(onc 948)" == True ]] && break; sleep 0.25; done
+[[ "$(onc 948)" == True ]] || fail "the flat game must count as on the console"
+post /api/rescan >/dev/null 2>&1 || true; syncnow
+[[ "$(onc 948)" == True && -f "$EG/roms/Flat Game + Update 2.0.1.nup" ]] || fail "the flat game must still be here after a sync"
+# Asked for again (or put there by hand): the file that's whole already is kept, not fetched twice.
+before=$(stat -c %Y "$EG/roms/Flat Game + Update 2.0.1.nup"); sleep 1.1
+post /api/download '{"rom_id":948}' >/dev/null; sleep 1.5
+[[ "$(stat -c %Y "$EG/roms/Flat Game + Update 2.0.1.nup")" == "$before" ]] || fail "a flat game already here was downloaded again"
+post /api/download '{"rom_id":949}' >/dev/null
+dl_wait "$EG/roms/Two Files/Two Files Update.nup"
+[[ -f "$EG/roms/Two Files/Two Files.nup" ]] || fail "a folder game with several files stays a folder: $(ls -R "$EG/roms")"
+post /api/delete '{"rom_id":948}' >/dev/null || fail "deleting the flat game refused"
+[[ ! -e "$EG/roms/Flat Game + Update 2.0.1.nup" && -f "$EG/roms/Two Files/Two Files.nup" ]] || fail "deleting the flat game must remove its file and nothing else: $(ls -R "$EG/roms")"
+
 echo "PASS"

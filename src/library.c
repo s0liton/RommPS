@@ -632,8 +632,10 @@ static void discard_partial(const char *dest, int multi) {
     unlink(part);
 }
 
-static void record_rom(job *j, const cJSON *rom, const profile_map *m, const char *dest, int multi) {
-    const char *fs_name = jget_str(rom, "fs_name", "");
+/* as: the name the game goes by here when it isn't RomM's fs_name (the one
+ * file of a folder game, flat_games), else NULL. */
+static void record_rom(job *j, const cJSON *rom, const profile_map *m, const char *dest, int multi, const char *as) {
+    const char *fs_name = as ? as : jget_str(rom, "fs_name", "");
     const cJSON *files = cJSON_GetObjectItemCaseSensitive(rom, "files");
     char stem[256];
     cJSON *stems = cJSON_CreateArray();
@@ -1115,6 +1117,25 @@ static void run_rom_job(job *j) {
         if (skipped < j->total) j->total -= skipped;
         pthread_mutex_unlock(&g_q_lock);
     }
+    /* flat_games: a game RomM keeps as a folder that brings one file is that
+     * file, straight in the games folder (EglantinePS5 lists what's directly
+     * in roms/ and takes a folder there for an extracted game). With more
+     * files it stays the folder it is on RomM. */
+    const cJSON *lone = NULL;
+    if (multi && m->flat_games) {
+        const cJSON *f;
+        int count = 0;
+        cJSON_ArrayForEach(f, files) {
+            if (left_out(&lr, rom, f) || other_disc(j, f)) continue;
+            count++;
+            lone = f;
+        }
+        if (count != 1 || game_subdir(rom, lone)[0]) lone = NULL;
+    }
+    if (lone) {
+        fs_name = jget_str(lone, "file_name", "");
+        multi = 0;
+    }
     /* The game is dest, or with game_folders a folder of its own holding it. */
     char game[PATH_MAX_LEN], stem[256], into[PATH_MAX_LEN];
     const int wrap = !multi && m->game_folders;
@@ -1132,7 +1153,15 @@ static void run_rom_job(job *j) {
     const int had = file_exists(dest) || dir_exists(dest);
     int ok = 1;
     http_resp r;
-    if (!multi) {
+    if (lone) {
+        /* Already here whole (moved up by hand, or a download asked again): kept. */
+        if (file_size(dest) != (int64_t)jget_num(lone, "file_size_bytes", -1)) {
+            char *q = http_escape(fs_name);
+            snprintf(path, sizeof path, "/api/roms/%d/files/content/%s", (int)jget_num(lone, "id", 0), q);
+            free(q);
+            ok = romm_download(path, dest, progress_cb, j, &r) == 0;
+        }
+    } else if (!multi) {
         char *q = http_escape(fs_name);
         snprintf(path, sizeof path, "/api/roms/%d/content/%s", j->target_id, q);
         free(q);
@@ -1173,7 +1202,7 @@ static void run_rom_job(job *j) {
     }
 
     if (ok && !cancelled(j)) {
-        record_rom(j, rom, m, game, multi);
+        record_rom(j, rom, m, game, multi, lone ? fs_name : NULL);
         LOGI("downloaded %s to %s", j->name, game);
         /* The extra emulators for this system get the same game: a hard link
          * where they share a drive, a copy where they don't. */
@@ -1194,7 +1223,7 @@ static void run_rom_job(job *j) {
             j->sample_t = 0;
             pthread_mutex_unlock(&g_q_lock);
             if (link_or_copy_progress(game, other, progress_cb, j) == 0) {
-                record_rom(j, rom, x, other, multi);
+                record_rom(j, rom, x, other, multi, lone ? fs_name : NULL);
                 LOGI("also for %s: %s", x->profile_name, other);
             } else {
                 LOGW("could not put %s in %s", j->name, x->rom_dir);
